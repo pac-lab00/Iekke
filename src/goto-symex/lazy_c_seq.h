@@ -11,8 +11,8 @@
 class lazy_c_seqt
 {
 public:
-  explicit lazy_c_seqt(const namespacet &ns, const std::size_t rounds)
-    : ns(ns), rounds(rounds)
+  explicit lazy_c_seqt(const namespacet &ns, const std::size_t rounds, const bool datarace)
+    : ns(ns), rounds(rounds), datarace(datarace)
   {
   }
 
@@ -21,6 +21,8 @@ public:
 private:
   const namespacet &ns;
   const std::size_t rounds;
+  const bool datarace;
+
   struct shared_event
   {
     symex_target_equationt::SSA_stepst::const_iterator s_it;

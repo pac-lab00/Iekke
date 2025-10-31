@@ -22,6 +22,9 @@ void lazy_c_seqt::operator()(
   log.statistics() << "Adding LazyCSeq constraints with " << rounds << " rounds"
                    << messaget::eom;
 
+  if(datarace)
+    log.warning() << "Datarace Enabled " << messaget::eom;
+
   check_shared_event(equation/*, message_handler*/);
 
   handling_active_threads(equation/*, message_handler*/);
