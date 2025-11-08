@@ -51,6 +51,12 @@ private:
     std::size_t round;
     symbol_exprt symbol;
   };
+  struct exec_tot
+  {
+    unsigned label;
+    unsigned thread;
+    symbol_exprt symbol;
+  };
   struct enabled
   {
     unsigned label;
@@ -80,6 +86,7 @@ private:
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
   std::vector<exec> exec_vector;
+  std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
   std::vector<cs> cs_vector;
   std::vector<reach> reach_vector;
@@ -132,6 +139,15 @@ private:
     symex_target_equationt &equation/*,
     message_handlert &message_handler*/);
 
+  void handling_datarace(
+    symex_target_equationt &equation,
+    message_handlert &message_handler);
+
+  symbol_exprt phase_1(messaget log, symex_target_equationt &equation, irep_idt v);
+  symbol_exprt phase_2(messaget log, symex_target_equationt &equation, irep_idt v);
+  symbol_exprt same_round(messaget log, symex_target_equationt &equation);
+  symbol_exprt no_interf(messaget log, symex_target_equationt &equation);
+
   symbol_exprt create_lazy_symbol(
     unsigned label,
     unsigned thread,
@@ -143,6 +159,9 @@ private:
   create_exec_symbol(unsigned label, unsigned thread, std::size_t round);
 
   symbol_exprt
+  create_exec_tot_symbol(messaget log, symex_target_equationt &equation, unsigned label, unsigned thread);
+
+  symbol_exprt
   create_enabled_symbol(unsigned label, unsigned thread, std::size_t round);
 
   symbol_exprt create_cs_symbol(std::size_t thread, std::size_t round);
@@ -150,6 +169,10 @@ private:
   symbol_exprt create_reach_symbol(unsigned label, std::size_t thread);
 
   symbol_exprt create_active_thread_symbol(unsigned thread);
+
+  symbol_exprt create_dr_thread_symbol(unsigned num);
+
+  symbol_exprt create_dr_round_symbol(unsigned num);
 
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
