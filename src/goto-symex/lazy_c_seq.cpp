@@ -246,14 +246,13 @@ void lazy_c_seqt::create_cs_constraint(
     //log.warning() << "thread " << thread << ": from " << min_num << " to "
     //              << max_num << messaget::eom;
 
-    for(size_t round = 1; round <= rounds; ++round)
+    for(size_t round = 0; round <= rounds; ++round)
     {
       symbol_exprt cs = create_cs_symbol(thread, round);
 
-      if(round == 1)
+      if(round == 0)
       {
-        exprt min{from_integer({min_num}, unsignedbv_typet{n_bit[thread]})};
-        less_than_or_equal_exprt constraint{min, cs};
+        equal_exprt constraint{cs, from_integer({0}, unsignedbv_typet{n_bit[thread]})};
         //log.warning() << format(constraint) << messaget::eom;
         equation.constraint(
           constraint,
@@ -262,13 +261,25 @@ void lazy_c_seqt::create_cs_constraint(
         previous = cs;
       }
       else {
-        less_than_or_equal_exprt constraint{previous, cs};
-        //log.warning() << format(constraint) << messaget::eom;
-        equation.constraint(
-          constraint,
-          "cs constraint",
-          equation.SSA_steps.begin()->source);
-        previous = cs;
+        if (round == 1) {
+          exprt min{from_integer({min_num}, unsignedbv_typet{n_bit[thread]})};
+          less_than_or_equal_exprt constraint{min, cs};
+          //log.warning() << format(constraint) << messaget::eom;
+          equation.constraint(
+            constraint,
+            "cs constraint",
+            equation.SSA_steps.begin()->source);
+          previous = cs;
+        }
+        else {
+          less_than_or_equal_exprt constraint{previous, cs};
+          //log.warning() << format(constraint) << messaget::eom;
+          equation.constraint(
+            constraint,
+            "cs constraint",
+            equation.SSA_steps.begin()->source);
+          previous = cs;
+        }
       }
       if(round == rounds)
       {
@@ -858,12 +869,10 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
     for (std::size_t round = 1; round <= rounds; round++) {
       exprt exp1r = true_exprt{};
       exprt exp2r = true_exprt{};
-      if (round < rounds) {
         exp1r = implies_exprt{
           equal_exprt{create_dr_round_symbol(1), from_integer({round}, unsignedbv_typet{bits_round})},
-          equal_exprt{create_cs_symbol(thread,round+1), create_cs_symbol(thread,round)}
+          equal_exprt{create_cs_symbol(thread,round), create_cs_symbol(thread,round-1)}
         };
-      }
       if (round > 1) {
         exp2r = implies_exprt{
           equal_exprt{create_dr_round_symbol(2), from_integer({round}, unsignedbv_typet{bits_round})},
@@ -961,7 +970,7 @@ void lazy_c_seqt::collect_reads_and_writes(
     if(this->labels.count(s_it->source.thread_nr) == 0)
     {
       threads = s_it->source.thread_nr;
-      labels[s_it->source.thread_nr] = 0;
+      labels[s_it->source.thread_nr] = 1;
     }
 
     if(s_it->is_assert() || s_it->is_assume())
