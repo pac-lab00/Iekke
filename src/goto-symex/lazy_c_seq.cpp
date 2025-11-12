@@ -3,6 +3,7 @@
 
 #include "lazy_c_seq.h"
 
+#include <thread>
 #include <util/cprover_prefix.h>
 #include <util/format.h>
 #include <util/format_expr.h>
@@ -698,6 +699,7 @@ void lazy_c_seqt::create_active_thread_statements(
 
 symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation, irep_idt v) {
 
+  log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_1_name = "phase_1_" + as_string(v);
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
@@ -739,17 +741,20 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
         phase_1_t_v_symbl,
         and_exprt{phase_1_t_v_exp, exp2}};
 
+      simplify(phase_1_t_v_exp, ns);
       log.warning() << format(phase_1_t_v_exp) << messaget::eom;
       equation.constraint(
         phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
     }
     phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
+    simplify(phase_1_t_exp, ns);
     log.warning() << format(phase_1_t_exp) << messaget::eom;
     equation.constraint(
       phase_1_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
   phase_1_exp = equal_exprt {phase_1_symbl, phase_1_exp};
+  simplify(phase_1_exp, ns);
   log.warning() << format(phase_1_exp) << messaget::eom;
   equation.constraint(
     phase_1_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -758,6 +763,7 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
 }
 
 symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation, irep_idt v) {
+  log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_2_name = "phase_2_" + as_string(v);
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
@@ -771,45 +777,85 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
 
     exprt phase_2_t_exp = false_exprt{};
 
-    for (auto event : shared_events) {
-      if (event.thread != thread || event.s_it->ssa_lhs.get_l1_object_identifier() != v || event.s_it->is_assert() || event.s_it->is_assume())
-        continue;
-      irep_idt phase_2_t_v_name = "phase_2_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(event.label) + "_N" + std::to_string(event.num);
-      symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
+    if(this->writes.count(v) != 0) {
+      for (auto write : writes.at(v)) {
+        if (write.thread != thread)
+          continue;
+        irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
-      phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
+        phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-      std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
-      exprt phase_2_t_v_exp = and_exprt{
-        equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{bits})},
-        create_exec_tot_symbol(log, equation, event.label,thread)};
+        std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
+        exprt phase_2_t_v_exp = and_exprt{
+          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{bits})},
+          create_exec_tot_symbol(log, equation, write.label,thread)};
 
-      exprt exp2 = true_exprt{};
-      for (std::size_t round = 1; round <= rounds; round++) {
-        std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
-        exprt exp = implies_exprt{
-          create_exec_symbol(event.label,thread,round),
-          and_exprt{
-            equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{bits})},
-            not_exprt{create_enabled_symbol(event.label-1,thread,round)}
-          }};
-        exp2 = and_exprt{exp2, exp};
+        exprt exp2 = true_exprt{};
+        for (std::size_t round = 1; round <= rounds; round++) {
+          std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
+          exprt exp = implies_exprt{
+            create_exec_symbol(write.label,thread,round),
+            and_exprt{
+              equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{bits})},
+              not_exprt{create_enabled_symbol(write.label-1,thread,round)}
+            }};
+          exp2 = and_exprt{exp2, exp};
+        }
+        phase_2_t_v_exp = equal_exprt{
+          phase_2_t_v_symbl,
+          and_exprt{phase_2_t_v_exp, exp2}};
+
+        simplify(phase_2_t_v_exp, ns);
+        log.warning() << format(phase_2_t_v_exp) << messaget::eom;
+        equation.constraint(
+          phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
-      phase_2_t_v_exp = equal_exprt{
-        phase_2_t_v_symbl,
-        and_exprt{phase_2_t_v_exp, exp2}};
+    }
+    if(this->reads.count(v) != 0) {
+      for (auto read : reads.at(v)) {
+        if (read.thread != thread)
+          continue;
+        irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
+        symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
-      log.warning() << format(phase_2_t_v_exp) << messaget::eom;
-      equation.constraint(
-        phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+        phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
+
+        std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
+        exprt phase_2_t_v_exp = and_exprt{
+          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{bits})},
+          create_exec_tot_symbol(log, equation, read.label,thread)};
+
+        exprt exp2 = true_exprt{};
+        for (std::size_t round = 1; round <= rounds; round++) {
+          std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
+          exprt exp = implies_exprt{
+            create_exec_symbol(read.label,thread,round),
+            and_exprt{
+              equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{bits})},
+              not_exprt{create_enabled_symbol(read.label-1,thread,round)}
+            }};
+          exp2 = and_exprt{exp2, exp};
+        }
+        phase_2_t_v_exp = equal_exprt{
+          phase_2_t_v_symbl,
+          and_exprt{phase_2_t_v_exp, exp2}};
+
+        simplify(phase_2_t_v_exp, ns);
+        log.warning() << format(phase_2_t_v_exp) << messaget::eom;
+        equation.constraint(
+          phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+      }
     }
     phase_2_t_exp = equal_exprt {phase_2_t_symbl, phase_2_t_exp};
+    simplify(phase_2_t_exp, ns);
     log.warning() << format(phase_2_t_exp) << messaget::eom;
     equation.constraint(
       phase_2_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
   phase_2_exp = equal_exprt {phase_2_symbl, phase_2_exp};
+  simplify(phase_2_exp, ns);
   log.warning() << format(phase_2_exp) << messaget::eom;
   equation.constraint(
     phase_2_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -818,6 +864,7 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
 }
 
 symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equation) {
+  log.warning() << "------------------ sameround" << messaget::eom;
   irep_idt same_round_name = "same_round";
   symbol_exprt same_round_symbl{same_round_name, bool_typet{}};
 
@@ -844,6 +891,7 @@ symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equat
   };
 
   same_round_exp = equal_exprt{same_round_symbl, same_round_exp};
+  simplify(same_round_exp, ns);
   log.warning() << format(same_round_exp) << messaget::eom;
   equation.constraint(
     same_round_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -852,6 +900,7 @@ symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equat
 }
 
 symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equation) {
+  log.warning() << "------------------ no interf" << messaget::eom;
   irep_idt no_interf_name = "no_interf";
   symbol_exprt no_interf_symbl{no_interf_name, bool_typet{}};
 
@@ -902,13 +951,15 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
     };
 
     no_interf_t_exp = equal_exprt{no_interf_t_symbl, no_interf_t_exp};
+    simplify(no_interf_t_exp, ns);
     log.warning() << format(no_interf_t_exp) << messaget::eom;
     equation.constraint(
       no_interf_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
-    no_interf_exp = and_exprt{no_interf_exp, no_interf_t_exp};
+    no_interf_exp = and_exprt{no_interf_exp, no_interf_t_symbl};
   }
   no_interf_exp = equal_exprt{no_interf_symbl, no_interf_exp};
+  simplify(no_interf_exp, ns);
   log.warning() << format(no_interf_exp) << messaget::eom;
   equation.constraint(
     no_interf_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -930,11 +981,15 @@ void lazy_c_seqt::handling_datarace(
   exprt phases_exp = false_exprt{};
   for (auto v : global_variables) {
     symbol_exprt pha_1 = phase_1(log, equation, v);
+    log.warning() << "------------------ fase 1 per " << as_string(v) << " fatta " << messaget::eom;
     symbol_exprt pha_2 = phase_2(log, equation, v);
+    log.warning() << "------------------ fase 2 per " << as_string(v) << " fatta " << messaget::eom;
     exprt pha_1_2 = and_exprt{pha_1, pha_2};
     phases_exp = or_exprt{phases_exp, pha_1_2};
+    log.warning() << "------------------ merging fase 1 e 2 per " << as_string(v) << " fatto " << messaget::eom;
   }
   phases_exp = equal_exprt{phases_symbl, phases_exp};
+  simplify(phases_exp, ns);
   log.warning() << format(phases_exp) << messaget::eom;
   equation.constraint(
     phases_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -944,9 +999,11 @@ void lazy_c_seqt::handling_datarace(
   symbol_exprt no_interf_symbl = no_interf(log, equation);
 
   exprt datarace_contraint = and_exprt{phases_symbl, and_exprt{same_round_symbl, no_interf_symbl}};
-  log.warning() << format(datarace_contraint) << messaget::eom;
-  equation.constraint(
-    datarace_contraint, "datarace constraint", equation.SSA_steps.begin()->source);
+  simplify(datarace_contraint, ns);
+  log.warning() << "ASSERT: " << format(datarace_contraint) << messaget::eom;
+  //equation.constraint(
+   // datarace_contraint, "datarace constraint", equation.SSA_steps.begin()->source);
+  equation.assertion(true_exprt{},not_exprt{datarace_contraint},"datarace",equation.SSA_steps.begin()->source);
 }
 
 void lazy_c_seqt::collect_reads_and_writes(
@@ -970,7 +1027,7 @@ void lazy_c_seqt::collect_reads_and_writes(
     if(this->labels.count(s_it->source.thread_nr) == 0)
     {
       threads = s_it->source.thread_nr;
-      labels[s_it->source.thread_nr] = 1;
+      labels[s_it->source.thread_nr] = 0;
     }
 
     if(s_it->is_assert() || s_it->is_assume())
@@ -1137,6 +1194,7 @@ lazy_c_seqt::create_exec_tot_symbol(messaget log, symex_target_equationt &equati
     constraint = or_exprt{constraint, create_exec_symbol(label,thread,round)};
   }
   constraint = equal_exprt{exec_symbol, constraint};
+  simplify(constraint, ns);
   log.warning() << format(constraint) << messaget::eom;
   equation.constraint(
     constraint, "exec tot constraint", equation.SSA_steps.begin()->source);
@@ -1213,26 +1271,25 @@ symbol_exprt lazy_c_seqt::create_active_thread_symbol(unsigned thread)
 
 symbol_exprt lazy_c_seqt::create_dr_thread_symbol(unsigned num)
 {
-  if (dr_thread.size() == num)
-    return dr_thread[num];
+  if (dr_thread.find(num) != dr_thread.end())
+    return dr_thread.at(num);
   irep_idt thread_name = "t" + std::to_string(num);
   std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   symbol_exprt thread_expr{thread_name, unsignedbv_typet{bits}};
 
-  dr_thread[num] = thread_expr;
-
+  dr_thread.emplace(num, thread_expr);
   return thread_expr;
 }
 
 symbol_exprt lazy_c_seqt::create_dr_round_symbol(unsigned num)
 {
-  if (dr_round.size() == num)
-    return dr_round[num];
+  if (dr_round.find(num) != dr_round.end())
+    return dr_round.at(num);
   irep_idt round_name = "r" + std::to_string(num);
   std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
   symbol_exprt round_expr{round_name, unsignedbv_typet{bits}};
 
-  dr_round[num] = round_expr;
+  dr_round.emplace(num, round_expr);
 
   return round_expr;
 }

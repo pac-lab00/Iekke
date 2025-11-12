@@ -78,8 +78,8 @@ private:
   };
 
   std::size_t threads = 0;
-  std::vector<symbol_exprt> dr_thread;
-  std::vector<symbol_exprt> dr_round;
+  std::unordered_map<unsigned, symbol_exprt> dr_thread;
+  std::unordered_map<unsigned, symbol_exprt> dr_round;
   std::unordered_set<irep_idt> global_variables;
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
