@@ -721,18 +721,16 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
 
       phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
 
-      std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
       exprt phase_1_t_v_exp = and_exprt{
-        equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{bits})},
+        equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
         create_exec_tot_symbol(log, equation, write.label,thread)};
 
       exprt exp2 = true_exprt{};
       for (std::size_t round = 1; round <= rounds; round++) {
-        std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
         exprt exp = implies_exprt{
           create_exec_symbol(write.label,thread,round),
           and_exprt{
-            equal_exprt{create_dr_round_symbol(1),from_integer({round}, unsignedbv_typet{bits})},
+            equal_exprt{create_dr_round_symbol(1),from_integer({round}, unsignedbv_typet{rounds_bits})},
             not_exprt{create_enabled_symbol(write.label+1,thread,round)}
           }};
         exp2 = and_exprt{exp2, exp};
@@ -786,18 +784,16 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
         exprt phase_2_t_v_exp = and_exprt{
-          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{bits})},
+          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
           create_exec_tot_symbol(log, equation, write.label,thread)};
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
-          std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
           exprt exp = implies_exprt{
             create_exec_symbol(write.label,thread,round),
             and_exprt{
-              equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{bits})},
+              equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{rounds_bits})},
               not_exprt{create_enabled_symbol(write.label-1,thread,round)}
             }};
           exp2 = and_exprt{exp2, exp};
@@ -821,18 +817,16 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
         exprt phase_2_t_v_exp = and_exprt{
-          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{bits})},
+          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
           create_exec_tot_symbol(log, equation, read.label,thread)};
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
-          std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
           exprt exp = implies_exprt{
             create_exec_symbol(read.label,thread,round),
             and_exprt{
-              equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{bits})},
+              equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{rounds_bits})},
               not_exprt{create_enabled_symbol(read.label-1,thread,round)}
             }};
           exp2 = and_exprt{exp2, exp};
@@ -868,7 +862,6 @@ symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equat
   irep_idt same_round_name = "same_round";
   symbol_exprt same_round_symbl{same_round_name, bool_typet{}};
 
-  std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
 
   exprt same_round_exp = and_exprt{
     notequal_exprt{
@@ -886,7 +879,7 @@ symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equat
         less_than_exprt{create_dr_thread_symbol(2),
         create_dr_thread_symbol(1)},
           equal_exprt{create_dr_round_symbol(2),
-        plus_exprt{create_dr_round_symbol(1), from_integer({1}, unsignedbv_typet{bits})}}}
+        plus_exprt{create_dr_round_symbol(1), from_integer({1}, unsignedbv_typet{rounds_bits})}}}
     }
   };
 
@@ -906,8 +899,6 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
 
   exprt no_interf_exp = true_exprt{};
 
-  std::size_t bits_round = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
-  std::size_t bits_thread = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
     irep_idt no_interf_t_name = "no_interf_T" + std::to_string(thread);
@@ -919,12 +910,12 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
       exprt exp1r = true_exprt{};
       exprt exp2r = true_exprt{};
         exp1r = implies_exprt{
-          equal_exprt{create_dr_round_symbol(1), from_integer({round}, unsignedbv_typet{bits_round})},
+          equal_exprt{create_dr_round_symbol(1), from_integer({round}, unsignedbv_typet{rounds_bits})},
           equal_exprt{create_cs_symbol(thread,round), create_cs_symbol(thread,round-1)}
         };
       if (round > 1) {
         exp2r = implies_exprt{
-          equal_exprt{create_dr_round_symbol(2), from_integer({round}, unsignedbv_typet{bits_round})},
+          equal_exprt{create_dr_round_symbol(2), from_integer({round}, unsignedbv_typet{rounds_bits})},
           equal_exprt{create_cs_symbol(thread,round), create_cs_symbol(thread,round-1)}
         };
       }
@@ -936,15 +927,18 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
       and_exprt{
         implies_exprt{
           or_exprt{
-            less_than_exprt{create_dr_thread_symbol(1),
-            less_than_exprt{from_integer({thread}, unsignedbv_typet{bits_thread}), create_dr_thread_symbol(2)}},
-            less_than_exprt{create_dr_thread_symbol(2),
-            less_than_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{bits_thread})}}
+            and_exprt{
+              less_than_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
+              less_than_exprt{from_integer({thread}, unsignedbv_typet{threads_bits}), create_dr_thread_symbol(2)}},
+            and_exprt{
+              less_than_exprt{create_dr_thread_symbol(2),create_dr_thread_symbol(1)},
+              less_than_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})}}
           },
           exp1
         },
         implies_exprt{
-          less_than_exprt{from_integer({thread}, unsignedbv_typet{bits_thread}),
+          and_exprt{
+          less_than_exprt{from_integer({thread}, unsignedbv_typet{threads_bits}), create_dr_thread_symbol(2)},
             less_than_exprt{create_dr_thread_symbol(2), create_dr_thread_symbol(1)}},
           exp2}
       }
@@ -1137,6 +1131,8 @@ void lazy_c_seqt::collect_reads_and_writes(
       }
     }
   }
+  threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
+  rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
 }
 
 symbol_exprt lazy_c_seqt::create_lazy_symbol(
@@ -1274,8 +1270,7 @@ symbol_exprt lazy_c_seqt::create_dr_thread_symbol(unsigned num)
   if (dr_thread.find(num) != dr_thread.end())
     return dr_thread.at(num);
   irep_idt thread_name = "t" + std::to_string(num);
-  std::size_t bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
-  symbol_exprt thread_expr{thread_name, unsignedbv_typet{bits}};
+  symbol_exprt thread_expr{thread_name, unsignedbv_typet{threads_bits}};
 
   dr_thread.emplace(num, thread_expr);
   return thread_expr;
@@ -1286,8 +1281,7 @@ symbol_exprt lazy_c_seqt::create_dr_round_symbol(unsigned num)
   if (dr_round.find(num) != dr_round.end())
     return dr_round.at(num);
   irep_idt round_name = "r" + std::to_string(num);
-  std::size_t bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
-  symbol_exprt round_expr{round_name, unsignedbv_typet{bits}};
+  symbol_exprt round_expr{round_name, unsignedbv_typet{rounds_bits}};
 
   dr_round.emplace(num, round_expr);
 

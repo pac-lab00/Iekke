@@ -78,6 +78,8 @@ private:
   };
 
   std::size_t threads = 0;
+  std::size_t threads_bits;
+  std::size_t rounds_bits;
   std::unordered_map<unsigned, symbol_exprt> dr_thread;
   std::unordered_map<unsigned, symbol_exprt> dr_round;
   std::unordered_set<irep_idt> global_variables;
