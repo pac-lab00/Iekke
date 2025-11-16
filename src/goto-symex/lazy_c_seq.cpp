@@ -37,12 +37,12 @@ void lazy_c_seqt::operator()(
 
   handling_atomic_sections(equation/*, message_handler*/);
 
-  handling_guards(equation/*, message_handler*/);
-
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
     handling_datarace(equation, message_handler);
   }
+  else
+    handling_guards(equation/*, message_handler*/);
 
 }
 
@@ -714,7 +714,7 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
     exprt phase_1_t_exp = false_exprt{};
 
     for (auto write : writes.at(v)) {
-      if (write.thread != thread)
+      if (write.thread != thread || write.s_it->atomic_section_id != 0)
         continue;
       irep_idt phase_1_t_v_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
       symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
@@ -777,7 +777,7 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread)
+        if (write.thread != thread || write.s_it->atomic_section_id != 0)
           continue;
         irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -810,7 +810,7 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
     }
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
-        if (read.thread != thread)
+        if (read.thread != thread || read.s_it->atomic_section_id != 0)
           continue;
         irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -974,6 +974,8 @@ void lazy_c_seqt::handling_datarace(
   symbol_exprt phases_symbl{phases_name, bool_typet{}};
   exprt phases_exp = false_exprt{};
   for (auto v : global_variables) {
+    if (v.starts_with("__CPROVER"))
+      continue;
     symbol_exprt pha_1 = phase_1(log, equation, v);
     log.warning() << "------------------ fase 1 per " << as_string(v) << " fatta " << messaget::eom;
     symbol_exprt pha_2 = phase_2(log, equation, v);
@@ -1256,7 +1258,7 @@ symbol_exprt lazy_c_seqt::create_reach_symbol(unsigned label, size_t thread)
 
 symbol_exprt lazy_c_seqt::create_active_thread_symbol(unsigned thread)
 {
-  irep_idt active_thread_name = "active_thread_T" + std::to_string(thread);
+  irep_idt active_thread_name = "__CPROVER_active_thread_T" + std::to_string(thread);
   symbol_exprt active_thread_expr{active_thread_name, bool_typet{}};
 
   active_thread active_thread_struct{thread, 1, active_thread_expr};
