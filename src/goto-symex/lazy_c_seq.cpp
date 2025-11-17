@@ -976,6 +976,8 @@ void lazy_c_seqt::handling_datarace(
   for (auto v : global_variables) {
     if (v.starts_with("__CPROVER"))
       continue;
+    if (equation.symbol_is_atomic(ns,v))
+      continue;
     symbol_exprt pha_1 = phase_1(log, equation, v);
     log.warning() << "------------------ fase 1 per " << as_string(v) << " fatta " << messaget::eom;
     symbol_exprt pha_2 = phase_2(log, equation, v);
