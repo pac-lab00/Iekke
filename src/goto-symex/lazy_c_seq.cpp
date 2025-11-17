@@ -713,36 +713,38 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
 
     exprt phase_1_t_exp = false_exprt{};
 
-    for (auto write : writes.at(v)) {
-      if (write.thread != thread || write.s_it->atomic_section_id != 0)
-        continue;
-      irep_idt phase_1_t_v_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
-      symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
+    if(this->writes.count(v) != 0) {
+      for (auto write : writes.at(v)) {
+        if (write.thread != thread || write.s_it->atomic_section_id != 0)
+          continue;
+        irep_idt phase_1_t_v_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
 
-      phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
+        phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
 
-      exprt phase_1_t_v_exp = and_exprt{
-        equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
-        create_exec_tot_symbol(log, equation, write.label,thread)};
+        exprt phase_1_t_v_exp = and_exprt{
+          equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
+          create_exec_tot_symbol(log, equation, write.label,thread)};
 
-      exprt exp2 = true_exprt{};
-      for (std::size_t round = 1; round <= rounds; round++) {
-        exprt exp = implies_exprt{
-          create_exec_symbol(write.label,thread,round),
-          and_exprt{
-            equal_exprt{create_dr_round_symbol(1),from_integer({round}, unsignedbv_typet{rounds_bits})},
-            not_exprt{create_enabled_symbol(write.label+1,thread,round)}
-          }};
-        exp2 = and_exprt{exp2, exp};
+        exprt exp2 = true_exprt{};
+        for (std::size_t round = 1; round <= rounds; round++) {
+          exprt exp = implies_exprt{
+            create_exec_symbol(write.label,thread,round),
+            and_exprt{
+              equal_exprt{create_dr_round_symbol(1),from_integer({round}, unsignedbv_typet{rounds_bits})},
+              not_exprt{create_enabled_symbol(write.label+1,thread,round)}
+            }};
+          exp2 = and_exprt{exp2, exp};
+        }
+        phase_1_t_v_exp = equal_exprt{
+          phase_1_t_v_symbl,
+          and_exprt{phase_1_t_v_exp, exp2}};
+
+        simplify(phase_1_t_v_exp, ns);
+        log.warning() << format(phase_1_t_v_exp) << messaget::eom;
+        equation.constraint(
+          phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
-      phase_1_t_v_exp = equal_exprt{
-        phase_1_t_v_symbl,
-        and_exprt{phase_1_t_v_exp, exp2}};
-
-      simplify(phase_1_t_v_exp, ns);
-      log.warning() << format(phase_1_t_v_exp) << messaget::eom;
-      equation.constraint(
-        phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
     }
     phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
     simplify(phase_1_t_exp, ns);
