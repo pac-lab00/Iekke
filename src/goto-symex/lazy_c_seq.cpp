@@ -314,7 +314,7 @@ void lazy_c_seqt::create_cs_constraint(
           create_cs_symbol(thread, round - 1);
 
         std::string active_name =
-          "active_thread_T" + std::to_string(thread);
+          "__CPROVER_active_thread_T" + std::to_string(thread);
         std::optional<symbol_exprt> active_thread =
           previous_shared(active_name, label, 0, thread, round);
         exprt active_thread_value = true_exprt{};
