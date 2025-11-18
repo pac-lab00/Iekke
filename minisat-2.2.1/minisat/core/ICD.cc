@@ -29,6 +29,10 @@ template<typename T> bool contains(std::set<T> s, T elem)
 
 lbool ICD::get_assignment(Lit l)
 {
+	if(l.x == -1)
+	    return l_True;
+	else if(l.x == -2)
+		return l_False;
     return solver->value(l);
 }
 
@@ -65,7 +69,7 @@ void ICD::init(ICDSolver* _solver)
 
 int ICD::get_node(std::string name) //create node if not exist
 {
-    for(int i = 0; i < nodes.size(); i++)
+    for(int i = 0; i < int(nodes.size()); i++)
         if(nodes[i].name == name)
             return i;
 
@@ -80,7 +84,7 @@ int ICD::get_node(std::string name) //create node if not exist
 
 void ICD::init_reasonable_edge(int u, int v, edge_kindt kind, Lit l)
 {
-    lit_to_edge[l] = std::make_pair(std::make_pair(u, v), kind);
+    lit_to_edge.insert(std::make_pair(l, std::make_pair(std::make_pair(u, v), kind)));
     inactive_edge_t inactive_edge = std::make_pair(std::make_pair(u, v), l);
     tail_to_inactive_edges[u].push_back(inactive_edge);
 }
@@ -102,7 +106,7 @@ bool ICD::activate_apo(int u, int v) //always before activating other edges
     union_join(u, v);
 
     ICD_edget edge_forward(u, v, OC_PO);
-    ICD_edget edge_backward(u, v, OC_PO);
+    ICD_edget edge_backward(v, u, OC_PO);
 
     return activate_directed_edge(edge_forward) || activate_directed_edge(edge_backward);
 }
@@ -130,7 +134,7 @@ void ICD::show_edges()
         return;
 
     std::cout << "current outs:\n";
-    for(int i = 0; i < nodes.size(); i++)
+    for(int i = 0; i < int(nodes.size()); i++)
     {
         std::cout << i << "has outs: ";
         for(auto& edge: nodes[union_find_parent(i)].out)
@@ -142,7 +146,7 @@ void ICD::show_edges()
     }
 
     std::cout << "current ins:\n";
-    for(int i = 0; i < nodes.size(); i++)
+    for(int i = 0; i < int(nodes.size()); i++)
     {
         std::cout << i << "has ins: ";
         for(auto& edge: nodes[union_find_parent(i)].in)
@@ -154,11 +158,43 @@ void ICD::show_edges()
     }
 }
 
-decide_entryt ICD::get_decide_entry(Lit l)
+void ICD::show_model()
 {
-    if(lit_to_edge.find(l) != lit_to_edge.end())
-        return lit_to_edge[l];
-    return std::make_pair(std::make_pair(-1, -1), OC_PO);
+    if(OC_VERBOSITY < 1)
+        return;
+
+    std::cout << "Read-from relations:\n";
+    for(auto& node: nodes)
+        for(auto& edge: node.out)
+            if(edge.kind == OC_RF)
+                std::cout << "\t" << nodes[edge.from].name << " " << nodes[edge.to].name << "\n";
+    std::cout << "\n";
+
+    std::cout << "Write-serialization relations:\n";
+    for(auto& node: nodes)
+        for(auto& edge: node.out)
+            if(edge.kind == OC_WS)
+                std::cout << "\t" << nodes[edge.from].name << " " << nodes[edge.to].name << "\n";
+    std::cout << "\n";
+}
+
+std::vector<decide_entryt> ICD::get_decide_entries(Lit l)
+{
+    std::vector<decide_entryt> ret;
+
+    auto range = lit_to_edge.equal_range(l);
+    bool has = false;
+    while(range.first != range.second)
+    {
+        has = true;
+        ret.push_back(range.first->second);
+        range.first++;
+    }
+
+    if(has && get_decision_level() == 0)
+        lit_to_edge.erase(l);
+
+    return ret;
 }
 
 bool ICD::use_available_info()
@@ -386,7 +422,7 @@ void ICD::all_cycles_forward_search(bool* visited, ICD_nodet* v, ICD_nodet* w)
 void ICD::refine_valid_in(bool* visited_backward, bool* visited_forward)
 {
     ICD_nodet* begin = &(nodes[0]);
-    auto node_num = nodes.size();
+    int node_num = nodes.size();
 
     for(int i = 0; i < node_num; i++)
     {
@@ -598,49 +634,49 @@ bool ICD::activate_directed_edge(ICD_edget edge) //true: cycle detected
         }
     }
 
-    if (!cycle) //enclosure
-    {
-        //propagate
-        std::vector<literal_vector> literals_to_add;
+    // if (!cycle) //enclosure
+    // {
+    //     //propagate
+    //     std::vector<literal_vector> literals_to_add;
 
-        //false propagation
-        auto& inactive_edges = tail_to_inactive_edges[v];
-        for(auto& inactive_edge: inactive_edges)
-        {
-            Lit inactive_l = inactive_edge.second;
-            if(get_assignment(inactive_l) != l_Undef)
-                continue;
+    //     //false propagation
+    //     auto& inactive_edges = tail_to_inactive_edges[v];
+    //     for(auto& inactive_edge: inactive_edges)
+    //     {
+    //         Lit inactive_l = inactive_edge.second;
+    //         if(get_assignment(inactive_l) != l_Undef)
+    //             continue;
 
-            int inactive_u = inactive_edge.first.second;
-            int inactive_v = inactive_edge.first.first;
+    //         int inactive_u = inactive_edge.first.second;
+    //         int inactive_v = inactive_edge.first.first;
 
-            if(!visited[inactive_u])
-                continue;
+    //         if(!visited[inactive_u])
+    //             continue;
 
-            std::vector<int> related_nodes;
-            literal_vector related_reasons;
-            get_nodes_reasons(related_nodes, related_reasons, &(nodes[inactive_u]), &(nodes[inactive_v]), u_node, v_node);
+    //         std::vector<int> related_nodes;
+    //         literal_vector related_reasons;
+    //         get_nodes_reasons(related_nodes, related_reasons, &(nodes[inactive_u]), &(nodes[inactive_v]), u_node, v_node);
 
-            for(auto& l: related_reasons)
-                l = ~l;
+    //         for(auto& l: related_reasons)
+    //             l = ~l;
 
-            ICD_reasont neg_reason = ~edge.reason;
-            for(auto& lv: literals_to_add)
-                lv << neg_reason;
+    //         ICD_reasont neg_reason = ~edge.reason;
+    //         for(auto& lv: literals_to_add)
+    //             lv << neg_reason;
 
-            related_reasons.push_back(~inactive_l);
+    //         related_reasons.push_back(~inactive_l);
 
-            literals_to_add.push_back(related_reasons);
+    //         literals_to_add.push_back(related_reasons);
 
-            if(OC_VERBOSITY >= 1)
-                std::cout << "propagate " << inactive_v << " " << inactive_u << " is not ok";
-        }
+    //         if(OC_VERBOSITY >= 1)
+    //             std::cout << "propagate " << inactive_v << " " << inactive_u << " is not ok";
+    //     }
 
-        for(auto& lv: literals_to_add)
-        {
-            solver->assign_literal(lv.back(), lv);
-        }
-    }
+    //     for(auto& lv: literals_to_add)
+    //     {
+    //         solver->assign_literal(lv.back(), lv);
+    //     }
+    // }
 
     trail_edge.push(std::make_pair(u, v));
     u_node->out.push_back(edge);
@@ -675,7 +711,7 @@ bool ICD::activate_directed_edge(ICD_edget edge) //true: cycle detected
                 }
         }
 
-        for(int i = 0; i < from_reads.size(); i++)
+        for(int i = 0; i < int(from_reads.size()); i++)
         {
             auto& from_read = from_reads[i];
             auto from_read_reason = from_reads_reason[i];

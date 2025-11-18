@@ -28,8 +28,7 @@ operator()(symex_target_equationt &equation, message_handlert &message_handler)
 
   read_from(equation);
 
-  if(!use_deagle)
-    write_serialization_external(equation);
+  write_serialization_external(equation);
   
   program_order(equation);
 
@@ -198,53 +197,119 @@ void memory_model_sct::program_order(
 void memory_model_sct::write_serialization_external(
   symex_target_equationt &equation)
 {
-  for(address_mapt::const_iterator
-      a_it=address_map.begin();
-      a_it!=address_map.end();
-      a_it++)
+  for(auto a_it=address_map.begin(); a_it!=address_map.end(); a_it++)
   {
     const a_rect &a_rec=a_it->second;
 
     // This is quadratic in the number of writes
     // per address. Perhaps some better encoding
     // based on 'places'?
-    for(event_listt::const_iterator
-        w_it1=a_rec.writes.begin();
-        w_it1!=a_rec.writes.end();
-        ++w_it1)
+    for(auto w_it1=a_rec.writes.begin(); w_it1!=a_rec.writes.end(); ++w_it1)
     {
-      event_listt::const_iterator next=w_it1;
+      auto next=w_it1;
       ++next;
 
-      for(event_listt::const_iterator w_it2=next;
-          w_it2!=a_rec.writes.end();
-          ++w_it2)
+      for(auto w_it2=next; w_it2!=a_rec.writes.end(); ++w_it2)
       {
-        // external?
-        if((*w_it1)->source.thread_nr==
-           (*w_it2)->source.thread_nr)
-          continue;
-
         // ws is a total order, no two elements have the same rank
         // s -> w_evt1 before w_evt2; !s -> w_evt2 before w_evt1
 
-        symbol_exprt s=nondet_bool_symbol("ws-ext");
+        bool can12 = !(assume_local_consistency && po(*w_it2, *w_it1));
+        bool can21 = !(assume_local_consistency && po(*w_it1, *w_it2));
+        if((*w_it1)->is_init())
+          can21 = false;
+        if((*w_it2)->is_init())
+          can12 = false;
 
-        // write-to-write edge
-        add_constraint(
-          equation,
-          implies_exprt(s, before(*w_it1, *w_it2)),
-          "ws-ext",
-          (*w_it1)->source);
+        if(can12 && can21)
+        {
+          symbol_exprt s12=nondet_bool_symbol("ws");
+          symbol_exprt s21=nondet_bool_symbol("ws");
 
-        add_constraint(
-          equation,
-          implies_exprt(not_exprt(s), before(*w_it2, *w_it1)),
-          "ws-ext",
-          (*w_it1)->source);
+          add_constraint(equation, equal_exprt(or_exprt(s12, s21), and_exprt((*w_it1)->guard, (*w_it2)->guard)), "ws-some", (*w_it1)->source);
+          // add_constraint(equation, not_exprt(and_exprt(s12, s21)), "ws-only-one", (*w_it1)->source);
+          if(use_deagle)
+          {
+            add_oc_edge(equation, *w_it1, *w_it2, "ws", s12);
+            add_oc_edge(equation, *w_it2, *w_it1, "ws", s21);
+          }
+          else
+          {
+            add_constraint(equation, implies_exprt(s12, before(*w_it1, *w_it2)), "ws", (*w_it1)->source);
+            add_constraint(equation, implies_exprt(s21, before(*w_it2, *w_it1)), "ws", (*w_it1)->source);
+          }
+        }
+        else if(can12)
+        {
+          symbol_exprt s12=nondet_bool_symbol("ws");
+          add_constraint(equation, equal_exprt(s12, and_exprt((*w_it1)->guard, (*w_it2)->guard)), "ws-some", (*w_it1)->source);
+          if(use_deagle)
+            add_oc_edge(equation, *w_it1, *w_it2, "ws", s12);
+          else
+            add_constraint(equation, implies_exprt(s12, before(*w_it1, *w_it2)), "ws", (*w_it1)->source);
+        }
+        else if(can21)
+        {
+          symbol_exprt s21=nondet_bool_symbol("ws");
+          add_constraint(equation, equal_exprt(s21, and_exprt((*w_it2)->guard, (*w_it1)->guard)), "ws-some", (*w_it1)->source);
+          if(use_deagle)
+            add_oc_edge(equation, *w_it2, *w_it1, "ws", s21);
+          else
+            add_constraint(equation, implies_exprt(s21, before(*w_it2, *w_it1)), "ws", (*w_it1)->source);
+        }
+        else
+          std::cout << "WARNING: either " << id(*w_it1) << " or " << id(*w_it2) << " cannot coherence before each other.\n";
       }
     }
   }
+
+  // for(address_mapt::const_iterator
+  //     a_it=address_map.begin();
+  //     a_it!=address_map.end();
+  //     a_it++)
+  // {
+  //   const a_rect &a_rec=a_it->second;
+
+  //   // This is quadratic in the number of writes
+  //   // per address. Perhaps some better encoding
+  //   // based on 'places'?
+  //   for(event_listt::const_iterator
+  //       w_it1=a_rec.writes.begin();
+  //       w_it1!=a_rec.writes.end();
+  //       ++w_it1)
+  //   {
+  //     event_listt::const_iterator next=w_it1;
+  //     ++next;
+
+  //     for(event_listt::const_iterator w_it2=next;
+  //         w_it2!=a_rec.writes.end();
+  //         ++w_it2)
+  //     {
+  //       // external?
+  //       if((*w_it1)->source.thread_nr==
+  //          (*w_it2)->source.thread_nr)
+  //         continue;
+
+  //       // ws is a total order, no two elements have the same rank
+  //       // s -> w_evt1 before w_evt2; !s -> w_evt2 before w_evt1
+
+  //       symbol_exprt s=nondet_bool_symbol("ws-ext");
+
+  //       // write-to-write edge
+  //       add_constraint(
+  //         equation,
+  //         implies_exprt(s, before(*w_it1, *w_it2)),
+  //         "ws-ext",
+  //         (*w_it1)->source);
+
+  //       add_constraint(
+  //         equation,
+  //         implies_exprt(not_exprt(s), before(*w_it2, *w_it1)),
+  //         "ws-ext",
+  //         (*w_it1)->source);
+  //     }
+  //   }
+  // }
 }
 
 void memory_model_sct::from_read(symex_target_equationt &equation)

@@ -80,6 +80,8 @@ public:
     enable_overflow = options.get_bool_option("signed-overflow-check") || options.get_bool_option("unsigned-overflow-check");
     enable_alloc = options.get_bool_option("alloc-check");
     // __SZH_ADD_END__
+
+    enable_deadlock = options.get_bool_option("deadlock");
   }
 
   /// A virtual destructor allowing derived classes to be cleaned up correctly
@@ -185,6 +187,13 @@ public:
   value_sett overall_value_set;
   std::set<symbol_exprt> dynamic_objects;
   // __SZH_ADD_END__
+
+  // __WP_ADD_BEGIN__ for deadlock
+  bool enable_deadlock = false;
+  // void backtracing_for_deadlock(std::vector<symex_target_equationt::event_it>& locks_tuples,
+  //  std::map<unsigned, std::vector<symex_target_equationt::event_it>>::iterator it1, int& deadlock_assert_id);
+  void symex_deadlock();
+  // __WP_ADD_END__
 
   /// \brief Defines condition for interrupting symbolic execution for a
   ///   specific loop

@@ -1071,6 +1071,8 @@ inline bool has_prefix(std::string str)
   return str.find("[[") != str.npos || str.find("..") != str.npos;
 }
 
+#include <util/arith_tools.h>
+
 void goto_symext::symex_datarace(std::string filename)
 {
   target.enable_datarace = true;
@@ -1103,12 +1105,14 @@ void goto_symext::symex_datarace(std::string filename)
   // (such as arr#2[[0]] = arr#1[[0]], which means the 0th element just keeps the same)
 
   // used for Method1
-  std::map<std::string, exprt> index_map;
-  target.build_index_map(index_map);
+  std::map<std::string, std::pair<exprt, exprt>> byte_update_map;
+  target.build_byte_update_map(byte_update_map, ns);
+  std::map<std::string, exprt> with_map;
+  target.build_with_map(with_map, ns);
 
   // used for Method2
   std::map<std::string, exprt> available_cond_map;
-  target.build_available_cond_map(available_cond_map); 
+  target.build_available_cond_map(available_cond_map, ns);
 
   int race_assert_id = 0;
   for(auto& races_it : target.linenumbers_to_races)
@@ -1136,47 +1140,73 @@ void goto_symext::symex_datarace(std::string filename)
 
       std::string first_str = race.first->ssa_lhs.get_identifier().c_str();
       std::string second_str = race.second->ssa_lhs.get_identifier().c_str();
-      if(has_prefix(first_str))
+
+      // Method 1
+      if(byte_update_map.find(first_str) != byte_update_map.end() || byte_update_map.find(second_str) != byte_update_map.end())
       {
-        if(available_cond_map.find(first_str) != available_cond_map.end())
-          conds.push_back(available_cond_map[first_str]);
+        exprt first_index_from = from_integer(0, signedbv_typet(32));
+        exprt first_index_to = from_integer(target.get_byte_length(race.first->ssa_lhs), signedbv_typet(32));
+        if(byte_update_map.find(first_str) != byte_update_map.end())
+        {
+          first_index_from = byte_update_map[first_str].first;
+          first_index_to = byte_update_map[first_str].second;
+        }
+        exprt second_index_from = from_integer(0, signedbv_typet(32));
+        exprt second_index_to = from_integer(target.get_byte_length(race.second->ssa_lhs), signedbv_typet(32));
+        if(byte_update_map.find(second_str) != byte_update_map.end())
+        {
+          second_index_from = byte_update_map[second_str].first;
+          second_index_to = byte_update_map[second_str].second;
+        }
+
+        and_exprt overlap(greater_than_exprt(first_index_to, second_index_from), greater_than_exprt(second_index_to, first_index_from));
+        simplify(overlap, ns);
+
+        conds.push_back(overlap);
+      }
+      else if(with_map.find(first_str) != with_map.end() && with_map.find(second_str) != with_map.end())
+      {
+        auto& first_index = with_map[first_str];
+        auto& second_index = with_map[second_str];
+
+        equal_exprt equality(first_index, second_index);
+        simplify(equality, ns);
+
+        conds.push_back(equality);
+      }
+      else // Method 2
+      {
+        auto first_cond_it = available_cond_map.find(first_str);
+        if(first_cond_it != available_cond_map.end())
+          conds.push_back(first_cond_it->second);
         else
         {
-          std::cout << "\t" << first_str << " " << second_str << " (hidden)\n";
+          std::cout << "\t" << first_str << " " << second_str << "(hidden, because first is dummy)\n";
+          continue;
+        }
+        auto second_cond_it = available_cond_map.find(second_str);
+        if(second_cond_it != available_cond_map.end())
+          conds.push_back(second_cond_it->second);
+        else
+        {
+          std::cout << "\t" << first_str << " " << second_str << "(hidden, because second is dummy)\n";
           continue;
         }
       }
 
-      if(has_prefix(second_str))
-      {
-        if(available_cond_map.find(second_str) != available_cond_map.end())
-          conds.push_back(available_cond_map[second_str]);
-        else
-        {
-          std::cout << "\t" << first_str << " " << second_str << " (hidden)\n";
-          continue;
-        }
-      }
-
-      if(!has_prefix(first_str) && !has_prefix(second_str))
-      {
-        if(index_map.find(first_str) != index_map.end() && index_map.find(second_str) != index_map.end())
-        {
-          auto& first_index = index_map[first_str];
-          auto& second_index = index_map[second_str];
-          conds.push_back(equal_exprt(first_index, second_index));
-        }
-      }
-
-      std::cout << "\t" << first_str << " " << second_str << "\n";
-      
       // implies_exprt no_datarace(conjunction(conds), not_exprt(race_var));
       // same_races.push_back(no_datarace);
       same_races.push_back(not_exprt(race_var));
-      target.constraint(implies_exprt(race_var, conjunction(conds)), "", race.first->source);
+
+      auto cond = conjunction(conds);
+      simplify(cond, ns);
+      if(!cond.is_true())
+        target.constraint(implies_exprt(race_var, conjunction(conds)), "", race.first->source);
 
       target.numbered_dataraces.push_back(race);
       race_source = &(race.first->source);
+
+      std::cout << "\t" << first_str << " " << second_str << " with condition " << format(cond) << "\n";
     }
 
     if(same_races.empty())
@@ -1259,3 +1289,191 @@ void goto_symext::remove_dummy_accesses()
   target.remove_dummy_accesses();
 }
 // __SZH_ADD_END__
+
+
+// __WP_ADD_BEGIN__
+// void goto_symext::backtracing_for_deadlock(std::vector<symex_target_equationt::event_it>& locks_tuples,
+//  std::map<unsigned, std::vector<symex_target_equationt::event_it>>::iterator it1, int& deadlock_assert_id) {
+//   if(locks_tuples.size() >= 2) {
+//     std::string msg = "No deadlock on ";
+//     std::string assert_id = "nodeadlock.assertion." + std::to_string(deadlock_assert_id);
+//     deadlock_assert_id++;
+
+//     exprt::operandst lock_guard_tuples;
+//     for(auto& lock : locks_tuples) {
+
+//       // lock_guard_tuples.push_back(lock->guard);
+
+//       if (lock->guard.id() == ID_and) {
+//         // std::cout << "AND_______lock->guard: " << lock->guard.pretty() << "\n";
+//         // std::cout << "AND_______lock->guard.operands().back(): " << lock->guard.operands().back().pretty() << "\n";
+//         lock_guard_tuples.push_back(lock->guard.operands().back());
+//       }
+//       else {
+//         // std::cout << "NotAND____lock->guard: " << lock->guard.pretty() << "\n";
+//         lock_guard_tuples.push_back(lock->guard);
+//       }
+      
+//       msg += "variable ";
+//       msg += id2string(lock->ssa_lhs.get_identifier());
+//       msg += " in line ";
+//       msg += lock->source.pc->source_location().get_line().c_str();
+//       msg += ",";
+//     }
+//     msg.pop_back();
+//     msg += ".";
+
+//     stateless_vcc(disjunction(lock_guard_tuples), msg, assert_id, (*locks_tuples.begin())->source);
+//   }
+
+//   if(it1 == target.per_thread_locks.end())
+//     return;
+  
+//   // std::cout << "thread_id: " << it1->first << "\n";
+
+//   it1++;
+//   if (it1 != target.per_thread_locks.end())
+//     backtracing_for_deadlock(locks_tuples, it1, deadlock_assert_id);
+//   it1--;
+
+//   for(auto it2 = it1->second.begin(); it2 != it1->second.end(); it2++) {
+//     locks_tuples.push_back(*it2);
+//     it1++;
+//     backtracing_for_deadlock(locks_tuples, it1, deadlock_assert_id);
+//     it1--;
+//     locks_tuples.pop_back();
+//   }
+// }
+
+
+void goto_symext::symex_deadlock()
+{
+  std::cout << "Handling deadlock!\n";
+
+  target.build_deadlock();
+  // std::cout << "target.build_deadlock() over!\n";
+  // std::cout << "per_thread_locks:\n";
+
+  // int function_return_assert_id = 0;
+  // for(auto& event_return : target.function_returns) {
+  //   std::string msg = "No return-problem on function ";
+  //   msg += id2string(event_return->source.function_id);
+
+  //   std::string assert_id = "no-return-problem.assertion." + std::to_string(function_return_assert_id);
+  //   deadlock_assert_id++;
+
+  //   stateless_vcc(event_return->guard, msg, assert_id, event_return->source);
+  // }
+  exprt::operandst integrity_constraint;
+
+  for(auto& event_return : target.program_returns) {
+    integrity_constraint.push_back(boolean_negate(event_return->guard));
+  }
+
+  for(auto& event_assert : target.loop_asserts_in_critical) {
+    integrity_constraint.push_back(event_assert->cond_expr);
+    // std::cout << "event_assert->cond_expr.pretty(): " << event_assert->cond_expr.pretty() << "\n";
+  }
+
+  // std::cout << "integrity_constraint generate over!\n";
+
+  int deadlock_assert_id = 0;
+
+  for(auto& p : target.per_thread_lock_writes) {
+    // std::cout << "p.first:" << p.first << ":\n";
+    // std::cout << "p.second.size():" << p.second.size() << ":\n";
+    // std::cout << "target.per_thread_lock_begins[p.first].size():" << target.per_thread_lock_begins[p.first].size() << ":\n";
+
+    // bool is_single_lock_begin = true;
+    //   for(int i = 1; i < target.per_thread_lock_begins[p.first].size(); i++) {
+    //     if (target.per_thread_lock_begins[p.first][i] != target.per_thread_lock_begins[p.first][0])
+    //       is_single_lock_begin = false;
+    //   }
+    //   if (is_single_lock_begin)
+    //     continue;
+
+    for(unsigned i = 0; i < p.second.size(); i++) {
+
+      // std::cout << "p.second[" << i << "] starts!\n";
+
+      auto& lock_write = p.second[i];
+      // symex_target_equationt::event_it lock_begin;
+      // std::cout << "lock_write->guard: " << lock_write->guard.pretty() << "\n";
+      // if (i < target.per_thread_lock_begins[p.first].size()) {
+      //   lock_begin = target.per_thread_lock_begins[p.first][i];
+
+      //   // std::cout << "lock_begin->guard: " << lock_begin->guard.pretty() << "\n";
+
+      //   if (lock_write->guard == lock_begin->guard)
+      //     continue;
+      // }
+      
+      auto& lock_begin = target.per_thread_lock_begins[p.first][i];
+
+      if (lock_write->guard == lock_begin->guard)
+        continue;
+      // std::cout << "\nvar_name:" << lock_write->ssa_lhs.get_identifier()
+      // << "\nline:" << lock_write->source.pc->source_location().get_line().c_str()
+      // << "\nvar_guard:" << lock_write->guard.pretty() << "\n------\n";
+
+      exprt::operandst deadlock_error;
+
+      if (lock_write->guard.id() == ID_and) {
+        // std::cout << "AND_______lock_write->guard: " << lock_write->guard.pretty() << "\n";
+        // std::cout << "AND_______lock_write->guard.operands().back(): " << lock_write->guard.operands().back().pretty() << "\n";
+
+        deadlock_error.push_back(boolean_negate(lock_write->guard.operands().back()));
+
+        // if(lock_write->ssa_lhs.type().pretty().find("#typedef: pthread_mutex_t") != std::string::npos)
+        // int pos = lock_write->ssa_lhs.type().pretty().find("#typedef: pthread_mutex_t");
+        // std::cout << "lock_write->ssa_lhs.type():" << lock_write->ssa_lhs.type().pretty().at(pos) << "\n";
+
+        auto lock_guard = lock_write->guard;
+        lock_guard.operands().pop_back();
+
+        // std::cout << "AND_______lock_guard: " << lock_guard.pretty() << "\n";
+
+        deadlock_error.push_back(lock_guard);
+
+        std::string msg = "No deadlock on variable ";
+        msg += id2string(lock_write->ssa_lhs.get_identifier());
+
+        std::string assert_id = "nodeadlock.assertion." + std::to_string(deadlock_assert_id);
+        deadlock_assert_id++;
+
+        stateless_vcc(boolean_negate(make_and(conjunction(deadlock_error), conjunction(integrity_constraint))), msg, assert_id, lock_write->source);
+      }
+      else {
+        // std::cout << "The lock_write's guard is NotAND, then the lock's guard is True!!!\n";
+
+        deadlock_error.push_back(boolean_negate(lock_write->guard));
+
+        // std::cout << "The deadlock_error is done!\n";
+
+        std::string msg = "No deadlock on variable ";
+        msg += id2string(lock_write->ssa_lhs.get_identifier());
+
+        std::string assert_id = "nodeadlock.assertion." + std::to_string(deadlock_assert_id);
+        deadlock_assert_id++;
+
+        // std::cout << "The preparation of vcc is over!\n";
+
+        stateless_vcc(boolean_negate(make_and(conjunction(deadlock_error), conjunction(integrity_constraint))), msg, assert_id, lock_write->source);
+
+        // std::cout << "The vcc is done!\n";
+      }
+
+      // std::cout << "p.second[" << i << "] is done!\n";
+    }
+
+  }
+
+  // std::cout << "The symex_deadlock is done!\n";
+  
+  // int deadlock_assert_id = 0;
+  // std::vector<symex_target_equationt::event_it> locks_tuples;
+  // std::map<unsigned, std::vector<symex_target_equationt::event_it>>::iterator it1 = target.per_thread_locks.begin();
+  // backtracing_for_deadlock(locks_tuples, it1, deadlock_assert_id);
+}
+
+// __WP_ADD_END__

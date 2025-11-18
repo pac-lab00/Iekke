@@ -41,12 +41,18 @@ public:
   void add_oc_edge(symex_target_equationt &equation, std::string e1_str, std::string e2_str, std::string kind, exprt guard_expr);
 
   void add_oc_label(symex_target_equationt &equation, event_it e, std::string label, exprt guard_expr);
+  void add_oc_label(symex_target_equationt &equation, std::string e_str, std::string label, exprt guard_expr);
+
   std::string fill_name(const event_it& event);
 
   bool enable_datarace;
   void data_race(symex_target_equationt &equation);
   exprt array_find_index(symex_target_equationt &equation, event_it event);
   // __SZH_ADD_END__
+
+  // __WP_ADD_BEGIN__
+  bool enable_deadlock;
+  // __WP_ADD_END__
 
 protected:
   /// In-thread program order

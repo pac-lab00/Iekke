@@ -21,8 +21,6 @@ void memory_model_generalt::operator()(symex_target_equationt &equation, message
     build_event_lists(equation, message_handler);
     build_clock_type();
 
-    remove_atomic_typecast(equation);
-
     build_labels(equation);
     build_lkmm_nesting(equation);
     build_loc(equation);
@@ -41,17 +39,11 @@ void memory_model_generalt::operator()(symex_target_equationt &equation, message
 
     build_lkmm_crit(equation);
 
-    // calculate must may sets
-    must_may_calculator = must_may_calculatort(cat, equation.oc_edges, equation.oc_labels);
-    must_may_calculator.calculate();
-    cat.unary_musts = must_may_calculator.unary_musts;
-    cat.unary_mays = must_may_calculator.unary_mays;
-    cat.binary_musts = must_may_calculator.binary_musts;
-    cat.binary_mays = must_may_calculator.binary_mays;
-
-    cat.recursion_simulation();
-    cat.build_propagate_map_all();
-    build_free(equation);
+    if(enable_cutting && really_need_cutting())
+    {
+        build_cutting(equation);
+        cat.remove_cut_propagate_edges();
+    }
 
     equation.cat = cat;
     equation.use_cat = true;
@@ -94,15 +86,26 @@ void memory_model_generalt::add_necessary_oc_edge(symex_target_equationt &equati
     add_oc_edge(equation, e1_str, e2_str, kind, guard_expr);
 }
 
-void memory_model_generalt::add_necessary_oc_label(symex_target_equationt &equation, event_it e, std::string label)
+void memory_model_generalt::add_necessary_oc_label(symex_target_equationt &equation, event_it e, std::string label, exprt guard_expr)
+{
+    if(guard_expr == true_exprt() && strict_guard)
+        guard_expr = simplify_expr(e->guard, ns);
+
+    add_necessary_oc_label(equation, get_name(e), label, guard_expr);
+}
+
+void memory_model_generalt::add_necessary_oc_label(symex_target_equationt &equation, std::string e_str, std::string label, exprt guard_expr)
 {
     if(cat.unary_relations.find(label) == cat.unary_relations.end())
         return;
 
-    if(strict_guard)
-        add_oc_label(equation, e, label, simplify_expr(e->guard, ns));
-    else
-        add_oc_label(equation, e, label, true_exprt());
+    if(guard_expr == true_exprt() && strict_guard)
+    {
+        if(id_to_guard.find(e_str) != id_to_guard.end())
+            guard_expr = simplify_expr(id_to_guard[e_str], ns);
+    }
+
+    add_oc_label(equation, e_str, label, guard_expr);
 }
 
 void memory_model_generalt::add_apo(symex_target_equationt &equation, event_it e1, event_it e2, std::set<event_it>& added_rmw_labels)
@@ -111,51 +114,16 @@ void memory_model_generalt::add_apo(symex_target_equationt &equation, event_it e
     if(added_rmw_labels.find(e1) == added_rmw_labels.end())
     {
         added_rmw_labels.insert(e1);
-        add_necessary_oc_label(equation, e1, "RMW");
+        add_necessary_oc_label(equation, e1, "RMW", true_exprt());
         if(e1->is_shared_write())
-            add_necessary_oc_label(equation, e1, "STRONG");
+            add_necessary_oc_label(equation, e1, "STRONG", true_exprt());
     }
     if(added_rmw_labels.find(e2) == added_rmw_labels.end())
     {
         added_rmw_labels.insert(e2);
-        add_necessary_oc_label(equation, e2, "RMW");
+        add_necessary_oc_label(equation, e2, "RMW", true_exprt());
         if(e2->is_shared_write())
-            add_necessary_oc_label(equation, e2, "STRONG");
-    }
-}
-
-void memory_model_generalt::build_free(symex_target_equationt &equation)
-{
-    std::vector<event_it> shared_events;
-    for(eventst::const_iterator e_it=equation.SSA_steps.begin(); e_it!=equation.SSA_steps.end(); e_it++)
-        if(e_it->is_shared_read() || e_it->is_shared_write() || e_it->is_memory_barrier() || e_it->is_spawn())
-            shared_events.push_back(e_it);
-
-    for(auto& free_relation : cat.free_relations)
-    {
-        if(free_relation.substr(free_relation.size() - 6) == "_prime")
-        {
-            std::string original_relation = free_relation.substr(0, free_relation.size() - 6);
-            auto& may_set = cat.binary_mays[original_relation];
-            cat.binary_mays[free_relation] = may_set;
-            for(auto may_edge : may_set)
-            {
-                std::string free_var_name = "free_" + free_relation + "_" + may_edge.first + "_" + may_edge.second;
-                symbol_exprt free_var(free_var_name, bool_typet());
-                add_necessary_oc_edge(equation, may_edge.first, may_edge.second, free_relation, free_var);
-            }
-            std::cout << free_relation << "'s original version is " << original_relation << "\n";
-        }
-        else
-        {
-            for(int n1 = 0; n1 < int(shared_events.size()); n1++)
-                for(int n2 = 0; n2 < int(shared_events.size()); n2++)
-                {
-                    std::string free_var_name = "free_" + free_relation + "_" + std::to_string(n1) + "_" + std::to_string(n2);
-                    symbol_exprt free_var(free_var_name, bool_typet());
-                    add_necessary_oc_edge(equation, shared_events[n1], shared_events[n2], free_relation, free_var);
-                }
-        }
+            add_necessary_oc_label(equation, e2, "STRONG", true_exprt());
     }
 }
 
@@ -199,23 +167,23 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
     {
         if(e_it->is_shared_read())
         {
-            add_necessary_oc_label(equation, e_it, "R");
-            add_necessary_oc_label(equation, e_it, "M");
-            add_necessary_oc_label(equation, e_it, "_");
+            add_necessary_oc_label(equation, e_it, "R", true_exprt());
+            add_necessary_oc_label(equation, e_it, "M", true_exprt());
+            add_necessary_oc_label(equation, e_it, "_", true_exprt());
         }
         else if(e_it->is_shared_write())
         {
-            add_necessary_oc_label(equation, e_it, "W");
-            add_necessary_oc_label(equation, e_it, "M");
-            add_necessary_oc_label(equation, e_it, "_");
+            add_necessary_oc_label(equation, e_it, "W", true_exprt());
+            add_necessary_oc_label(equation, e_it, "M", true_exprt());
+            add_necessary_oc_label(equation, e_it, "_", true_exprt());
             if(e_it->is_init())
-                add_necessary_oc_label(equation, e_it, "IW");
+                add_necessary_oc_label(equation, e_it, "IW", true_exprt());
         }
         else if(e_it->is_memory_barrier())
         {
-            add_necessary_oc_label(equation, e_it, "F");
-            add_necessary_oc_label(equation, e_it, "~M");
-            add_necessary_oc_label(equation, e_it, "_");
+            add_necessary_oc_label(equation, e_it, "F", true_exprt());
+            add_necessary_oc_label(equation, e_it, "~M", true_exprt());
+            add_necessary_oc_label(equation, e_it, "_", true_exprt());
 
             // Here we model sync/lwsync/isync as fences: Fsync, Flwsync, Fisync.
             // Binary sync relations are modeled as:
@@ -225,11 +193,11 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
             // Please manually add those definitions into cat modules.
             std::string function_id = e_it->source.function_id.c_str();
             if(function_id == "fence" || function_id == "sync")
-                add_necessary_oc_label(equation, e_it, "Fsync");
+                add_necessary_oc_label(equation, e_it, "Fsync", true_exprt());
             if(function_id == "lwfence" || function_id == "lwsync")
-                add_necessary_oc_label(equation, e_it, "Flwsync");
+                add_necessary_oc_label(equation, e_it, "Flwsync", true_exprt());
             if(function_id == "isync")
-                add_necessary_oc_label(equation, e_it, "Fisync");
+                add_necessary_oc_label(equation, e_it, "Fisync", true_exprt());
         }
 
         bool is_c11 = false;
@@ -238,9 +206,12 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
 
         if(e_it->is_shared_write())
         {
-            if(function_id == "__atomic_store" || function_id == "__atomic_store_n")
+            if(function_id.find("__atomic_store") != std::string::npos ||
+                function_id.find("__atomic_fetch") != std::string::npos ||
+                function_id.find("__atomic_exchange") != std::string::npos ||
+                function_id.find("__atomic_compare_exchange") != std::string::npos)
             {
-                add_necessary_oc_label(equation, e_it, "A");
+                add_necessary_oc_label(equation, e_it, "A", true_exprt());
                 is_c11 = true;
             }
             if(function_id == "__LKMM_STORE")
@@ -249,9 +220,12 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
 
         if(e_it->is_shared_read())
         {
-            if(function_id == "__atomic_load" || function_id == "__atomic_load_n")
+            if(function_id.find("__atomic_load") != std::string::npos ||
+                function_id.find("__atomic_fetch") != std::string::npos ||
+                function_id.find("__atomic_exchange") != std::string::npos ||
+                function_id.find("__atomic_compare_exchange") != std::string::npos)
             {
-                add_necessary_oc_label(equation, e_it, "A");
+                add_necessary_oc_label(equation, e_it, "A", true_exprt());
                 is_c11 = true;
             }
             if(function_id == "__LKMM_LOAD")
@@ -262,7 +236,7 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
         {
             if(function_id == "__atomic_thread_fence")
             {
-                add_necessary_oc_label(equation, e_it, "A");
+                add_necessary_oc_label(equation, e_it, "A", true_exprt());
                 is_c11 = true;
             }
             if(function_id == "__LKMM_FENCE")
@@ -279,7 +253,8 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
                 auto rhs = e_it2->ssa_rhs;
                 std::string lhs_id = lhs.get_identifier().c_str();
                 auto& mos = is_c11 ? c11_mos : lkmm_mos; // assume not both!
-                if(lhs_id.find(function_id + "::memorder") != std::string::npos && rhs.id() == ID_constant)
+
+                if(lhs_id.find("::memorder") != std::string::npos && lhs_id.find(function_id) != std::string::npos && rhs.id() == ID_constant)
                 {
                     int mo = string2integer(rhs.get_string(ID_value), 16).to_long();
                     if(mo < 0 || mo >= int(mos.size()))
@@ -287,7 +262,20 @@ void memory_model_generalt::build_labels(symex_target_equationt& equation)
                         std::cout << "ERROR: Unsupported memorder " << mo << "\n";
                         std::exit(255);
                     }
-                    add_necessary_oc_label(equation, e_it, mos[mo]);
+
+                    std::string mo_label = mos[mo];
+                    if(is_c11)
+                    {
+                        if(e_it->is_shared_write() && mo_label == "ACQ_REL")
+                            mo_label = "REL";
+                        if(e_it->is_shared_write() && mo_label == "ACQ")
+                            mo_label = "RLX";
+                        if(e_it->is_shared_read() && mo_label == "ACQ_REL")
+                            mo_label = "ACQ";
+                        if(e_it->is_shared_read() && mo_label == "REL")
+                            mo_label = "RLX";
+                    }
+                    add_necessary_oc_label(equation, e_it, mo_label, true_exprt());
 
                     if(mos[mo] == "Rcu-lock")
                         lkmm_locks.push_back(e_it);
@@ -341,16 +329,16 @@ void memory_model_generalt::build_lkmm_nesting(symex_target_equationt &equation)
         }
 
         if(in_spin_lock && e_it->is_shared_read())
-            add_necessary_oc_label(equation, e_it, "LKR");
+            add_necessary_oc_label(equation, e_it, "LKR", true_exprt());
         if(in_spin_lock && e_it->is_shared_write())
-            add_necessary_oc_label(equation, e_it, "LKW");
+            add_necessary_oc_label(equation, e_it, "LKW", true_exprt());
         if(in_spin_unlock && (e_it->is_shared_write() || e_it->is_shared_read()))
-            add_necessary_oc_label(equation, e_it, "UL");
+            add_necessary_oc_label(equation, e_it, "UL", true_exprt());
 
         if(in_atomic_op && e_it->is_shared_read())
-            add_necessary_oc_label(equation, e_it, "Noreturn");
+            add_necessary_oc_label(equation, e_it, "Noreturn", true_exprt());
         else if(e_it->is_shared_read() || e_it->is_shared_write() || e_it->is_memory_barrier())
-            add_necessary_oc_label(equation, e_it, "~Noreturn");
+            add_necessary_oc_label(equation, e_it, "~Noreturn", true_exprt());
     }
 }
 
@@ -447,7 +435,9 @@ bool memory_model_generalt::is_mm_apo(event_it e1, event_it e2)
         return false;
     if(!e2->is_shared_read() && !e2->is_shared_write())
         return false;
-    if(id2string(e1->ssa_lhs.get_original_name()) != id2string(e2->ssa_lhs.get_original_name()))
+    auto e1_original_name = remove_level_2(e1->ssa_lhs).get_identifier();
+    auto e2_original_name = remove_level_2(e2->ssa_lhs).get_identifier();
+    if(e1_original_name != e2_original_name)
         return false;
     return is_apo(e1, e2);
 }
@@ -580,9 +570,9 @@ void memory_model_generalt::build_po(symex_target_equationt &equation)
                 continue;
             auto str = get_name(*e_it);
             if(str.find("__CPROVER") != std::string::npos && added_rmw_labels.find(*e_it) == added_rmw_labels.end())
-                add_necessary_oc_label(equation, *e_it, "RMW");
+                add_necessary_oc_label(equation, *e_it, "RMW", true_exprt());
             if(str.find("__CPROVER") != std::string::npos)
-                add_necessary_oc_label(equation, *e_it, "A");
+                add_necessary_oc_label(equation, *e_it, "A", true_exprt());
         }
     }
 }
@@ -836,430 +826,52 @@ void memory_model_generalt::build_lkmm_crit(symex_target_equationt &equation)
                 add_necessary_oc_edge(equation, lkmm_lock, lkmm_unlock, "rcu-rscs", true_exprt());
 }
 
-#include <util/format_expr.h>
-#include <util/bitvector_types.h>
-#include <util/byte_operators.h>
+#include "memory_model_general_cutter.h"
 
-void remove_double_typecast_single(exprt& expr, const namespacet& ns) // in place
+bool memory_model_generalt::really_need_cutting()
 {
-    bool outside_is_cast = (expr.id() == ID_typecast);
-    if(!outside_is_cast)
-        return;
+    for(auto relation : cat.need_cutting_relations)
+        if(cat.base_relations.find(relation) == cat.base_relations.end())
+            return true;
+    std::cout << "No need for cutting\n";
+    return false;
+}
 
-    int offset = 0;
-    bool inside_is_cast_to_empty = (expr.op0().id() == ID_typecast) && (expr.op0().type().id() == ID_empty);
-    bool inside_is_extract_to_empty = (expr.op0().id() == ID_byte_extract_little_endian) && (expr.op0().type().id() == ID_empty);
-    if(!inside_is_cast_to_empty && !inside_is_extract_to_empty)
-        return;
+void memory_model_generalt::build_cutting(symex_target_equationt &equation)
+{
+    cuttert cutter(cat, equation.oc_edges, equation.oc_labels);
+    cutter.analyze_sets();
 
-    auto source_expr = expr.op0().op0();
-    auto source_type = source_expr.type();
-    auto target_type = expr.type();
-
-    std::cout << "Converting from " << format(expr);
-
-    if(source_type == target_type && offset == 0) // source_type and target_type are identical, easy!
-        expr = source_expr;
-    else if(inside_is_cast_to_empty)
-        expr = typecast_exprt(source_expr, target_type);
-    else if(inside_is_extract_to_empty)
+    // build base variables for each relation being cut
+    for(auto relation : cat.need_cutting_relations)
     {
-        auto offset_expr = expr.op0().op1();
-        expr = byte_extract_exprt(ID_byte_extract_little_endian, source_expr, offset_expr, target_type);
-    }
-    std::cout << " to " << format(expr) << "\n";
-}
-
-void remove_double_typecast_rec(exprt& expr, const namespacet& ns)
-{
-    remove_double_typecast_single(expr, ns);
-    for(auto& operand : expr.operands())
-        remove_double_typecast_rec(operand, ns);
-}
-
-void remove_empty_typecast_single(exprt& expr)
-{
-    if(expr.id() != ID_typecast)
-        return;
-
-    auto source_expr = expr.op0();
-    auto target_type = expr.type();
-    if(target_type.id() == ID_empty)
-    {
-        std::cout << "Converting from " << format(expr) << " to " << format(source_expr) << "\n";
-        expr = source_expr;
-    }
-}
-
-void remove_empty_typecast_rec(exprt& expr)
-{
-    remove_empty_typecast_single(expr);
-    for(auto& operand : expr.operands())
-        remove_empty_typecast_rec(operand);
-}
-
-void memory_model_generalt::remove_atomic_typecast(symex_target_equationt &equation)
-{
-    for(auto& step : equation.SSA_steps)
-    {
-        if(!step.is_assignment())
+        if(cat.base_relations.find(relation) != cat.base_relations.end())
             continue;
 
-        remove_double_typecast_rec(step.ssa_rhs, ns);
-        remove_empty_typecast_rec(step.ssa_rhs);
-        step.cond_expr.op1() = step.ssa_rhs;
-    }
-}
-
-void must_may_calculatort::back_to_str()
-{
-    for(auto& unary_pair : int_unary_musts)
-    {
-        auto& kind = unary_pair.first;
-        auto& int_unary_set = unary_pair.second;
-        for(auto id : int_unary_set)
-            unary_musts[kind].insert(id2str[id]);
-    }
-    for(auto& unary_pair : int_unary_mays)
-    {
-        auto& kind = unary_pair.first;
-        auto& int_unary_set = unary_pair.second;
-        for(auto id : int_unary_set)
-            unary_mays[kind].insert(id2str[id]);
-    }
-    for(auto& binary_pair : int_binary_musts)
-    {
-        auto& kind = binary_pair.first;
-        auto& int_binary_set = binary_pair.second;
-        for(auto pair : int_binary_set)
-            binary_musts[kind].insert(std::make_pair(id2str[pair.first], id2str[pair.second]));
-    }
-    for(auto& binary_pair : int_binary_mays)
-    {
-        auto& kind = binary_pair.first;
-        auto& int_binary_set = binary_pair.second;
-        for(auto pair : int_binary_set)
-            binary_mays[kind].insert(std::make_pair(id2str[pair.first], id2str[pair.second]));
-    }
-}
-
-void must_may_calculatort::calculate()
-{
-    build_scc();
-    build_topological();
-    calculate_sets();
-    back_to_str();
-
-    // for(auto unary_relation_name : cat.unary_relations)
-    // {
-    //     std::cout << unary_relation_name << " is unary, with must set:\n";
-    //     for(auto label : unary_musts[unary_relation_name])
-    //         std::cout << label << " ";
-    //     std::cout << "\n";
-    //     std::cout << unary_relation_name << " is unary, with may set:\n";
-    //     for(auto label : unary_mays[unary_relation_name])
-    //         std::cout << label << " ";
-    //     std::cout << "\n";
-    // }
-    // for(auto binary_relation_name : cat.binary_relations)
-    // {
-    //     std::cout << binary_relation_name << " is binary, with must set:\n";
-    //     for(auto edge : binary_musts[binary_relation_name])
-    //         std::cout << "(" << edge.first << ", " << edge.second << ") ";
-    //     std::cout << "\n";
-    //     std::cout << binary_relation_name << " is binary, with may set:\n";
-    //     for(auto edge : binary_mays[binary_relation_name])
-    //         std::cout << "(" << edge.first << ", " << edge.second << ") ";
-    //     std::cout << "\n";
-    // }
-}
-
-void must_may_calculatort::tarjan(std::string kind, std::stack<std::string>& stack, std::map<std::string, bool>& in_stack, std::map<std::string, int>& dfn, std::map<std::string, int>& low, int& count)
-{
-    count++;
-    dfn[kind] = low[kind] = count;
-    stack.push(kind);
-    in_stack[kind] = true;
-
-    auto& edges = cat.get_relation_from_name(kind).operands;
-    for(auto next_relation : edges)
-    {
-        if(dfn.find(next_relation) == dfn.end() || !dfn[next_relation])
+        // only build variables for derived relations
+        int relation_id = cutter.kind_str2id[relation];
+        if(cat.get_arity(relation) == 1)
         {
-            tarjan(next_relation, stack, in_stack, dfn, low, count);
-            low[kind] = std::min(low[kind], low[next_relation]);
-        }
-        else if(in_stack.find(next_relation) != in_stack.end() && in_stack[next_relation])
-            low[kind] = std::min(low[kind], dfn[next_relation]);
-    }
-    if(dfn[kind] == low[kind])
-    {
-        std::vector<std::string> scc;
-        std::string k;
-        do {
-            k = stack.top();
-            scc.push_back(k);
-            stack.pop();
-            in_stack[k] = false;
-        } while(k != kind);
-        int scc_id = sccs.size();
-        sccs.push_back(scc);
-        for(auto kind : scc)
-            kind_to_scc_id[kind] = scc_id;
-    }
-}
-
-void must_may_calculatort::build_scc()
-{
-    int count = 0;
-    std::stack<std::string> stack;
-    std::map<std::string, bool> in_stack;
-    std::map<std::string, int> dfn, low;
-    for(auto unary_relation : cat.unary_relations)
-    {
-        if(dfn.find(unary_relation) == dfn.end())
-            tarjan(unary_relation, stack, in_stack, dfn, low, count);
-    }
-    for(auto binary_relation : cat.binary_relations)
-    {
-        if(dfn.find(binary_relation) == dfn.end())
-            tarjan(binary_relation, stack, in_stack, dfn, low, count);
-    }
-}
-
-void must_may_calculatort::build_topological()
-{
-    std::vector<std::set<int>> forward_edges;
-    std::vector<int> in_degrees;
-    forward_edges.resize(sccs.size());
-    in_degrees.resize(sccs.size());
-
-    for(auto relation_name : cat.necessary_relations)
-    {
-        auto& relation = cat.get_relation_from_name(relation_name);
-        for(auto operand : relation.operands)
-        {
-            int from_scc_id = kind_to_scc_id[operand];
-            int to_scc_id = kind_to_scc_id[relation_name];
-            if(from_scc_id == to_scc_id)
-                continue;
-            auto insert_result = forward_edges[from_scc_id].insert(to_scc_id);
-            if(insert_result.second)
-                in_degrees[to_scc_id]++;
-        }
-    }
-
-    std::vector<int> zero_in_degree_items;
-    for(int scc_id = 0; scc_id < int(sccs.size()); scc_id++)
-        if(in_degrees[scc_id] == 0)
-            zero_in_degree_items.push_back(scc_id);
-
-    while(!zero_in_degree_items.empty())
-    {
-        int from_scc_id = zero_in_degree_items.back();
-        sorted_scc_ids.push_back(from_scc_id);
-        zero_in_degree_items.pop_back();
-
-        for(int to_scc_id : forward_edges[from_scc_id])
-        {
-            in_degrees[to_scc_id]--;
-            if(in_degrees[to_scc_id] <= 0)
-                zero_in_degree_items.push_back(to_scc_id);
-        }
-    }
-}
-
-#include <algorithm>
-
-template<typename T> void must_may_calculatort::calc_union(const std::vector<T>& left, const std::vector<T>& right, std::vector<T>& result)
-{
-    std::set<T> left_set(left.begin(), left.end());
-    std::set<T> right_set(right.begin(), right.end());
-    std::set<T> result_set(result.begin(), result.end());
-    std::set_union(left_set.begin(), left_set.end(), right_set.begin(), right_set.end(), std::inserter(result_set, result_set.begin()));
-    result.assign(result_set.begin(), result_set.end());
-}
-
-template<typename T> void must_may_calculatort::calc_intersection(const std::vector<T>& left, const std::vector<T>& right, std::vector<T>& result)
-{
-    std::set<T> left_set(left.begin(), left.end());
-    std::set<T> right_set(right.begin(), right.end());
-    std::set<T> result_set(result.begin(), result.end());
-    std::set_intersection(left_set.begin(), left_set.end(), right_set.begin(), right_set.end(), std::inserter(result_set, result_set.begin()));
-    result.assign(result_set.begin(), result_set.end());
-}
-
-template<typename T> void must_may_calculatort::calc_difference(const std::vector<T>& left, const std::vector<T>& right, std::vector<T>& result)
-{
-    std::set<T> left_set(left.begin(), left.end());
-    std::set<T> right_set(right.begin(), right.end());
-    std::set<T> result_set(result.begin(), result.end());
-    std::set_difference(left.begin(), left.end(), right.begin(), right.end(), std::inserter(result_set, result_set.begin()));
-    result.assign(result_set.begin(), result_set.end());
-}
-
-void must_may_calculatort::calc_composition(const int_binary_sett& left, const int_binary_sett& right, int_binary_sett& result)
-{
-    std::set<std::pair<int, int>> result_set(result.begin(), result.end());
-    for(auto left_edge : left)
-        for(auto right_edge : right)
-            if(left_edge.second == right_edge.first)
-                result_set.insert(std::make_pair(left_edge.first, right_edge.second));
-    result.assign(result_set.begin(), result_set.end());
-}
-
-void must_may_calculatort::calc_product(const int_unary_sett& left, const int_unary_sett& right, int_binary_sett& result)
-{
-    result.clear();
-    for(auto left_label : left)
-        for(auto right_label : right)
-            result.push_back(std::make_pair(left_label, right_label));
-}
-
-void must_may_calculatort::calc_bracket(const int_unary_sett& source, int_binary_sett& result)
-{
-    result.clear();
-    for(auto label : source)
-        result.push_back(std::make_pair(label, label));
-}
-
-void must_may_calculatort::calc_flip(const int_binary_sett& source, int_binary_sett& result)
-{
-    result.clear();
-    for(auto edge : source)
-        result.push_back(std::make_pair(edge.second, edge.first));
-}
-
-void must_may_calculatort::calc_transitive_closure(const int_binary_sett& source, int_binary_sett& result)
-{
-    int result_size_before = 0;
-    do
-    {
-        result_size_before = result.size();
-        calc_composition(source, source, result);
-    } while (result_size_before < int(result.size()));
-}
-
-void must_may_calculatort::calculate_single_kind(std::string kind, int arity)
-{
-    std::cout << "calculate the must may set of " << kind << "\n";
-
-    auto relation = cat.get_relation_from_name(kind);
-    switch(relation.op_type)
-    {
-    case ALT:
-        if(arity == 1)
-        {
-            calc_union(int_unary_musts[relation.operands[0]], int_unary_musts[relation.operands[1]], int_unary_musts[kind]);
-            calc_union(int_unary_mays[relation.operands[0]], int_unary_mays[relation.operands[1]], int_unary_mays[kind]);
-        }
-        if(arity == 2)
-        {
-            calc_union(int_binary_musts[relation.operands[0]], int_binary_musts[relation.operands[1]], int_binary_musts[kind]);
-            calc_union(int_binary_mays[relation.operands[0]], int_binary_mays[relation.operands[1]], int_binary_mays[kind]);
-        }
-        break;
-    case SEQ:
-        calc_composition(int_binary_musts[relation.operands[0]], int_binary_musts[relation.operands[1]], int_binary_musts[kind]);
-        calc_composition(int_binary_mays[relation.operands[0]], int_binary_mays[relation.operands[1]], int_binary_mays[kind]);
-        break;
-    case AND:
-        if(arity == 1)
-        {
-            calc_intersection(int_unary_musts[relation.operands[0]], int_unary_musts[relation.operands[1]], int_unary_musts[kind]);
-            calc_intersection(int_unary_mays[relation.operands[0]], int_unary_mays[relation.operands[1]], int_unary_mays[kind]);
-        }
-        if(arity == 2)
-        {
-            calc_intersection(int_binary_musts[relation.operands[0]], int_binary_musts[relation.operands[1]], int_binary_musts[kind]);
-            calc_intersection(int_binary_mays[relation.operands[0]], int_binary_mays[relation.operands[1]], int_binary_mays[kind]);
-        }
-        break;
-    case SUB:
-        if(arity == 1)
-        {
-            calc_difference(int_unary_musts[relation.operands[0]], int_unary_mays[relation.operands[1]], int_unary_musts[kind]);
-            calc_difference(int_unary_mays[relation.operands[0]], int_unary_musts[relation.operands[1]], int_unary_mays[kind]);
-        }
-        if(arity == 2)
-        {
-            calc_difference(int_binary_musts[relation.operands[0]], int_binary_mays[relation.operands[1]], int_binary_musts[kind]);
-            calc_difference(int_binary_mays[relation.operands[0]], int_binary_musts[relation.operands[1]], int_binary_mays[kind]);
-        }
-        break;
-    case PROD:
-        calc_product(int_unary_musts[relation.operands[0]], int_unary_musts[relation.operands[1]], int_binary_musts[kind]);
-        calc_product(int_unary_mays[relation.operands[0]], int_unary_mays[relation.operands[1]], int_binary_mays[kind]);
-        break;
-    case BRACKET:
-        calc_bracket(int_unary_musts[relation.operands[0]], int_binary_musts[kind]);
-        calc_bracket(int_unary_mays[relation.operands[0]], int_binary_mays[kind]);
-        break;
-    case FLIP:
-        calc_flip(int_binary_musts[relation.operands[0]], int_binary_musts[kind]);
-        calc_flip(int_binary_mays[relation.operands[0]], int_binary_mays[kind]);
-        break;
-    case PLUS:
-        calc_transitive_closure(int_binary_musts[relation.operands[0]], int_binary_musts[kind]);
-        calc_transitive_closure(int_binary_mays[relation.operands[0]], int_binary_mays[kind]);
-        break;
-    case TERMINAL:
-        if(arity == 1)
-        {
-            if(int_unary_musts.find(kind) == int_unary_musts.end())
-                int_unary_musts[kind] = int_unary_sett();
-            if(int_unary_mays.find(kind) == int_unary_mays.end())
-                int_unary_mays[kind] = int_unary_sett();
-        }
-        if(arity == 2)
-        {
-            if(int_binary_musts.find(kind) == int_binary_musts.end())
-                int_binary_musts[kind] = int_binary_sett();
-            if(int_binary_mays.find(kind) == int_binary_mays.end())
-                int_binary_mays[kind] = int_binary_sett();
-        }
-    default:
-        break;
-    }
-}
-
-void must_may_calculatort::calculate_sets()
-{
-    for(auto scc_id : sorted_scc_ids)
-    {
-        auto& scc = sccs[scc_id];
-
-        bool need_must_may_set = false;
-        for(auto kind : scc)
-            if(cat.need_must_may_set_relations.find(kind) != cat.need_must_may_set_relations.end())
+            for(int node_id : cutter.unary_mays[relation_id].elements)
             {
-                need_must_may_set = true;
-                break;
+                symbol_exprt bv = nondet_bool_symbol(relation);
+                add_necessary_oc_label(equation, cutter.node_id2str[node_id], relation, bv);
             }
-        if(!need_must_may_set)
-            continue;
-
-        if(scc.size() == 1) // not recursive
-        {
-            auto kind = scc[0];
-            calculate_single_kind(kind, cat.get_arity(kind));
         }
-        else
+        if(cat.get_arity(relation) == 2)
         {
-            bool changed = false;
-            do
+            for(auto node_ids : cutter.binary_mays[relation_id].elements)
             {
-                changed = false;
-                for(auto& kind : scc)
-                {
-                    int original_total_size = int_unary_musts[kind].size() + int_unary_mays[kind].size() + int_binary_musts[kind].size() + int_binary_mays[kind].size();
-                    calculate_single_kind(kind, cat.get_arity(kind));
-                    int new_total_size = int_unary_musts[kind].size() + int_unary_mays[kind].size() + int_binary_musts[kind].size() + int_binary_mays[kind].size();
-                    if(new_total_size > original_total_size)
-                        changed = true;
-                }
-            } while (changed);
-            
+                symbol_exprt bv = nondet_bool_symbol(relation);
+                add_necessary_oc_edge(equation, cutter.node_id2str[node_ids.first], cutter.node_id2str[node_ids.second], relation, bv);
+            }
         }
+    }
+
+    cutter.generate_cutting_constraints(equation.oc_edges, equation.oc_labels);
+
+    for(auto& constraint : cutter.cutting_constraints)
+    {
+        add_constraint(equation, constraint, "cutting", equation.SSA_steps.begin()->source);
     }
 }

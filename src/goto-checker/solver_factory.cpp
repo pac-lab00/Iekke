@@ -218,12 +218,22 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
   if(options.get_bool_option("cat"))
   {
     solver->set_prop(make_satcheck_prop<memory_model_solvert>(message_handler, options));
-    std::cout << "Deagle's memory model solver is set!!!!!!\n";
+    std::cout << "Use Deagle's memory model solver\n";
   }
-  else if(options.get_bool_option("deagle"))
+  else if(options.get_bool_option("deagle-closure"))
   {
-    solver->set_prop(make_satcheck_prop<deagle_solvert>(message_handler, options));
-    std::cout << "Deagle's solver is set!!!!!!\n";
+    solver->set_prop(make_satcheck_prop<deagle_closure_solvert>(message_handler, options));
+    std::cout << "Use Deagle's closure solver\n";
+  }
+  else if(options.get_bool_option("deagle-icd"))
+  {
+    solver->set_prop(make_satcheck_prop<deagle_icd_solvert>(message_handler, options));
+    std::cout << "Use Deagle's ICD solver\n";
+  }
+  else if(options.get_bool_option("deagle-segment"))
+  {
+    solver->set_prop(make_satcheck_prop<deagle_segment_solvert>(message_handler, options));
+    std::cout << "Use Deagle's segment solver\n";
   }
   // __SZH_ADD_END__
   else if(
@@ -580,14 +590,23 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
   }
 
   // __SZH_ADD_BEGIN__ : default
-  if(cmdline.isset("deagle") || !solver_set)
-    options.set_option("deagle", true);
+  if(cmdline.isset("deagle-closure") || (!cmdline.isset("deagle-segment") && !cmdline.isset("deagle-icd") && !solver_set))
+    options.set_option("deagle-closure", true);
+
+  if(cmdline.isset("deagle-icd"))
+    options.set_option("deagle-icd", true);
+
+  if(cmdline.isset("deagle-segment"))
+    options.set_option("deagle-segment", true);
 
   if(cmdline.isset("datarace"))
     options.set_option("datarace", true);
 
   if(cmdline.isset("no-assertions"))
     options.set_option("no-assertions", true);
+  
+  if(cmdline.isset("deadlock"))
+    options.set_option("deadlock", true);
   
   options.set_option("filename", cmdline.args[0]);
 

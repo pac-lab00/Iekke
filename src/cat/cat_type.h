@@ -15,9 +15,7 @@ enum rel_opt
     PROD, // *, unary + unary -> binary
     BRACKET, // [], unary -> binary
     FLIP, // ^-1, binary -> binary
-
-    // this will be converted later in function replace_plus
-    PLUS, // d = r+ is converted to d = r | (d ; d)
+    PLUS, // +, binary -> binary
 
     // the following will be converted upon discovered
     // STAR, // d = r* is converted to d = id | r+

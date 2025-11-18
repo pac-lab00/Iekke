@@ -70,10 +70,6 @@ public:
 		return module->make_base(name);
 	}
 
-	cat_relationt make_free() {
-		return module->make_free();
-	}
-
 	void make_dummy_relation(std::string name) {
 		module->make_base(name);
 		module->addBase(name, 2); // hopefully

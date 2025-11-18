@@ -17,9 +17,9 @@ __CPROVER_HIDE:;
   __CPROVER_is_zero_string(dst) = 1;
   __CPROVER_zero_string_length(dst) = __CPROVER_zero_string_length(src);
 #else
-  // __CPROVER_precondition(
-  //   __CPROVER_POINTER_OBJECT(dst) != __CPROVER_POINTER_OBJECT(src),
-  //   "strcpy src/dst overlap");
+  __CPROVER_precondition(
+    __CPROVER_POINTER_OBJECT(dst) != __CPROVER_POINTER_OBJECT(src),
+    "strcpy src/dst overlap");
   __CPROVER_size_t i = 0;
   char ch;
   do
@@ -149,9 +149,9 @@ __CPROVER_HIDE:;
   __CPROVER_is_zero_string(dst) = 1;
   __CPROVER_zero_string_length(dst) = __CPROVER_zero_string_length(src);
 #else
-  // __CPROVER_precondition(
-  //   __CPROVER_POINTER_OBJECT(dst) != __CPROVER_POINTER_OBJECT(src),
-  //   "strcpy src/dst overlap");
+  __CPROVER_precondition(
+    __CPROVER_POINTER_OBJECT(dst) != __CPROVER_POINTER_OBJECT(src),
+    "strcpy src/dst overlap");
   __CPROVER_size_t i = 0;
   char ch;
   do

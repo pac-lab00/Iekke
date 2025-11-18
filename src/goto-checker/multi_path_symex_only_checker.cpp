@@ -94,7 +94,7 @@ void multi_path_symex_only_checkert::generate_equation()
 
   std::cout << "Unwinding successfully\n";
 
-  if(symex.target.has_threads())
+  if(options.get_bool_option("refined-pointer-analysis") && symex.target.has_threads())
   {
     symex.path_storage.clear();
     symex.target.clear();
@@ -112,6 +112,11 @@ void multi_path_symex_only_checkert::generate_equation()
 
   if(symex.enable_datarace)
     symex.symex_datarace(options.get_option("filename"));
+
+  // __WP_ADD_BEGIN__
+  if(symex.enable_deadlock)
+    symex.symex_deadlock();
+  // __WP_ADD_END__
 
   if(symex.enable_alloc)
     symex.symex_alloc_check();

@@ -44,3 +44,15 @@ std::string kind_to_str(edge_kindt kind)
 }
 
 }
+
+#include <regex>
+
+std::string get_address(std::string name)
+{
+    std::regex pattern("([^\\#]*)#\\d+([^\\d].*)");
+    std::smatch results;
+    if(regex_match(name, results, pattern))
+        return results[1].str() + results[2].str();
+
+    return name.substr(0, name.find_first_of('#'));
+}

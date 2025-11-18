@@ -204,12 +204,13 @@ get_memory_model(const optionst &options, const namespacet &ns)
       std::cout << "cat parsing failed: " << mm << "\n";
       std::exit(1);
     }
-    cat_parser.get_module().replace_plus();
     cat_parser.get_module().remove_unnecessary();
+    cat_parser.get_module().build_propagate_map_all();
 
     bool strict_guard = options.get_bool_option("mm-strict-guard");
+    bool enable_cutting = options.get_bool_option("mm-cutting");
 
-    return util_make_unique<memory_model_generalt>(ns, cat_parser.get_module(), strict_guard);
+    return util_make_unique<memory_model_generalt>(ns, cat_parser.get_module(), strict_guard, enable_cutting);
   }
 // __SZH_ADD_END__
 }
@@ -374,12 +375,29 @@ void postprocess_equation(
       get_memory_model(options, ns);
 
     // __SZH_ADD_BEGIN__
-    if(options.get_bool_option("deagle"))
+    if(options.get_bool_option("deagle-closure"))
+    {
       memory_model->use_deagle = true;
-
+      equation.use_deagle_closure = true;
+    }
+    if(options.get_bool_option("deagle-icd"))
+    {
+      memory_model->use_deagle = true;
+      equation.use_deagle_icd = true;
+    }
+    if(options.get_bool_option("deagle-segment"))
+    {
+      memory_model->use_deagle = true;
+      equation.use_deagle_segment = true;
+    }
     if(options.get_bool_option("datarace"))
       memory_model->enable_datarace = true;
     // __SZH_ADD_END__
+
+    // __WP_ADD_BEGIN__
+    if(options.get_bool_option("deadlock"))
+      memory_model->enable_deadlock = true;
+    // __WP_ADD_END__
 
     (*memory_model)(equation, ui_message_handler);
   }
@@ -456,14 +474,13 @@ std::chrono::duration<double> prepare_property_decider(
     }
 
     memory_model_solver.save_raw_graph(oc_edge_table, oc_label_table, equation.cat);
-    //deagle_solver.init();
   }
-  else
+  else if(equation.use_deagle_closure)
   {
-    auto& deagle_solver = *(deagle_solvert*)(&(property_decider.get_solver()->prop()));
+    auto& deagle_closure_solver = *(deagle_closure_solvert*)(&(property_decider.get_solver()->prop()));
     auto& decision_procedure = *(prop_conv_solvert*)(&(property_decider.get_decision_procedure()));
 
-    std::cout << "Set Deagle solver's graph\n";
+    std::cout << "Set Deagle closure solver's graph\n";
 
     //set graph
     oc_edge_tablet oc_edge_table;
@@ -489,8 +506,61 @@ std::chrono::duration<double> prepare_property_decider(
         oc_location_map.insert(std::make_pair(name, location));
     }
 
-    deagle_solver.save_raw_graph(oc_edge_table, oc_guard_map, oc_location_map, equation.oc_result_order);
-    //deagle_solver.init();
+    deagle_closure_solver.save_raw_graph(oc_edge_table, oc_guard_map, oc_location_map, equation.oc_result_order);
+  }
+  else if(equation.use_deagle_icd)
+  {
+    auto& deagle_icd_solver = *(deagle_icd_solvert*)(&(property_decider.get_solver()->prop()));
+    auto& decision_procedure = *(prop_conv_solvert*)(&(property_decider.get_decision_procedure()));
+
+    std::cout << "Set Deagle ICD solver's graph\n";
+
+    //set graph
+    oc_edge_tablet oc_edge_table;
+
+    for(auto& edge: equation.oc_edges)
+    {
+      literalt expr = decision_procedure.convert(edge.expr);
+      Minisat::Lit expr_final = Minisat::mkLit(expr.var_no(), expr.sign());
+      oc_edge_table.push_back(std::make_pair(std::make_pair(edge.e1_str, edge.e2_str), std::make_pair(expr_final, edge.kind)));
+
+      //std::cout << edge.e1_str << " " << edge.e2_str << ": " << edge.kind << "\n";
+    }
+
+    deagle_icd_solver.save_raw_graph(oc_edge_table, equation.oc_result_order);
+  }
+  else if(equation.use_deagle_segment)
+  {
+    auto& deagle_segment_solver = *(deagle_segment_solvert*)(&(property_decider.get_solver()->prop()));
+    auto& decision_procedure = *(prop_conv_solvert*)(&(property_decider.get_decision_procedure()));
+
+    std::cout << "Set Deagle segment solver's graph\n";
+
+    //set graph
+    oc_edge_tablet oc_edge_table;
+
+    for(auto& edge: equation.oc_edges)
+    {
+      literalt expr = decision_procedure.convert(edge.expr);
+      Minisat::Lit expr_final = Minisat::mkLit(expr.var_no(), expr.sign());
+      oc_edge_table.push_back(std::make_pair(std::make_pair(edge.e1_str, edge.e2_str), std::make_pair(expr_final, edge.kind)));
+
+      //std::cout << edge.e1_str << " " << edge.e2_str << ": " << edge.kind << "\n";
+    }
+
+    oc_guard_mapt oc_guard_map;
+    oc_location_mapt oc_location_map;
+    for(auto& e_it: equation.oc_guard_map)
+    {
+        std::string name = id2string(e_it->ssa_lhs.get_identifier());
+        int location = std::atoi(e_it->source.pc->source_location().get_line().c_str());
+        literalt guard = decision_procedure.convert(e_it->guard);
+        Minisat::Lit guard_final = Minisat::mkLit(guard.var_no(), guard.sign());
+        oc_guard_map.insert(std::make_pair(name, guard_final));
+        oc_location_map.insert(std::make_pair(name, location));
+    }
+
+    deagle_segment_solver.save_raw_graph(oc_edge_table, oc_guard_map, oc_location_map, equation.oc_result_order);
   }
   // __SZH_ADD_END__
 

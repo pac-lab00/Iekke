@@ -751,10 +751,11 @@ struct expr_condt
   exprt expr;
   exprt::operandst condition; //conjunction
   bool is_trivial_assign;
+  bool related_to_assign;
 
   expr_condt() {}
-  expr_condt(exprt _expr, exprt::operandst _cond, bool _flag) :
-    expr(_expr), condition(_cond), is_trivial_assign(_flag) {}
+  expr_condt(exprt _expr, exprt::operandst _cond, bool _flag, bool _flag2) :
+    expr(_expr), condition(_cond), is_trivial_assign(_flag), related_to_assign(_flag2) {}
 };
 
 struct index_or_membert
@@ -787,11 +788,11 @@ std::string get_component_name(std::string str)
   return result[1];
 }
 
-void build_expr_conds_indices_members(std::vector<expr_condt>& expr_conds, const exprt& array_struct, std::vector<index_or_membert>& indices_members, exprt::operandst& conds, bool is_trivial_assign)
+void build_expr_conds_indices_members(std::vector<expr_condt>& expr_conds, const exprt& array_struct, std::vector<index_or_membert>& indices_members, exprt::operandst& conds, bool is_trivial_assign, bool related_to_assign)
 {
   if(indices_members.empty())
   {
-    expr_conds.push_back(expr_condt(array_struct, conds, is_trivial_assign));
+    expr_conds.push_back(expr_condt(array_struct, conds, is_trivial_assign, related_to_assign));
     return;
   }
   
@@ -808,7 +809,7 @@ void build_expr_conds_indices_members(std::vector<expr_condt>& expr_conds, const
       auto& operand = array.operands()[i];
       constant_exprt const_expr = from_integer(i, index.type());
       conds.push_back(equal_exprt(index, const_expr));
-      build_expr_conds_indices_members(expr_conds, operand, indices_members, conds, is_trivial_assign);
+      build_expr_conds_indices_members(expr_conds, operand, indices_members, conds, is_trivial_assign, related_to_assign);
       conds.pop_back();
     }
   }
@@ -825,32 +826,59 @@ void build_expr_conds_indices_members(std::vector<expr_condt>& expr_conds, const
       std::string component_name = get_component_name(operand_name);
 
       if(expected_component_name == component_name)
-        expr_conds.push_back(expr_condt(operand, conds, is_trivial_assign));
+        expr_conds.push_back(expr_condt(operand, conds, is_trivial_assign, related_to_assign));
     }
   }
 
   indices_members.push_back(index_member);
 }
 
-std::map<std::string, std::set<std::string>> build_assignment_phi(symex_target_equationt& equation)
+void build_phi_rec(std::map<symbol_exprt, std::set<std::pair<symbol_exprt, exprt>>>& result_map, symbol_exprt left, exprt expr, exprt cond)
 {
-  std::map<std::string, std::set<std::string>> ret;
+  if(expr.id() == ID_symbol)
+    result_map[left].insert(std::make_pair(to_symbol_expr(expr), cond));
+  if(expr.id() == ID_if)
+  {
+    auto& if_cond = to_if_expr(expr).cond();
+    auto& true_case = to_if_expr(expr).true_case();
+    auto& false_case = to_if_expr(expr).false_case();
+    build_phi_rec(result_map, left, true_case, and_exprt(cond, if_cond));
+    build_phi_rec(result_map, left, false_case, and_exprt(cond, not_exprt(if_cond)));
+  }
+}
+
+std::map<symbol_exprt, std::set<std::pair<symbol_exprt, exprt>>> build_assignment_phi(symex_target_equationt& equation)
+{
+  std::map<symbol_exprt, std::set<std::pair<symbol_exprt, exprt>>> ret;
   for(auto& step : equation.SSA_steps)
   {
     if(step.is_assignment() && step.assignment_type == symex_targett::assignment_typet::PHI)
-    {
-      std::string lhs_name = step.ssa_lhs.get_identifier().c_str();
-      auto rhss = find_symbols(step.ssa_rhs);
-      std::set<std::string> rhs_names;
-      for(auto rhs : rhss)
-        rhs_names.insert(to_symbol_expr(rhs).get_identifier().c_str());
-      ret[lhs_name] = rhs_names;
-    }
+      build_phi_rec(ret, step.ssa_lhs, step.ssa_rhs, true_exprt());
   }
   return ret;
 }
 
-void symex_target_equationt::build_available_cond_map(std::map<std::string, exprt>& available_cond_map)
+void update_available_cond_map(std::map<std::string, exprt>& available_cond_map, const symbol_exprt& symbol, exprt& cond, const namespacet& ns)
+{
+  std::string str = symbol.get_identifier().c_str();
+
+  simplify(cond, ns);
+  if(cond.is_false())
+    return;
+
+  if(available_cond_map.find(str) == available_cond_map.end())
+    available_cond_map[str] = cond;
+  else if(available_cond_map[str] != cond)
+    available_cond_map[str] = or_exprt(available_cond_map[str], cond);
+}
+
+void update_available_cond_map(std::map<std::string, exprt>& available_cond_map, const symbol_exprt& symbol, exprt::operandst& conds, const namespacet& ns)
+{
+  auto cond_conj = conjunction(conds);
+  update_available_cond_map(available_cond_map, symbol, cond_conj, ns);
+}
+
+void symex_target_equationt::build_available_cond_map(std::map<std::string, exprt>& available_cond_map, const namespacet& ns)
 {
   for(event_it e_it=SSA_steps.begin(); e_it!=SSA_steps.end(); e_it++)
   {
@@ -859,13 +887,14 @@ void symex_target_equationt::build_available_cond_map(std::map<std::string, expr
     
     auto& left = e_it->ssa_lhs;
     auto& right = e_it->ssa_rhs;
-    std::vector<expr_condt> expr_conds{expr_condt(right, exprt::operandst(), true)};
+    std::vector<expr_condt> expr_conds{expr_condt(right, exprt::operandst(), true, true)};
     while(!expr_conds.empty())
     {
       auto expr_cond = expr_conds.back();
       auto& expr = expr_cond.expr;
       auto& cond = expr_cond.condition;
       auto is_trivial_assign = expr_cond.is_trivial_assign;
+      auto related_to_assign = expr_cond.related_to_assign;
 
       expr_conds.pop_back();
 
@@ -895,7 +924,26 @@ void symex_target_equationt::build_available_cond_map(std::map<std::string, expr
         if(curr_expr.id() == ID_array || curr_expr.id() == ID_struct)
         {
           auto curr_cond = cond;
-          build_expr_conds_indices_members(expr_conds, curr_expr, indices_members, curr_cond, is_trivial_assign);
+          build_expr_conds_indices_members(expr_conds, curr_expr, indices_members, curr_cond, is_trivial_assign, related_to_assign);
+        }
+        else if(curr_expr.id() == ID_symbol && !is_trivial_assign)
+        {
+          std::string write_str = left.get_identifier().c_str();
+          std::string read_str = to_symbol_expr(curr_expr).get_identifier().c_str();
+
+          if(get_addr(write_str) != get_addr(read_str) &&
+            get_addr_prefix(write_str) != get_addr(read_str) &&
+            get_addr(write_str) != get_addr_prefix(read_str)) // not self assignment
+          {
+            is_trivial_assign = false;
+          }
+
+          if(!is_trivial_assign)
+          {
+            if(related_to_assign)
+              update_available_cond_map(available_cond_map, left, cond, ns);
+            update_available_cond_map(available_cond_map, to_symbol_expr(curr_expr), cond, ns);
+          }
         }
       }
       // handle arr#i[[index]] = cond ? new_expr : arr#j[[index]]:
@@ -906,97 +954,36 @@ void symex_target_equationt::build_available_cond_map(std::map<std::string, expr
         auto& true_case = to_if_expr(expr).true_case();
         auto& false_case = to_if_expr(expr).false_case();
 
-        // todo: need to add if_cond to expr_conds?
-        
+        expr_conds.push_back(expr_condt(if_cond, cond, false, false));
+
         cond.push_back(if_cond);
-        expr_conds.push_back(expr_condt(true_case, cond, is_trivial_assign));
+        expr_conds.push_back(expr_condt(true_case, cond, is_trivial_assign, related_to_assign));
         cond.pop_back();
 
         cond.push_back(not_exprt(if_cond));
-        expr_conds.push_back(expr_condt(false_case, cond, is_trivial_assign));
+        expr_conds.push_back(expr_condt(false_case, cond, is_trivial_assign, related_to_assign));
         cond.pop_back();
-
-        // bool true_trivial = false;
-        // if(true_case.id() == ID_symbol)
-        // {
-        //   std::string write_str = left.get_identifier().c_str();
-        //   std::string read_str = to_symbol_expr(true_case).get_identifier().c_str();
-        //   auto write_str_prefix = get_addr(write_str);
-        //   auto read_str_prefix = get_addr(read_str);
-        //   if(write_str_prefix == read_str_prefix) // self assignment
-        //     true_trivial = true;
-        //   else
-        //   {
-        //     cond.push_back(if_cond);
-        //     expr_conds.push_back(std::make_pair(true_case, cond));
-        //     cond.pop_back();
-        //   }
-        // }
-        // else
-        // {
-        //   cond.push_back(if_cond);
-        //   expr_conds.push_back(std::make_pair(true_case, cond));
-        //   cond.pop_back();
-        // }
-
-        // bool false_trivial = false;
-        // if(false_case.id() == ID_symbol)
-        // {
-        //   std::string write_str = left.get_identifier().c_str();
-        //   std::string read_str = to_symbol_expr(false_case).get_identifier().c_str();
-        //   auto write_str_prefix = get_addr(write_str);
-        //   auto read_str_prefix = get_addr(read_str);
-        //   if(write_str_prefix == read_str_prefix) // self assignment
-        //     false_trivial = true;
-        //   else
-        //   {
-        //     cond.push_back(not_exprt(if_cond));
-        //     expr_conds.push_back(std::make_pair(false_case, cond));
-        //     cond.pop_back();
-        //   }
-        // }
-        // else
-        // {
-        //   cond.push_back(not_exprt(if_cond));
-        //   expr_conds.push_back(std::make_pair(false_case, cond));
-        //   cond.pop_back();
-        // }
-
-        // if(true_trivial && !false_trivial)
-        // {
-        //   cond.push_back(not_exprt(if_cond));
-        //   expr_conds.push_back(std::make_pair(left, cond));
-        //   cond.pop_back();
-        // }
-        // if(!true_trivial && false_trivial)
-        // {
-        //   cond.push_back(if_cond);
-        //   expr_conds.push_back(std::make_pair(left, cond));
-        //   cond.pop_back();
-        // }
-        // if(!true_trivial && !false_trivial)
-        //   expr_conds.push_back(std::make_pair(left, cond));
       }
       else if(expr.id() == ID_byte_update_little_endian)
       {
-        expr_conds.push_back(expr_condt(expr.op2(), cond, is_trivial_assign));
+        expr_conds.push_back(expr_condt(expr.op2(), cond, is_trivial_assign, related_to_assign));
       }
       else if(expr.id() == ID_array || expr.id() == ID_struct)
       {
         for(auto& operand: expr.operands())
-          expr_conds.push_back(expr_condt(operand, cond, is_trivial_assign));
+          expr_conds.push_back(expr_condt(operand, cond, is_trivial_assign, related_to_assign));
       }
       else if(expr.id() == ID_with)
       {
-        expr_conds.push_back(expr_condt(expr.op2(), cond, is_trivial_assign));
+        expr_conds.push_back(expr_condt(expr.op2(), cond, is_trivial_assign, related_to_assign));
       }
-      else //normally add children, made non trivial
+      else // normally add children, not trivial
       {
-        for(auto& operand: expr.operands())
-          expr_conds.push_back(expr_condt(operand, cond, false));
+        for(auto& operand : expr.operands())
+          expr_conds.push_back(expr_condt(operand, cond, false, related_to_assign));
       }
 
-      if(expr.id() == ID_symbol) //assign from symbol to symbol, trivial?
+      if(expr.id() == ID_symbol) // assign from symbol to symbol, trivial?
       {
         std::string write_str = left.get_identifier().c_str();
         std::string read_str = to_symbol_expr(expr).get_identifier().c_str();
@@ -1007,59 +994,65 @@ void symex_target_equationt::build_available_cond_map(std::map<std::string, expr
         {
           is_trivial_assign = false;
         }
+
         if(!is_trivial_assign)
         {
-          auto cond_conjunction = conjunction(cond);
-
-          if(available_cond_map.find(write_str) == available_cond_map.end())
-            available_cond_map[write_str] = cond_conjunction;
-          else if(available_cond_map[write_str] != cond_conjunction)
-            available_cond_map[write_str] = or_exprt(available_cond_map[write_str], cond_conjunction);
-
-          if(available_cond_map.find(read_str) == available_cond_map.end())
-            available_cond_map[read_str] = cond_conjunction;
-          else if(available_cond_map[read_str] != cond_conjunction)
-            available_cond_map[read_str] = or_exprt(available_cond_map[read_str], cond_conjunction);
+          if(related_to_assign)
+            update_available_cond_map(available_cond_map, left, cond, ns);
+          update_available_cond_map(available_cond_map, to_symbol_expr(expr), cond, ns);
         }
       }
-
-      if(expr.id() != ID_symbol && !expr.has_operands()) //assign from non-symbol to symbol, always not trivial
+      else if(!expr.has_operands()) // assign from non-symbol (constant?) to symbol, always not trivial
       {
-        std::string write_str = left.get_identifier().c_str();
-        auto cond_conjunction = conjunction(cond);
-        if(available_cond_map.find(write_str) == available_cond_map.end())
-          available_cond_map[write_str] = cond_conjunction;
-        else if(available_cond_map[write_str] != cond_conjunction)
-          available_cond_map[write_str] = or_exprt(available_cond_map[write_str], cond_conjunction);
+        if(related_to_assign)
+          update_available_cond_map(available_cond_map, left, cond, ns);
       }
 
-      // if(expr.id() == ID_symbol && !cond.empty())
-      // {
-      //   std::string str = to_symbol_expr(expr).get_identifier().c_str();
-      //   auto cond_conjunction = conjunction(cond);
-
-      //   if(available_cond_map.find(str) == available_cond_map.end())
-      //   {
-      //     std::cout << str << " has brand new cond " << format(cond_conjunction) << "\n";
-      //     available_cond_map[str] = cond_conjunction;
-      //   }
-      //   else if(available_cond_map[str] != cond_conjunction)
-      //   {
-      //     std::cout << str << " has another cond " << format(cond_conjunction) << "\n";
-      //     available_cond_map[str] = or_exprt(available_cond_map[str], cond_conjunction);
-      //   }    
-      // }
     }
   }
 
   auto assignment_phi_map = build_assignment_phi(*this);
-  auto original_available_cond_map = available_cond_map;
-  for(auto& pair : original_available_cond_map)
+  for(auto pair : assignment_phi_map)
   {
-    if(assignment_phi_map.find(pair.first) != assignment_phi_map.end())
-      for(auto rhs_name : assignment_phi_map[pair.first])
-        available_cond_map.insert(std::make_pair(rhs_name, pair.second));
+    auto left = pair.first;
+    std::string left_str = left.get_identifier().c_str();
+    exprt::operandst conds;
+
+    if(available_cond_map.find(left_str) == available_cond_map.end())
+    {
+      // transfers cond from right to left
+      for(auto right_pair : pair.second)
+      {
+        auto right = right_pair.first;
+        std::string right_str = right.get_identifier().c_str();
+        auto cond = right_pair.second;
+        if(available_cond_map.find(right_str) != available_cond_map.end())
+          conds.push_back(and_exprt(available_cond_map[right_str], cond));
+      }
+      auto cond_disj = disjunction(conds);
+      update_available_cond_map(available_cond_map, left, cond_disj, ns);
+    }
+    else
+    {
+      // transfers cond from left to right
+      auto left_cond = available_cond_map[left_str];
+      for(auto right_pair : pair.second)
+      {
+        auto right = right_pair.first;
+        std::string right_str = right.get_identifier().c_str();
+        auto cond = right_pair.second;
+        if(available_cond_map.find(right_str) != available_cond_map.end())
+          continue;
+        exprt::operandst two_conds{left_cond, cond};
+        update_available_cond_map(available_cond_map, right, two_conds, ns);
+      }
+    }
   }
+
+  // previously preserved
+  for(auto preserved_access : preserved_accesses)
+    if(available_cond_map.find(preserved_access) == available_cond_map.end())
+      available_cond_map[preserved_access] = true_exprt();
 
   // std::cout << "viewing available cond map!\n";
   // for(auto pair : available_cond_map)
@@ -1208,7 +1201,49 @@ void symex_target_equationt::dynamic_object_atomicity(const namespacet& ns)
   }
 }
 
-void symex_target_equationt::build_index_map(std::map<std::string, exprt>& index_map)
+#include <util/bitvector_types.h>
+
+int symex_target_equationt::get_byte_length(const exprt& expr)
+{
+  int length = 4; // default
+  if(can_cast_type<signedbv_typet>(expr.type()))
+    length = to_signedbv_type(expr.type()).get_width() / 8;
+  if(can_cast_type<unsignedbv_typet>(expr.type()))
+    length = to_unsignedbv_type(expr.type()).get_width() / 8;
+  return length;
+}
+
+void symex_target_equationt::build_byte_update_map(std::map<std::string, std::pair<exprt, exprt>>& byte_update_map, const namespacet& ns)
+{
+  // arr#2 = byte_update_little_endian(arr#1, i, value)
+  for(event_it e_it=SSA_steps.begin(); e_it!=SSA_steps.end(); e_it++)
+  {
+    if(!e_it->is_assignment())
+      continue;
+
+    auto& left = e_it->ssa_lhs;
+    auto& right = e_it->ssa_rhs;
+    if(right.id() != ID_byte_update_little_endian)
+      continue;
+    auto& old = to_byte_update_expr(right).op();
+
+    int update_length = get_byte_length(to_byte_update_expr(right).value());
+    auto index_from = to_byte_update_expr(right).offset();
+    simplify(index_from, ns);
+    auto index_to = plus_exprt(index_from, from_integer(update_length, index_from.type()));
+    simplify(index_to, ns);
+
+    std::string left_str = left.get_identifier().c_str();
+    byte_update_map[left_str] = std::make_pair(index_from, index_to);
+
+    if(old.id() != ID_symbol) // todo: more complex cases?
+      continue;
+    std::string right_str = to_symbol_expr(old).get_identifier().c_str();
+    byte_update_map[right_str] = std::make_pair(index_from, index_to);
+  }
+}
+
+void symex_target_equationt::build_with_map(std::map<std::string, exprt>& with_map, const namespacet& ns)
 {
   // arr#2 = with(arr#1, i, value)
   for(event_it e_it=SSA_steps.begin(); e_it!=SSA_steps.end(); e_it++)
@@ -1221,37 +1256,15 @@ void symex_target_equationt::build_index_map(std::map<std::string, exprt>& index
     if(right.id() != ID_with)
       continue;
     auto& old = to_with_expr(right).old();
-    auto& index = to_with_expr(right).where();
+    auto index = to_with_expr(right).where();
 
     std::string left_str = left.get_identifier().c_str();
-    index_map[left_str] = index;
+    with_map[left_str] = index;
 
     if(old.id() != ID_symbol) // todo: more complex cases?
       continue;
     std::string right_str = to_symbol_expr(old).get_identifier().c_str();
-    index_map[right_str] = index;
-  }
-
-  // arr#2 = byte_update_little_endian(arr#1, i, value)
-  for(event_it e_it=SSA_steps.begin(); e_it!=SSA_steps.end(); e_it++)
-  {
-    if(!e_it->is_assignment())
-      continue;
-
-    auto& left = e_it->ssa_lhs;
-    auto& right = e_it->ssa_rhs;
-    if(right.id() != ID_byte_update_little_endian)
-      continue;
-    auto& old = to_byte_update_expr(right).op();
-    auto& index = to_byte_update_expr(right).offset();
-
-    std::string left_str = left.get_identifier().c_str();
-    index_map[left_str] = index;
-
-    if(old.id() != ID_symbol) // todo: more complex cases?
-      continue;
-    std::string right_str = to_symbol_expr(old).get_identifier().c_str();
-    index_map[right_str] = index;
+    with_map[right_str] = index;
   }
 
   // a single arr#1[i]
@@ -1267,7 +1280,11 @@ void symex_target_equationt::build_index_map(std::map<std::string, exprt>& index
       auto expr = exprs.back();
       exprs.pop_back();
       if(expr.id() == ID_index && expr.op0().id() == ID_symbol) // todo: more complex cases?
-        index_map[to_symbol_expr(expr.op0()).get_identifier().c_str()] = expr.op1();
+      {
+        std::string str = to_symbol_expr(expr.op0()).get_identifier().c_str();
+        auto index = expr.op1();
+        with_map[str] = index;
+      }
       
       for(auto& operand : expr.operands())
         exprs.push_back(operand);
@@ -1383,7 +1400,7 @@ void symex_target_equationt::build_datarace(const namespacet& ns, bool filter)
             categories_before_filter.insert(race_id);
 
             races_before_filter++;
-            // std::cout << "racing before goblint filter: " << e1_str << " " << e2_str << "\n";
+            // std::cout << "racing before goblint filter: " << first_event->ssa_lhs.get_identifier() << " " << second_event->ssa_lhs.get_identifier() << "\n";
             // std::cout << "linenumber: " << first_event_line << " " << second_event_line << "\n";
 
             if(filter)
@@ -1395,7 +1412,7 @@ void symex_target_equationt::build_datarace(const namespacet& ns, bool filter)
             categories_after_filter.insert(race_id);
 
             races_after_filter++;
-            // std::cout << "racing after goblint filter: " << e1_str << " " << e2_str << "\n";
+            // std::cout << "racing after goblint filter: " << first_event->ssa_lhs.get_identifier() << " " << second_event->ssa_lhs.get_identifier() << "\n";
           }
       }
   }
@@ -1544,6 +1561,11 @@ void symex_target_equationt::remove_dummy_accesses()
           e_it = SSA_steps.erase(e_it);
           continue;
         }
+        else
+        {
+          std::cout << shared_str << " is dummy but preserved\n";
+          preserved_accesses.insert(shared_str);
+        }
       }
     }
     e_it++;
@@ -1551,3 +1573,76 @@ void symex_target_equationt::remove_dummy_accesses()
   std::cout << SSA_steps.size() << " steps after removal\n";
 }
 // __SZH_ADD_END__
+
+
+// __WP_ADD_BEGIN__
+void symex_target_equationt::build_deadlock()
+{
+  // build per_thread_lock_guard
+  bool isatomic = false;
+  bool islocked = false;
+  event_it e_atomic_begin;
+  for(event_it e_it=SSA_steps.begin(); e_it!=SSA_steps.end(); e_it++)
+  {
+    if(e_it->is_function_return() && id2string(e_it->source.function_id) == "main") {
+      program_returns.push_back(e_it);
+      continue;
+    }
+
+    if(e_it->is_assert()) {
+      if (id2string(e_it->source.function_id) == "abort")
+        program_returns.push_back(e_it);
+      else if (islocked) {
+        std::string target = "unwinding assertion loop";
+        if (e_it->comment.find(target) != std::string::npos) {
+          loop_asserts_in_critical.push_back(e_it);
+          
+          std::cout << "comment:" << e_it->comment << "\n------\n";
+        }
+      }
+      continue;
+    }
+
+    if(e_it->is_atomic_begin())
+    {
+      isatomic = true;
+      if(id2string(e_it->source.function_id) == "pthread_mutex_lock")
+        e_atomic_begin = e_it;
+        // per_thread_lock_begins[e_it->source.thread_nr].push_back(e_it);
+      continue;
+    }
+    
+    if(e_it->is_atomic_end())
+    {
+      isatomic = false;
+      continue;
+    }
+
+    if(!isatomic)
+      continue;
+
+    if(e_it->is_shared_write() && id2string(e_it->source.function_id) == "pthread_mutex_lock")
+    {
+      // auto e_str = id2string(e_it->ssa_lhs.get_identifier());
+      // auto e_str_prefix = get_addr(e_str);
+
+      // std::cout << "thread_id:" << e_it->source.thread_nr 
+      // << "\nvar_name:" << e_str
+      // << "\nline:" << e_it->source.pc->source_location().get_line().c_str()
+      // << "\nvar_guard:" << e_it->guard.pretty() << "\n------\n";
+
+      per_thread_lock_writes[e_it->source.thread_nr].push_back(e_it);
+      if(e_it->ssa_lhs.type().pretty().find("#typedef: pthread_mutex_t") != std::string::npos)
+        per_thread_lock_begins[e_it->source.thread_nr].push_back(e_atomic_begin);
+      islocked = true;
+      continue;
+    }
+
+    if(e_it->is_shared_write() && id2string(e_it->source.function_id) == "pthread_mutex_unlock")
+    {
+      islocked = false;
+      continue;
+    }
+  }
+}
+// __WP_ADD_END__

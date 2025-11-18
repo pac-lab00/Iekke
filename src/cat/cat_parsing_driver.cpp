@@ -159,6 +159,12 @@ int cat_parsing_drivert::parse(const std::string &name)
 	}
 
 	auto path = dir + name;
+	if (!fopen(path.c_str(), "r")) {
+		std::cerr << "cannot open " << path
+			  << ": " << strerror(errno) << std::endl;
+		return 1;
+	}
+
 	auto new_path = path + ".new";
 	std::cout << "old path " << path << ", new path " << new_path << "\n";
 	preprocess(path, new_path);
@@ -184,6 +190,8 @@ int cat_parsing_drivert::parse(const std::string &name)
 	fclose(yyin);
 
 	restoreState();
+
+	remove(new_path.c_str());
 
 	return res;
 }
