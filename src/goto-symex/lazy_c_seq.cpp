@@ -715,16 +715,22 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread || write.s_it->atomic_section_id != 0)
+        if (write.thread != thread)
           continue;
         irep_idt phase_1_t_v_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
 
         phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
 
-        exprt phase_1_t_v_exp = and_exprt{
-          equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
-          create_exec_tot_symbol(log, equation, write.label,thread)};
+        int atom = write.s_it->atomic_section_id != 0;
+        exprt phase_1_t_v_exp =
+          and_exprt{
+            equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
+            and_exprt{
+              create_exec_tot_symbol(log, equation, write.label,thread),
+              equal_exprt{create_dr_atom_symbol(1), from_integer({atom}, bool_typet{})}
+              }
+          };
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
@@ -779,16 +785,22 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread || write.s_it->atomic_section_id != 0)
+        if (write.thread != thread)
           continue;
         irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        exprt phase_2_t_v_exp = and_exprt{
-          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
-          create_exec_tot_symbol(log, equation, write.label,thread)};
+        int atom = write.s_it->atomic_section_id != 0;
+        exprt phase_2_t_v_exp =
+          and_exprt{
+            equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
+            and_exprt{
+              create_exec_tot_symbol(log, equation, write.label,thread),
+              equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
+            }
+          };
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
@@ -812,16 +824,22 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
     }
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
-        if (read.thread != thread || read.s_it->atomic_section_id != 0)
+        if (read.thread != thread)
           continue;
         irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        exprt phase_2_t_v_exp = and_exprt{
-          equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
-          create_exec_tot_symbol(log, equation, read.label,thread)};
+        int atom = read.s_it->atomic_section_id != 0;
+        exprt phase_2_t_v_exp =
+          and_exprt{
+            equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
+            and_exprt{
+              create_exec_tot_symbol(log, equation, read.label,thread),
+              equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
+            }
+          };
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
@@ -877,11 +895,14 @@ symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equat
         equal_exprt{create_dr_round_symbol(1),
       create_dr_round_symbol(2)}
       },
-      implies_exprt{
-        less_than_exprt{create_dr_thread_symbol(2),
-        create_dr_thread_symbol(1)},
-          equal_exprt{create_dr_round_symbol(2),
-        plus_exprt{create_dr_round_symbol(1), from_integer({1}, unsignedbv_typet{rounds_bits})}}}
+      and_exprt{
+        implies_exprt{
+          less_than_exprt{create_dr_thread_symbol(2),
+          create_dr_thread_symbol(1)},
+            equal_exprt{create_dr_round_symbol(2),
+          plus_exprt{create_dr_round_symbol(1), from_integer({1}, unsignedbv_typet{rounds_bits})}}},
+        or_exprt{not_exprt{create_dr_atom_symbol(1)}, not_exprt{create_dr_atom_symbol(2)}}
+        }
     }
   };
 
@@ -1292,4 +1313,16 @@ symbol_exprt lazy_c_seqt::create_dr_round_symbol(unsigned num)
   dr_round.emplace(num, round_expr);
 
   return round_expr;
+}
+
+symbol_exprt lazy_c_seqt::create_dr_atom_symbol(unsigned num)
+{
+  if (dr_atom.find(num) != dr_atom.end())
+    return dr_atom.at(num);
+  irep_idt atom_name = "a" + std::to_string(num);
+  symbol_exprt atom_expr{atom_name, bool_typet{}};
+
+  dr_atom.emplace(num, atom_expr);
+
+  return atom_expr;
 }
