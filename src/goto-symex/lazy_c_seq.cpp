@@ -381,7 +381,7 @@ void lazy_c_seqt::handling_atomic_sections(
             from_integer(
               atomic_section.second.first,
               unsignedbv_typet{n_bit[atomic_section.first]})},
-          greater_than_or_equal_exprt{
+          greater_than_exprt{
             cs,
             from_integer(
               atomic_section.second.second,
