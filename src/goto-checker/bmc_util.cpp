@@ -125,9 +125,9 @@ void output_graphml(
 
   // __SZH_ADD_BEGIN__
   // FALSE proof not required in no-data-race
-  bool enable_datarace = options.get_bool_option("datarace");
-  if(enable_datarace)
-    return;
+  //bool enable_datarace = options.get_bool_option("datarace");
+  //if(enable_datarace)
+  //  return;
   // __SZH_ADD_END__
 
   graphml_witnesst graphml_witness(ns);
@@ -376,7 +376,7 @@ void postprocess_equation(
   {
     if(options.get_unsigned_int_option("lazy-c-seq-rounds") > 0)
     {
-      lazy_c_seqt(ns, options.get_unsigned_int_option("lazy-c-seq-rounds"))(
+      lazy_c_seqt(ns, options.get_unsigned_int_option("lazy-c-seq-rounds"), options.get_bool_option("datarace"))(
         equation, ui_message_handler);
     }
     else

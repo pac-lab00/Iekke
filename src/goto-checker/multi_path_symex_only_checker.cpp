@@ -110,7 +110,7 @@ void multi_path_symex_only_checkert::generate_equation()
 
   equation.dynamic_object_atomicity(ns);
 
-  if(symex.enable_datarace)
+  if(symex.enable_datarace && !(options.get_unsigned_int_option("lazy-c-seq-rounds") > 0))
     symex.symex_datarace(options.get_option("filename"));
 
   if(symex.enable_alloc)
