@@ -2,6 +2,7 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_c_seq.h"
+#include <solvers/prop/prop_conv_solver.h>
 
 #include <thread>
 #include <util/cprover_prefix.h>
@@ -44,6 +45,11 @@ void lazy_c_seqt::operator()(
   else
     handling_guards(equation/*, message_handler*/);
 
+  messaget log_priority{message_handler};
+  log.status() << "LazyCSeq: Total Priority Variables (N) = "
+               << global_priority_limit_n << messaget::eom;
+
+  prop_conv_solvert::set_priority_limit(global_priority_limit_n);
 }
 
 void lazy_c_seqt::create_write_constraints(
@@ -1190,6 +1196,9 @@ lazy_c_seqt::create_exec_symbol(unsigned label, unsigned thread, size_t round)
     if(exec.label == label && exec.round == round && exec.thread == thread)
       return exec.symbol;
   }
+
+  global_priority_limit_n++;
+
   irep_idt exec_name = "Ex_T" + std::to_string(thread) + "_L" +
                        std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt exec_symbol{exec_name, bool_typet{}};

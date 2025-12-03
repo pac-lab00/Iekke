@@ -104,6 +104,8 @@ public:
     return dynamic_cast<hardness_collectort *>(&prop);
   }
 
+  static void set_priority_limit(std::size_t n);
+
 protected:
   bool post_processing_done = false;
 
