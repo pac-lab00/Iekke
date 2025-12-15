@@ -147,13 +147,13 @@ private:
     message_handlert &message_handler*/);
 
   void handling_datarace(
-    symex_target_equationt &equation,
-    message_handlert &message_handler);
+    symex_target_equationt &equation/*,
+    message_handlert &message_handler*/);
 
-  symbol_exprt phase_1(messaget log, symex_target_equationt &equation, irep_idt v);
-  symbol_exprt phase_2(messaget log, symex_target_equationt &equation, irep_idt v);
-  symbol_exprt same_round(messaget log, symex_target_equationt &equation);
-  symbol_exprt no_interf(messaget log, symex_target_equationt &equation);
+  symbol_exprt phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v);
+  symbol_exprt phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v);
+  symbol_exprt same_round(/*messaget log,*/ symex_target_equationt &equation);
+  symbol_exprt no_interf(/*messaget log,*/ symex_target_equationt &equation);
 
   symbol_exprt create_lazy_symbol(
     unsigned label,
@@ -166,7 +166,7 @@ private:
   create_exec_symbol(unsigned label, unsigned thread, std::size_t round);
 
   symbol_exprt
-  create_exec_tot_symbol(messaget log, symex_target_equationt &equation, unsigned label, unsigned thread);
+  create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned thread);
 
   symbol_exprt
   create_enabled_symbol(unsigned label, unsigned thread, std::size_t round);

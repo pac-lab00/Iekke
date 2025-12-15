@@ -40,7 +40,7 @@ void lazy_c_seqt::operator()(
 
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
-    handling_datarace(equation, message_handler);
+    handling_datarace(equation/*, message_handler*/);
   }
   else
     handling_guards(equation/*, message_handler*/);
@@ -703,9 +703,9 @@ void lazy_c_seqt::create_active_thread_statements(
   //log.warning() << format(active_step.get_ssa_expr()) << messaget::eom;
 }
 
-symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation, irep_idt v) {
+symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
 
-  log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
+  //log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_1_name = "phase_1_" + as_string(v);
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
@@ -733,7 +733,7 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
           and_exprt{
             equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
-              create_exec_tot_symbol(log, equation, write.label,thread),
+              create_exec_tot_symbol(/*log,*/ equation, write.label,thread),
               equal_exprt{create_dr_atom_symbol(1), from_integer({atom}, bool_typet{})}
               }
           };
@@ -753,29 +753,29 @@ symbol_exprt lazy_c_seqt::phase_1(messaget log, symex_target_equationt &equation
           and_exprt{phase_1_t_v_exp, exp2}};
 
         simplify(phase_1_t_v_exp, ns);
-        log.warning() << format(phase_1_t_v_exp) << messaget::eom;
+        //log.warning() << format(phase_1_t_v_exp) << messaget::eom;
         equation.constraint(
           phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
     phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
     simplify(phase_1_t_exp, ns);
-    log.warning() << format(phase_1_t_exp) << messaget::eom;
+    //log.warning() << format(phase_1_t_exp) << messaget::eom;
     equation.constraint(
       phase_1_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
   phase_1_exp = equal_exprt {phase_1_symbl, phase_1_exp};
   simplify(phase_1_exp, ns);
-  log.warning() << format(phase_1_exp) << messaget::eom;
+  //log.warning() << format(phase_1_exp) << messaget::eom;
   equation.constraint(
     phase_1_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
   return phase_1_symbl;
 }
 
-symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation, irep_idt v) {
-  log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
+symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
+  //log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_2_name = "phase_2_" + as_string(v);
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
@@ -803,7 +803,7 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
           and_exprt{
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
-              create_exec_tot_symbol(log, equation, write.label,thread),
+              create_exec_tot_symbol(/*log,*/ equation, write.label,thread),
               equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
             }
           };
@@ -823,7 +823,7 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
           and_exprt{phase_2_t_v_exp, exp2}};
 
         simplify(phase_2_t_v_exp, ns);
-        log.warning() << format(phase_2_t_v_exp) << messaget::eom;
+        //log.warning() << format(phase_2_t_v_exp) << messaget::eom;
         equation.constraint(
           phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
@@ -842,7 +842,7 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
           and_exprt{
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
-              create_exec_tot_symbol(log, equation, read.label,thread),
+              create_exec_tot_symbol(/*log,*/ equation, read.label,thread),
               equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
             }
           };
@@ -862,29 +862,29 @@ symbol_exprt lazy_c_seqt::phase_2(messaget log, symex_target_equationt &equation
           and_exprt{phase_2_t_v_exp, exp2}};
 
         simplify(phase_2_t_v_exp, ns);
-        log.warning() << format(phase_2_t_v_exp) << messaget::eom;
+        //log.warning() << format(phase_2_t_v_exp) << messaget::eom;
         equation.constraint(
           phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
     phase_2_t_exp = equal_exprt {phase_2_t_symbl, phase_2_t_exp};
     simplify(phase_2_t_exp, ns);
-    log.warning() << format(phase_2_t_exp) << messaget::eom;
+    //log.warning() << format(phase_2_t_exp) << messaget::eom;
     equation.constraint(
       phase_2_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
   phase_2_exp = equal_exprt {phase_2_symbl, phase_2_exp};
   simplify(phase_2_exp, ns);
-  log.warning() << format(phase_2_exp) << messaget::eom;
+  //log.warning() << format(phase_2_exp) << messaget::eom;
   equation.constraint(
     phase_2_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
   return phase_2_symbl;
 }
 
-symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equation) {
-  log.warning() << "------------------ sameround" << messaget::eom;
+symbol_exprt lazy_c_seqt::same_round(/*messaget log,*/ symex_target_equationt &equation) {
+  //log.warning() << "------------------ sameround" << messaget::eom;
   irep_idt same_round_name = "same_round";
   symbol_exprt same_round_symbl{same_round_name, bool_typet{}};
 
@@ -914,15 +914,15 @@ symbol_exprt lazy_c_seqt::same_round(messaget log, symex_target_equationt &equat
 
   same_round_exp = equal_exprt{same_round_symbl, same_round_exp};
   simplify(same_round_exp, ns);
-  log.warning() << format(same_round_exp) << messaget::eom;
+  //log.warning() << format(same_round_exp) << messaget::eom;
   equation.constraint(
     same_round_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
   return same_round_symbl;
 }
 
-symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equation) {
-  log.warning() << "------------------ no interf" << messaget::eom;
+symbol_exprt lazy_c_seqt::no_interf(/*messaget log,*/ symex_target_equationt &equation) {
+  //log.warning() << "------------------ no interf" << messaget::eom;
   irep_idt no_interf_name = "no_interf";
   symbol_exprt no_interf_symbl{no_interf_name, bool_typet{}};
 
@@ -975,7 +975,7 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
 
     no_interf_t_exp = equal_exprt{no_interf_t_symbl, no_interf_t_exp};
     simplify(no_interf_t_exp, ns);
-    log.warning() << format(no_interf_t_exp) << messaget::eom;
+    //log.warning() << format(no_interf_t_exp) << messaget::eom;
     equation.constraint(
       no_interf_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
@@ -983,7 +983,7 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
   }
   no_interf_exp = equal_exprt{no_interf_symbl, no_interf_exp};
   simplify(no_interf_exp, ns);
-  log.warning() << format(no_interf_exp) << messaget::eom;
+  //log.warning() << format(no_interf_exp) << messaget::eom;
   equation.constraint(
     no_interf_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
@@ -991,13 +991,13 @@ symbol_exprt lazy_c_seqt::no_interf(messaget log, symex_target_equationt &equati
 }
 
 void lazy_c_seqt::handling_datarace(
-  symex_target_equationt &equation,
-  message_handlert &message_handler) {
+  symex_target_equationt &equation/*,
+  message_handlert &message_handler*/) {
 
-  messaget log{message_handler};
-
-  log.warning() << "-------------------DATARACE--------------------------"
-                << messaget::eom;
+  // messaget log{message_handler};
+  //
+  // log.warning() << "-------------------DATARACE--------------------------"
+  //               << messaget::eom;
 
   irep_idt phases_name = "phases";
   symbol_exprt phases_symbl{phases_name, bool_typet{}};
@@ -1007,27 +1007,27 @@ void lazy_c_seqt::handling_datarace(
       continue;
     if (equation.symbol_is_atomic(ns,v))
       continue;
-    symbol_exprt pha_1 = phase_1(log, equation, v);
-    log.warning() << "------------------ fase 1 per " << as_string(v) << " fatta " << messaget::eom;
-    symbol_exprt pha_2 = phase_2(log, equation, v);
-    log.warning() << "------------------ fase 2 per " << as_string(v) << " fatta " << messaget::eom;
+    symbol_exprt pha_1 = phase_1(/*log,*/ equation, v);
+    //log.warning() << "------------------ fase 1 per " << as_string(v) << " fatta " << messaget::eom;
+    symbol_exprt pha_2 = phase_2(/*log,*/ equation, v);
+    //log.warning() << "------------------ fase 2 per " << as_string(v) << " fatta " << messaget::eom;
     exprt pha_1_2 = and_exprt{pha_1, pha_2};
     phases_exp = or_exprt{phases_exp, pha_1_2};
-    log.warning() << "------------------ merging fase 1 e 2 per " << as_string(v) << " fatto " << messaget::eom;
+    //log.warning() << "------------------ merging fase 1 e 2 per " << as_string(v) << " fatto " << messaget::eom;
   }
   phases_exp = equal_exprt{phases_symbl, phases_exp};
   simplify(phases_exp, ns);
-  log.warning() << format(phases_exp) << messaget::eom;
+  //log.warning() << format(phases_exp) << messaget::eom;
   equation.constraint(
     phases_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
-  symbol_exprt same_round_symbl = same_round(log, equation);
+  symbol_exprt same_round_symbl = same_round(/*log,*/ equation);
 
-  symbol_exprt no_interf_symbl = no_interf(log, equation);
+  symbol_exprt no_interf_symbl = no_interf(/*log,*/ equation);
 
   exprt datarace_contraint = and_exprt{phases_symbl, and_exprt{same_round_symbl, no_interf_symbl}};
   simplify(datarace_contraint, ns);
-  log.warning() << "ASSERT: " << format(datarace_contraint) << messaget::eom;
+  //log.warning() << "ASSERT: " << format(datarace_contraint) << messaget::eom;
   //equation.constraint(
    // datarace_contraint, "datarace constraint", equation.SSA_steps.begin()->source);
   equation.assertion(true_exprt{},not_exprt{datarace_contraint},"datarace",equation.SSA_steps.begin()->source);
@@ -1210,7 +1210,7 @@ lazy_c_seqt::create_exec_symbol(unsigned label, unsigned thread, size_t round)
 }
 
 symbol_exprt
-lazy_c_seqt::create_exec_tot_symbol(messaget log, symex_target_equationt &equation, unsigned label, unsigned thread)
+lazy_c_seqt::create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned thread)
 {
   for(const auto &exec : exec_tot_vector)
   {
@@ -1231,7 +1231,7 @@ lazy_c_seqt::create_exec_tot_symbol(messaget log, symex_target_equationt &equati
   }
   constraint = equal_exprt{exec_symbol, constraint};
   simplify(constraint, ns);
-  log.warning() << format(constraint) << messaget::eom;
+  //log.warning() << format(constraint) << messaget::eom;
   equation.constraint(
     constraint, "exec tot constraint", equation.SSA_steps.begin()->source);
 
