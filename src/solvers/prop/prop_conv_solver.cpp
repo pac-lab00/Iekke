@@ -17,15 +17,12 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <iostream>
 
 static std::size_t priority_counter = 1;
-static std::size_t normal_counter = 0;
 static bool initialized = false;
 static std::size_t global_priority_limit_n = 1;
 
 void prop_conv_solvert::set_priority_limit(std::size_t n)
 {
   global_priority_limit_n = n;
-
-  if (!initialized) normal_counter = n + 1;
 }
 
 bool prop_conv_solvert::is_in_conflict(const exprt &expr) const
@@ -82,36 +79,34 @@ literalt prop_conv_solvert::get_literal(const irep_idt &identifier)
 
   if (!initialized)
   {
-    normal_counter = global_priority_limit_n + 1;
-    prop.set_no_variables(global_priority_limit_n);
+    prop.set_no_variables(global_priority_limit_n + 1);
     initialized = true;
   }
 
   std::size_t var_index;
   const std::string name = identifier.c_str();
 
-  if(name.find("En_T") != std::string::npos)
+  literalt literal;
+
+  if(name.find("En_T") != std::string::npos && priority_counter <= global_priority_limit_n)
   {
-    if(priority_counter <= global_priority_limit_n)
-    {
-      var_index = priority_counter++;
-      std::cout << ">>> [PRIORITY] ID " << var_index << " assigned to: " << name << std::endl;
-    }
-    else
-    {
-      var_index = normal_counter++;
-      std::cout << ">>> [OVERFLOW] ID " << var_index << " (was priority) assigned to: " << name << std::endl;
-    }
+    var_index = priority_counter++;
+    std::cout << ">>> [PRIORITY] ID " << var_index << " assigned to: " << name << std::endl;
+    literal = literalt(static_cast<unsigned>(var_index), false);
   }
   else
   {
-    var_index = normal_counter++;
-    std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: " << name << std::endl;
+    literal = prop.new_variable();
+    var_index = literal.var_no();
+    if(name.find("En_T") != std::string::npos)
+    {
+       std::cout << ">>> [OVERFLOW] ID " << var_index << " (was priority) assigned to: " << name << std::endl;
+    }
+    else
+    {
+       std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: " << name << std::endl;
+    }
   }
-
-  literalt literal(static_cast<unsigned>(var_index), false);
-
-  prop.set_no_variables(var_index + 1);
 
   prop.set_variable_name(literal, identifier);
   result.first->second = literal;
