@@ -526,6 +526,7 @@ void lazy_c_seqt::handling_active_threads(
   unsigned thread_created = 1;
   thread_current = 0;
   bool thread_creating = false;
+  bool thread_id_writing = false;
 
   symex_target_equationt::SSA_stepst::const_iterator prev;
 
@@ -562,9 +563,10 @@ void lazy_c_seqt::handling_active_threads(
       continue;
     }
 
-    if (s_it->source.pc->source_location().get_function() == "pthread_create" && thread_creating)
+    if (s_it->source.pc->source_location().get_function() == "pthread_create" && thread_creating && thread_id_writing)
     {
       thread_creating = false;
+      thread_id_writing = false;
       create_active_thread_statements(
         s_it->source,
         guard,
@@ -589,55 +591,13 @@ void lazy_c_seqt::handling_active_threads(
     }
     else
     {
-      /*if(
-        s_it->source.thread_nr != 0 && s_it->is_shared_write() &&
-        s_it->ssa_lhs.get_object_name() == "__CPROVER_threads_exited")
-      {
-        SSA_stept step{equation.SSA_steps.front()};
-        step.type = equation.SSA_steps.front().type;
+      if (thread_creating && s_it->is_shared_write() && s_it->ssa_lhs.get_l1_object_identifier() == "__CPROVER_next_thread_id")
+        thread_id_writing = true;
+      SSA_stept step{equation.SSA_steps.front()};
+      step.type = equation.SSA_steps.front().type;
 
-        equation.SSA_steps.pop_front();
-        temp_equation.SSA_steps.emplace_back(step);
-
-        create_active_thread_statements(
-          s_it->source,
-          guard,
-          s_it->atomic_section_id,
-          thread_current,
-          temp_equation,
-          message_handler,
-          false_exprt{});
-      }
-      else
-      {
-        if(
-          s_it->source.thread_nr == 0 && s_it->is_assignment() &&
-          s_it->ssa_lhs.get_object_name() == "return'")
-        {
-          SSA_stept step{equation.SSA_steps.front()};
-          step.type = equation.SSA_steps.front().type;
-
-          equation.SSA_steps.pop_front();
-          temp_equation.SSA_steps.emplace_back(step);
-
-          create_active_thread_statements(
-            s_it->source,
-            guard,
-            s_it->atomic_section_id,
-            thread_current,
-            temp_equation,
-            message_handler,
-            false_exprt{});
-        }*/
-        //else
-        //{
-          SSA_stept step{equation.SSA_steps.front()};
-          step.type = equation.SSA_steps.front().type;
-
-          equation.SSA_steps.pop_front();
-          temp_equation.SSA_steps.emplace_back(step);
-        //}
-      //}
+      equation.SSA_steps.pop_front();
+      temp_equation.SSA_steps.emplace_back(step);
     }
     prev = s_it;
   }
