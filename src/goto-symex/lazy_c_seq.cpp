@@ -1197,8 +1197,6 @@ lazy_c_seqt::create_exec_symbol(unsigned label, unsigned thread, size_t round)
       return exec.symbol;
   }
 
-  global_priority_limit_n++;
-
   irep_idt exec_name = "Ex_T" + std::to_string(thread) + "_L" +
                        std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt exec_symbol{exec_name, bool_typet{}};
@@ -1250,6 +1248,9 @@ symbol_exprt lazy_c_seqt::create_enabled_symbol(
       enabled.thread == thread)
       return enabled.symbol;
   }
+
+  global_priority_limit_n++;
+
   irep_idt enabled_name = "En_T" + std::to_string(thread) + "_L" +
                           std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt enabled_symbol{enabled_name, bool_typet{}};

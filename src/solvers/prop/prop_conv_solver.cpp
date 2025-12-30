@@ -16,8 +16,6 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "literal_expr.h"
 #include <iostream>
 
-static std::size_t priority_counter = 1;
-static bool initialized = false;
 static std::size_t global_priority_limit_n = 1;
 
 void prop_conv_solvert::set_priority_limit(std::size_t n)
@@ -77,10 +75,14 @@ literalt prop_conv_solvert::get_literal(const irep_idt &identifier)
   if(!result.second)
     return result.first->second;
 
-  if (!initialized)
+  if (!initialized_priority)
   {
     prop.set_no_variables(global_priority_limit_n + 1);
-    initialized = true;
+    reserved_priority_vars.reserve(global_priority_limit_n);
+    for(std::size_t i = 0; i < global_priority_limit_n; ++i)
+      reserved_priority_vars.push_back(prop.new_variable());
+      
+    initialized_priority = true;
   }
 
   std::size_t var_index;
@@ -88,11 +90,11 @@ literalt prop_conv_solvert::get_literal(const irep_idt &identifier)
 
   literalt literal;
 
-  if(name.find("En_T") != std::string::npos && priority_counter <= global_priority_limit_n)
+  if(name.find("En_T") != std::string::npos && priority_counter < reserved_priority_vars.size())
   {
-    var_index = priority_counter++;
+    literal = reserved_priority_vars[priority_counter++];
+    var_index = literal.var_no();
     std::cout << ">>> [PRIORITY] ID " << var_index << " assigned to: " << name << std::endl;
-    literal = literalt(static_cast<unsigned>(var_index), false);
   }
   else
   {
@@ -257,7 +259,10 @@ literalt prop_conv_solvert::convert_bool(const exprt &expr)
   }
   else if(expr.id() == ID_nondet_symbol)
   {
-    return prop.new_variable();
+    literalt l = prop.new_variable();
+    std::size_t var_index = l.var_no();
+    std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: (nondet)" << std::endl;
+    return l;
   }
   else if(expr.id() == ID_implies)
   {
@@ -356,7 +361,10 @@ literalt prop_conv_solvert::convert_rest(const exprt &expr)
 {
   // fall through
   ignoring(expr);
-  return prop.new_variable();
+  literalt l = prop.new_variable();
+  std::size_t var_index = l.var_no();
+  std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: (ignored) " << expr.pretty() << std::endl;
+  return l;
 }
 
 bool prop_conv_solvert::set_equality_to_true(const equal_exprt &expr)

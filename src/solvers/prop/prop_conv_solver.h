@@ -145,6 +145,10 @@ protected:
   /// Number of assumptions in each context on the stack
   std::vector<size_t> context_size_stack;
 
+  std::size_t priority_counter = 0;
+  bool initialized_priority = false;
+  std::vector<literalt> reserved_priority_vars;
+
 private:
   /// Helper method used by `set_to` for adding the constraints to `prop`.
   /// This method is private because it must not be used by derived classes.
