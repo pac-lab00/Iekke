@@ -660,13 +660,13 @@ void lazy_c_seqt::create_active_thread_statements(
 symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
 
   //log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
-  irep_idt phase_1_name = "phase_1_" + as_string(v);
+  irep_idt phase_1_name =  as_string(v) + "_phase_1";
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
   exprt phase_1_exp = false_exprt{};
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
-    irep_idt phase_1_t_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v);
+    irep_idt phase_1_t_name =  as_string(v) + "_phase_1_T" + std::to_string(thread);
     symbol_exprt phase_1_t_symbl{phase_1_t_name, bool_typet{}};
 
     phase_1_exp = or_exprt{phase_1_exp, phase_1_t_symbl};
@@ -677,7 +677,7 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
       for (auto write : writes.at(v)) {
         if (write.thread != thread)
           continue;
-        irep_idt phase_1_t_v_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
 
         phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
@@ -730,13 +730,13 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
 
 symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
   //log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
-  irep_idt phase_2_name = "phase_2_" + as_string(v);
+  irep_idt phase_2_name = as_string(v) + "_phase_2";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
   exprt phase_2_exp = false_exprt{};
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
-    irep_idt phase_2_t_name = "phase_2_T" + std::to_string(thread) + "_" + as_string(v);
+    irep_idt phase_2_t_name = as_string(v) + "_phase_2_T" + std::to_string(thread);
     symbol_exprt phase_2_t_symbl{phase_2_t_name, bool_typet{}};
 
     phase_2_exp = or_exprt{phase_2_exp, phase_2_t_symbl};
@@ -747,7 +747,7 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
       for (auto write : writes.at(v)) {
         if (write.thread != thread)
           continue;
-        irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
@@ -786,7 +786,7 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
       for (auto read : reads.at(v)) {
         if (read.thread != thread)
           continue;
-        irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
+        irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
