@@ -8,6 +8,7 @@
 #include <util/format.h>
 #include <util/format_expr.h>
 #include <util/pointer_expr.h>
+#include <util/c_types.h>
 #include <util/prefix.h>
 #include <util/simplify_expr.h>
 #include <util/source_location.h>
