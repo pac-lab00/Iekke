@@ -67,7 +67,7 @@ void lazy_c_seqt::create_write_constraints(
       .erase(this->writes.at(global_variable).begin());
     for(std::size_t round = 1; round <= rounds; ++round)
     {
-      for(const auto write : this->writes.at(global_variable))
+      for(const auto &write : this->writes.at(global_variable))
       {
         const symbol_exprt lazy_variable_exprt = create_lazy_symbol(
           write.label,
@@ -106,7 +106,7 @@ void lazy_c_seqt::create_read_constraints(
   {
     if(this->reads.count(global_variable) == 0)
       continue;
-    for(const auto read : this->reads.at(global_variable))
+    for(const auto &read : this->reads.at(global_variable))
     {
       exprt temp_constraint = read.s_it->ssa_lhs;
       for(std::size_t round = rounds; round >= 1; --round)
@@ -688,7 +688,10 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
             equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
               create_exec_tot_symbol(/*log,*/ equation, write.label,thread),
-              equal_exprt{create_dr_atom_symbol(1), from_integer({atom}, bool_typet{})}
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(1), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(1), typecast_exprt(write.where, size_type())}
+                }
               }
           };
 
@@ -758,7 +761,10 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
               create_exec_tot_symbol(/*log,*/ equation, write.label,thread),
-              equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(2), typecast_exprt(write.where, size_type())}
+              }
             }
           };
 
@@ -797,7 +803,10 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
               create_exec_tot_symbol(/*log,*/ equation, read.label,thread),
-              equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(2), typecast_exprt(read.where, size_type())}
+              }
             }
           };
 
@@ -861,7 +870,10 @@ symbol_exprt lazy_c_seqt::same_round(/*messaget log,*/ symex_target_equationt &e
           create_dr_thread_symbol(1)},
             equal_exprt{create_dr_round_symbol(2),
           plus_exprt{create_dr_round_symbol(1), from_integer({1}, unsignedbv_typet{rounds_bits})}}},
-        or_exprt{not_exprt{create_dr_atom_symbol(1)}, not_exprt{create_dr_atom_symbol(2)}}
+        and_exprt{
+          or_exprt{not_exprt{create_dr_atom_symbol(1)}, not_exprt{create_dr_atom_symbol(2)}},
+          equal_exprt{create_dr_loc_symbol(1),create_dr_loc_symbol(2)}
+          }
         }
     }
   };
@@ -1020,7 +1032,9 @@ void lazy_c_seqt::collect_reads_and_writes(
       }
       else
         num++;
-      shared_event shared_event{s_it, labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+
+      exprt where = from_integer(-1,size_type());
+      shared_event shared_event{s_it, where, labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
       guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
       // log.warning() << "Thread: " << shared_event.s_it->source.thread_nr
@@ -1062,7 +1076,15 @@ void lazy_c_seqt::collect_reads_and_writes(
         }
         else
           num++;
-        shared_event shared_event{s_it,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+
+        exprt where = from_integer(-1,size_type());
+        auto next = s_it;
+        next++;
+        if (next->is_assignment() && next->ssa_rhs.id() == ID_with) {
+          where = to_with_expr(next->ssa_rhs).where();
+        }
+
+        shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
         // log.warning()
@@ -1099,7 +1121,15 @@ void lazy_c_seqt::collect_reads_and_writes(
         }
         else
           num++;
-        shared_event shared_event{s_it,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+
+        exprt where = from_integer(-1,size_type());
+        auto next = s_it;
+        next++;
+        if (next->is_assignment() && next->ssa_rhs.id() == ID_index) {
+          where = to_index_expr(next->ssa_rhs).index();
+        }
+
+        shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
         // log.warning()
@@ -1289,4 +1319,17 @@ symbol_exprt lazy_c_seqt::create_dr_atom_symbol(unsigned num)
   dr_atom.emplace(num, atom_expr);
 
   return atom_expr;
+}
+
+symbol_exprt lazy_c_seqt::create_dr_loc_symbol(unsigned num)
+{
+  if (dr_loc.find(num) != dr_loc.end())
+    return dr_loc.at(num);
+
+  irep_idt loc_name = "loc" + std::to_string(num);
+  symbol_exprt loc_expr{loc_name, size_type()};
+
+  dr_loc.emplace(num, loc_expr);
+
+  return loc_expr;
 }

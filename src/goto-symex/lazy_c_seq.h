@@ -26,6 +26,7 @@ private:
   struct shared_event
   {
     symex_target_equationt::SSA_stepst::const_iterator s_it;
+    exprt where;
     unsigned label;
     unsigned num;
     unsigned thread;
@@ -83,6 +84,7 @@ private:
   std::unordered_map<unsigned, symbol_exprt> dr_thread;
   std::unordered_map<unsigned, symbol_exprt> dr_round;
   std::unordered_map<unsigned, symbol_exprt> dr_atom;
+  std::unordered_map<unsigned, symbol_exprt> dr_loc;
   std::unordered_set<irep_idt> global_variables;
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
@@ -180,6 +182,8 @@ private:
   symbol_exprt create_dr_round_symbol(unsigned num);
 
   symbol_exprt create_dr_atom_symbol(unsigned num);
+
+  symbol_exprt create_dr_loc_symbol(unsigned num);
 
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
