@@ -676,7 +676,9 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread)
+        std::string func = id2string(write.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (write.thread != thread || is_pthread)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
@@ -749,7 +751,9 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread)
+        std::string func = id2string(write.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (write.thread != thread || is_pthread)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -791,7 +795,9 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
     }
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
-        if (read.thread != thread)
+        std::string func = id2string(read.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (read.thread != thread || is_pthread)
           continue;
         irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
