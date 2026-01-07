@@ -1090,6 +1090,19 @@ void lazy_c_seqt::collect_reads_and_writes(
         if (next->is_assignment() && next->ssa_rhs.id() == ID_with) {
           where = to_with_expr(next->ssa_rhs).where();
         }
+        else {
+          if (s_it->source.pc->is_assign()) {
+            std::string field = "";
+            const exprt &lhs = s_it->source.pc->assign_lhs();
+            if(lhs.id() == ID_member)
+            {
+              const member_exprt &m = to_member_expr(lhs);
+              const irep_idt &comp = m.get_component_name();
+              field = id2string(comp);
+              where = from_integer(hash_string(field),size_type()); //TODO: better way to save "field" in "where"
+            }
+          }
+        }
 
         shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
@@ -1134,6 +1147,19 @@ void lazy_c_seqt::collect_reads_and_writes(
         next++;
         if (next->is_assignment() && next->ssa_rhs.id() == ID_index) {
           where = to_index_expr(next->ssa_rhs).index();
+        }
+        else {
+          if (s_it->source.pc->is_assign()) {
+            std::string field = "";
+            const exprt &lhs = s_it->source.pc->assign_lhs();
+            if(lhs.id() == ID_member)
+            {
+              const member_exprt &m = to_member_expr(lhs);
+              const irep_idt &comp = m.get_component_name();
+              field = id2string(comp);
+              where = from_integer(hash_string(field),size_type());
+            }
+          }
         }
 
         shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
