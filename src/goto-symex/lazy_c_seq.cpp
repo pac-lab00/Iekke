@@ -1087,20 +1087,16 @@ void lazy_c_seqt::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
-        if (next->is_assignment() && next->ssa_rhs.id() == ID_with) {
+        if (next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
           where = to_with_expr(next->ssa_rhs).where();
         }
-        else {
-          if (s_it->source.pc->is_assign()) {
-            std::string field = "";
-            const exprt &lhs = s_it->source.pc->assign_lhs();
-            if(lhs.id() == ID_member)
-            {
-              const member_exprt &m = to_member_expr(lhs);
-              const irep_idt &comp = m.get_component_name();
-              field = id2string(comp);
-              where = from_integer(hash_string(field),size_type()); //TODO: better way to save "field" in "where"
-            }
+        else { //STRUCT
+          std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
+          auto pos = id.rfind("..");
+          if(pos != std::string::npos)
+          {
+            std::string field = id.substr(pos + 2);
+            where = from_integer(hash_string(field), size_type());
           }
         }
 
@@ -1145,20 +1141,16 @@ void lazy_c_seqt::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
-        if (next->is_assignment() && next->ssa_rhs.id() == ID_index) {
+        if (next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
           where = to_index_expr(next->ssa_rhs).index();
         }
-        else {
-          if (s_it->source.pc->is_assign()) {
-            std::string field = "";
-            const exprt &lhs = s_it->source.pc->assign_lhs();
-            if(lhs.id() == ID_member)
-            {
-              const member_exprt &m = to_member_expr(lhs);
-              const irep_idt &comp = m.get_component_name();
-              field = id2string(comp);
-              where = from_integer(hash_string(field),size_type());
-            }
+        else { //STRUCT
+          std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
+          auto pos = id.rfind("..");
+          if(pos != std::string::npos)
+          {
+            std::string field = id.substr(pos + 2);
+            where = from_integer(hash_string(field), size_type());
           }
         }
 
