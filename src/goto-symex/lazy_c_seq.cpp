@@ -64,12 +64,13 @@ void lazy_c_seqt::create_write_constraints(
     lazy_variable first_lazy_struct = lazy_variable{
       0, 0, 0, 0, this->writes.at(global_variable).front().s_it->ssa_lhs};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
-    this->writes.at(global_variable)
-      .erase(this->writes.at(global_variable).begin());
     for(std::size_t round = 1; round <= rounds; ++round)
     {
       for(const auto &write : this->writes.at(global_variable))
       {
+        if(&write == this->writes.at(global_variable).begin().base()) {
+          continue;
+        }
         const symbol_exprt lazy_variable_exprt = create_lazy_symbol(
           write.label,
           write.thread,
