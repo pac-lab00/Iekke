@@ -119,8 +119,6 @@ public:
 
   std::size_t get_number_of_solver_calls() const;
 
-  virtual void set_no_variables(std::size_t no) {}
-
 protected:
   virtual resultt do_prop_solve() = 0;
 

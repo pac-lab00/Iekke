@@ -14,14 +14,6 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <chrono>
 
 #include "literal_expr.h"
-#include <iostream>
-
-static std::size_t global_priority_limit_n = 1;
-
-void prop_conv_solvert::set_priority_limit(std::size_t n)
-{
-  global_priority_limit_n = n;
-}
 
 bool prop_conv_solvert::is_in_conflict(const exprt &expr) const
 {
@@ -75,45 +67,11 @@ literalt prop_conv_solvert::get_literal(const irep_idt &identifier)
   if(!result.second)
     return result.first->second;
 
-  if (!initialized_priority)
-  {
-    prop.set_no_variables(global_priority_limit_n + 1);
-    reserved_priority_vars.reserve(global_priority_limit_n);
-    for(std::size_t i = 0; i < global_priority_limit_n; ++i)
-      reserved_priority_vars.push_back(prop.new_variable());
-      
-    initialized_priority = true;
-  }
-
-  std::size_t var_index;
-  const std::string name = identifier.c_str();
-
-  literalt literal;
-
-  if(name.find("En_T") != std::string::npos && priority_counter < reserved_priority_vars.size())
-  {
-    literal = reserved_priority_vars[priority_counter++];
-    var_index = literal.var_no();
-    std::cout << ">>> [PRIORITY] ID " << var_index << " assigned to: " << name << std::endl;
-  }
-  else
-  {
-    literal = prop.new_variable();
-    var_index = literal.var_no();
-    if(name.find("En_T") != std::string::npos)
-    {
-       std::cout << ">>> [OVERFLOW] ID " << var_index << " (was priority) assigned to: " << name << std::endl;
-    }
-    else
-    {
-       std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: " << name << std::endl;
-    }
-  }
-
+  literalt literal = prop.new_variable();
   prop.set_variable_name(literal, identifier);
-  result.first->second = literal;
 
-  if(freeze_all) prop.set_frozen(literal);
+  // insert
+  result.first->second = literal;
 
   return literal;
 }
@@ -259,10 +217,7 @@ literalt prop_conv_solvert::convert_bool(const exprt &expr)
   }
   else if(expr.id() == ID_nondet_symbol)
   {
-    literalt l = prop.new_variable();
-    std::size_t var_index = l.var_no();
-    std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: (nondet)" << std::endl;
-    return l;
+    return prop.new_variable();
   }
   else if(expr.id() == ID_implies)
   {
@@ -361,34 +316,31 @@ literalt prop_conv_solvert::convert_rest(const exprt &expr)
 {
   // fall through
   ignoring(expr);
-  literalt l = prop.new_variable();
-  std::size_t var_index = l.var_no();
-  std::cout << ">>> [NORMAL]   ID " << var_index << " assigned to: (ignored) " << expr.pretty() << std::endl;
-  return l;
+  return prop.new_variable();
 }
 
 bool prop_conv_solvert::set_equality_to_true(const equal_exprt &expr)
 {
-  // if(!equality_propagation)
-  //   return true;
-  //
-  // // optimization for constraint of the form
-  // // new_variable = value
-  //
-  // if(expr.lhs().id() == ID_symbol)
-  // {
-  //   const irep_idt &identifier = to_symbol_expr(expr.lhs()).get_identifier();
-  //
-  //   literalt tmp = convert(expr.rhs());
-  //
-  //   std::pair<symbolst::iterator, bool> result =
-  //     symbols.insert(std::pair<irep_idt, literalt>(identifier, tmp));
-  //
-  //   if(result.second)
-  //     return false; // ok, inserted!
-  //
-  //   // nah, already there
-  // }
+  if(!equality_propagation)
+    return true;
+
+  // optimization for constraint of the form
+  // new_variable = value
+
+  if(expr.lhs().id() == ID_symbol)
+  {
+    const irep_idt &identifier = to_symbol_expr(expr.lhs()).get_identifier();
+
+    literalt tmp = convert(expr.rhs());
+
+    std::pair<symbolst::iterator, bool> result =
+      symbols.insert(std::pair<irep_idt, literalt>(identifier, tmp));
+
+    if(result.second)
+      return false; // ok, inserted!
+
+    // nah, already there
+  }
 
   return true;
 }

@@ -2,13 +2,13 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_c_seq.h"
-#include <solvers/prop/prop_conv_solver.h>
 
 #include <thread>
 #include <util/cprover_prefix.h>
 #include <util/format.h>
 #include <util/format_expr.h>
 #include <util/pointer_expr.h>
+#include <util/c_types.h>
 #include <util/prefix.h>
 #include <util/simplify_expr.h>
 #include <util/source_location.h>
@@ -45,11 +45,6 @@ void lazy_c_seqt::operator()(
   else
     handling_guards(equation/*, message_handler*/);
 
-  messaget log_priority{message_handler};
-  log.status() << "LazyCSeq: Total Priority Variables (N) = "
-               << global_priority_limit_n << messaget::eom;
-
-  prop_conv_solvert::set_priority_limit(global_priority_limit_n);
 }
 
 void lazy_c_seqt::create_write_constraints(
@@ -69,12 +64,13 @@ void lazy_c_seqt::create_write_constraints(
     lazy_variable first_lazy_struct = lazy_variable{
       0, 0, 0, 0, this->writes.at(global_variable).front().s_it->ssa_lhs};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
-    this->writes.at(global_variable)
-      .erase(this->writes.at(global_variable).begin());
     for(std::size_t round = 1; round <= rounds; ++round)
     {
-      for(const auto write : this->writes.at(global_variable))
+      for(const auto &write : this->writes.at(global_variable))
       {
+        if(&write == this->writes.at(global_variable).begin().base()) {
+          continue;
+        }
         const symbol_exprt lazy_variable_exprt = create_lazy_symbol(
           write.label,
           write.thread,
@@ -112,7 +108,7 @@ void lazy_c_seqt::create_read_constraints(
   {
     if(this->reads.count(global_variable) == 0)
       continue;
-    for(const auto read : this->reads.at(global_variable))
+    for(const auto &read : this->reads.at(global_variable))
     {
       exprt temp_constraint = read.s_it->ssa_lhs;
       for(std::size_t round = rounds; round >= 1; --round)
@@ -532,6 +528,7 @@ void lazy_c_seqt::handling_active_threads(
   unsigned thread_created = 1;
   thread_current = 0;
   bool thread_creating = false;
+  bool thread_id_writing = false;
 
   symex_target_equationt::SSA_stepst::const_iterator prev;
 
@@ -568,9 +565,10 @@ void lazy_c_seqt::handling_active_threads(
       continue;
     }
 
-    if (s_it->source.pc->source_location().get_function() == "pthread_create" && thread_creating)
+    if (s_it->source.pc->source_location().get_function() == "pthread_create" && thread_creating && thread_id_writing)
     {
       thread_creating = false;
+      thread_id_writing = false;
       create_active_thread_statements(
         s_it->source,
         guard,
@@ -595,55 +593,13 @@ void lazy_c_seqt::handling_active_threads(
     }
     else
     {
-      /*if(
-        s_it->source.thread_nr != 0 && s_it->is_shared_write() &&
-        s_it->ssa_lhs.get_object_name() == "__CPROVER_threads_exited")
-      {
-        SSA_stept step{equation.SSA_steps.front()};
-        step.type = equation.SSA_steps.front().type;
+      if (thread_creating && s_it->is_shared_write() && s_it->ssa_lhs.get_l1_object_identifier() == "__CPROVER_next_thread_id")
+        thread_id_writing = true;
+      SSA_stept step{equation.SSA_steps.front()};
+      step.type = equation.SSA_steps.front().type;
 
-        equation.SSA_steps.pop_front();
-        temp_equation.SSA_steps.emplace_back(step);
-
-        create_active_thread_statements(
-          s_it->source,
-          guard,
-          s_it->atomic_section_id,
-          thread_current,
-          temp_equation,
-          message_handler,
-          false_exprt{});
-      }
-      else
-      {
-        if(
-          s_it->source.thread_nr == 0 && s_it->is_assignment() &&
-          s_it->ssa_lhs.get_object_name() == "return'")
-        {
-          SSA_stept step{equation.SSA_steps.front()};
-          step.type = equation.SSA_steps.front().type;
-
-          equation.SSA_steps.pop_front();
-          temp_equation.SSA_steps.emplace_back(step);
-
-          create_active_thread_statements(
-            s_it->source,
-            guard,
-            s_it->atomic_section_id,
-            thread_current,
-            temp_equation,
-            message_handler,
-            false_exprt{});
-        }*/
-        //else
-        //{
-          SSA_stept step{equation.SSA_steps.front()};
-          step.type = equation.SSA_steps.front().type;
-
-          equation.SSA_steps.pop_front();
-          temp_equation.SSA_steps.emplace_back(step);
-        //}
-      //}
+      equation.SSA_steps.pop_front();
+      temp_equation.SSA_steps.emplace_back(step);
     }
     prev = s_it;
   }
@@ -706,13 +662,13 @@ void lazy_c_seqt::create_active_thread_statements(
 symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
 
   //log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
-  irep_idt phase_1_name = "phase_1_" + as_string(v);
+  irep_idt phase_1_name =  as_string(v) + "_phase_1";
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
   exprt phase_1_exp = false_exprt{};
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
-    irep_idt phase_1_t_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v);
+    irep_idt phase_1_t_name =  as_string(v) + "_phase_1_T" + std::to_string(thread);
     symbol_exprt phase_1_t_symbl{phase_1_t_name, bool_typet{}};
 
     phase_1_exp = or_exprt{phase_1_exp, phase_1_t_symbl};
@@ -721,9 +677,11 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread)
+        std::string func = id2string(write.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (write.thread != thread || is_pthread)
           continue;
-        irep_idt phase_1_t_v_name = "phase_1_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
 
         phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
@@ -734,7 +692,10 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
             equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
               create_exec_tot_symbol(/*log,*/ equation, write.label,thread),
-              equal_exprt{create_dr_atom_symbol(1), from_integer({atom}, bool_typet{})}
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(1), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(1), typecast_exprt(write.where, size_type())}
+                }
               }
           };
 
@@ -776,13 +737,13 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
 
 symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
   //log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
-  irep_idt phase_2_name = "phase_2_" + as_string(v);
+  irep_idt phase_2_name = as_string(v) + "_phase_2";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
   exprt phase_2_exp = false_exprt{};
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
-    irep_idt phase_2_t_name = "phase_2_T" + std::to_string(thread) + "_" + as_string(v);
+    irep_idt phase_2_t_name = as_string(v) + "_phase_2_T" + std::to_string(thread);
     symbol_exprt phase_2_t_symbl{phase_2_t_name, bool_typet{}};
 
     phase_2_exp = or_exprt{phase_2_exp, phase_2_t_symbl};
@@ -791,9 +752,11 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
-        if (write.thread != thread)
+        std::string func = id2string(write.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (write.thread != thread || is_pthread)
           continue;
-        irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
@@ -804,7 +767,10 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
               create_exec_tot_symbol(/*log,*/ equation, write.label,thread),
-              equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(2), typecast_exprt(write.where, size_type())}
+              }
             }
           };
 
@@ -830,9 +796,11 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
     }
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
-        if (read.thread != thread)
+        std::string func = id2string(read.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (read.thread != thread || is_pthread)
           continue;
-        irep_idt phase_2_t_v_name = "phase_2_w_T" + std::to_string(thread) + "_" + as_string(v) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
+        irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
@@ -843,7 +811,10 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
               create_exec_tot_symbol(/*log,*/ equation, read.label,thread),
-              equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})}
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(2), typecast_exprt(read.where, size_type())}
+              }
             }
           };
 
@@ -907,7 +878,10 @@ symbol_exprt lazy_c_seqt::same_round(/*messaget log,*/ symex_target_equationt &e
           create_dr_thread_symbol(1)},
             equal_exprt{create_dr_round_symbol(2),
           plus_exprt{create_dr_round_symbol(1), from_integer({1}, unsignedbv_typet{rounds_bits})}}},
-        or_exprt{not_exprt{create_dr_atom_symbol(1)}, not_exprt{create_dr_atom_symbol(2)}}
+        and_exprt{
+          or_exprt{not_exprt{create_dr_atom_symbol(1)}, not_exprt{create_dr_atom_symbol(2)}},
+          equal_exprt{create_dr_loc_symbol(1),create_dr_loc_symbol(2)}
+          }
         }
     }
   };
@@ -1066,7 +1040,9 @@ void lazy_c_seqt::collect_reads_and_writes(
       }
       else
         num++;
-      shared_event shared_event{s_it, labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+
+      exprt where = from_integer(-1,size_type());
+      shared_event shared_event{s_it, where, labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
       guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
       // log.warning() << "Thread: " << shared_event.s_it->source.thread_nr
@@ -1108,7 +1084,24 @@ void lazy_c_seqt::collect_reads_and_writes(
         }
         else
           num++;
-        shared_event shared_event{s_it,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+
+        exprt where = from_integer(-1,size_type());
+        auto next = s_it;
+        next++;
+        if (next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
+          where = to_with_expr(next->ssa_rhs).where();
+        }
+        else { //STRUCT
+          std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
+          auto pos = id.rfind("..");
+          if(pos != std::string::npos)
+          {
+            std::string field = id.substr(pos + 2);
+            where = from_integer(hash_string(field), size_type());
+          }
+        }
+
+        shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
         // log.warning()
@@ -1145,7 +1138,24 @@ void lazy_c_seqt::collect_reads_and_writes(
         }
         else
           num++;
-        shared_event shared_event{s_it,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+
+        exprt where = from_integer(-1,size_type());
+        auto next = s_it;
+        next++;
+        if (next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
+          where = to_index_expr(next->ssa_rhs).index();
+        }
+        else { //STRUCT
+          std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
+          auto pos = id.rfind("..");
+          if(pos != std::string::npos)
+          {
+            std::string field = id.substr(pos + 2);
+            where = from_integer(hash_string(field), size_type());
+          }
+        }
+
+        shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
         // log.warning()
@@ -1196,7 +1206,6 @@ lazy_c_seqt::create_exec_symbol(unsigned label, unsigned thread, size_t round)
     if(exec.label == label && exec.round == round && exec.thread == thread)
       return exec.symbol;
   }
-
   irep_idt exec_name = "Ex_T" + std::to_string(thread) + "_L" +
                        std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt exec_symbol{exec_name, bool_typet{}};
@@ -1248,9 +1257,6 @@ symbol_exprt lazy_c_seqt::create_enabled_symbol(
       enabled.thread == thread)
       return enabled.symbol;
   }
-
-  global_priority_limit_n++;
-
   irep_idt enabled_name = "En_T" + std::to_string(thread) + "_L" +
                           std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt enabled_symbol{enabled_name, bool_typet{}};
@@ -1339,4 +1345,17 @@ symbol_exprt lazy_c_seqt::create_dr_atom_symbol(unsigned num)
   dr_atom.emplace(num, atom_expr);
 
   return atom_expr;
+}
+
+symbol_exprt lazy_c_seqt::create_dr_loc_symbol(unsigned num)
+{
+  if (dr_loc.find(num) != dr_loc.end())
+    return dr_loc.at(num);
+
+  irep_idt loc_name = "loc" + std::to_string(num);
+  symbol_exprt loc_expr{loc_name, size_type()};
+
+  dr_loc.emplace(num, loc_expr);
+
+  return loc_expr;
 }

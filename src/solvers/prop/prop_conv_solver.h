@@ -104,8 +104,6 @@ public:
     return dynamic_cast<hardness_collectort *>(&prop);
   }
 
-  static void set_priority_limit(std::size_t n);
-
 protected:
   bool post_processing_done = false;
 
@@ -144,10 +142,6 @@ protected:
   /// `assumption_stack` is segmented in contexts;
   /// Number of assumptions in each context on the stack
   std::vector<size_t> context_size_stack;
-
-  std::size_t priority_counter = 0;
-  bool initialized_priority = false;
-  std::vector<literalt> reserved_priority_vars;
 
 private:
   /// Helper method used by `set_to` for adding the constraints to `prop`.
