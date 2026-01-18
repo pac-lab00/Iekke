@@ -82,6 +82,8 @@ public:
 
   virtual ~symex_target_equationt() = default;
 
+  std::size_t priority_limit = 0;
+
   /// \copydoc symex_targett::shared_read()
   virtual void shared_read(
     const exprt &guard,

@@ -27,7 +27,10 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include <linking/static_lifetime_init.h>
 
+#include <linking/static_lifetime_init.h>
+
 #include <solvers/decision_procedure.h>
+#include <solvers/prop/prop_conv_solver.h>
 
 #include <util/json_stream.h>
 #include <util/make_unique.h>
@@ -182,6 +185,14 @@ void convert_symex_target_equation(
 {
   messaget msg(message_handler);
   msg.status() << "converting SSA" << messaget::eom;
+
+  msg.status() << "converting SSA" << messaget::eom;
+
+  if (auto *prop_solver = dynamic_cast<prop_conv_solvert*>(&decision_procedure))
+  {
+      // Pass the priority limit from the equation to the solver
+      prop_solver->set_priority_limit(equation.priority_limit);
+  }
 
   equation.convert(decision_procedure);
 }

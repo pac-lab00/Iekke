@@ -14,6 +14,12 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <chrono>
 
 #include "literal_expr.h"
+#include <iostream>
+
+void prop_conv_solvert::set_priority_limit(std::size_t n)
+{
+  priority_limit = n;
+}
 
 bool prop_conv_solvert::is_in_conflict(const exprt &expr) const
 {
@@ -67,7 +73,28 @@ literalt prop_conv_solvert::get_literal(const irep_idt &identifier)
   if(!result.second)
     return result.first->second;
 
-  literalt literal = prop.new_variable();
+  if(!initialized_priority && priority_limit > 0)
+  {
+    reserved_priority_vars.reserve(priority_limit);
+    for(std::size_t i = 0; i < priority_limit; ++i)
+      reserved_priority_vars.push_back(prop.new_variable());
+    initialized_priority = true;
+  }
+
+  literalt literal;
+  const std::string name = identifier.c_str();
+
+  if(priority_limit > 0 && name.find("En_T") != std::string::npos && priority_counter < reserved_priority_vars.size())
+  {
+    literal = reserved_priority_vars[priority_counter++];
+    //std::cout << ">>> [PRIORITY] ID " << literal.var_no() << " assigned to: " << name << std::endl;
+  }
+  else
+  {
+    literal = prop.new_variable();
+    //std::cout << ">>> [NORMAL]   ID " << literal.var_no() << " assigned to: " << name << std::endl;
+  }
+
   prop.set_variable_name(literal, identifier);
 
   // insert

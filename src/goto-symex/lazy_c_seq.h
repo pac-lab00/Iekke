@@ -11,6 +11,7 @@
 class lazy_c_seqt
 {
 public:
+  std::size_t global_priority_limit_n = 0;
   explicit lazy_c_seqt(const namespacet &ns, const std::size_t rounds, const bool datarace)
     : ns(ns), rounds(rounds), datarace(datarace)
   {

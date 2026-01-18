@@ -21,8 +21,11 @@ void lazy_c_seqt::operator()(
   message_handlert &message_handler)
 {
   messaget log{message_handler};
-  log.statistics() << "Adding LazyCSeq constraints with " << rounds << " rounds"
-                   << messaget::eom;
+  messaget log_priority{message_handler};
+  log.status() << "LazyCSeq: Total Priority Variables (N) = "
+               << global_priority_limit_n << messaget::eom;
+
+  //equation.priority_limit = global_priority_limit_n;
 
   check_shared_event(equation/*, message_handler*/);
 
@@ -45,6 +48,9 @@ void lazy_c_seqt::operator()(
   else
     handling_guards(equation/*, message_handler*/);
 
+  log.status() << "LazyCSeq: Total Priority Variables (N) = "
+               << global_priority_limit_n << messaget::eom;
+  equation.priority_limit = global_priority_limit_n;
 }
 
 void lazy_c_seqt::create_write_constraints(
@@ -1206,6 +1212,8 @@ lazy_c_seqt::create_exec_symbol(unsigned label, unsigned thread, size_t round)
     if(exec.label == label && exec.round == round && exec.thread == thread)
       return exec.symbol;
   }
+
+  //global_priority_limit_n++;
   irep_idt exec_name = "Ex_T" + std::to_string(thread) + "_L" +
                        std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt exec_symbol{exec_name, bool_typet{}};
@@ -1257,6 +1265,8 @@ symbol_exprt lazy_c_seqt::create_enabled_symbol(
       enabled.thread == thread)
       return enabled.symbol;
   }
+
+  global_priority_limit_n++;
   irep_idt enabled_name = "En_T" + std::to_string(thread) + "_L" +
                           std::to_string(label) + "_R" + std::to_string(round);
   symbol_exprt enabled_symbol{enabled_name, bool_typet{}};
