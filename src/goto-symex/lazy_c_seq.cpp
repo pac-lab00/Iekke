@@ -240,14 +240,12 @@ void lazy_c_seqt::create_cs_constraint(
   {
     exprt previous;
     unsigned max_num = 0;
-    unsigned min_num = 0;
 
     max_num = labels[thread];
 
     n_bit[thread] = 0 ? 0 : 32 - __builtin_clz(max_num + 1);
 
-    //log.warning() << "thread " << thread << ": from " << min_num << " to "
-    //              << max_num << messaget::eom;
+    //log.warning() << "thread " << thread << ": from 0 to " << max_num << messaget::eom;
 
     for(size_t round = 0; round <= rounds; ++round)
     {
@@ -255,7 +253,7 @@ void lazy_c_seqt::create_cs_constraint(
 
       if(round == 0)
       {
-        equal_exprt constraint{cs, from_integer({0}, unsignedbv_typet{n_bit[thread]})};
+        less_than_or_equal_exprt constraint{cs, from_integer({0}, unsignedbv_typet{n_bit[thread]})};
         //log.warning() << format(constraint) << messaget::eom;
         equation.constraint(
           constraint,
@@ -264,17 +262,6 @@ void lazy_c_seqt::create_cs_constraint(
         previous = cs;
       }
       else {
-        if (round == 1) {
-          exprt min{from_integer({min_num}, unsignedbv_typet{n_bit[thread]})};
-          less_than_or_equal_exprt constraint{min, cs};
-          //log.warning() << format(constraint) << messaget::eom;
-          equation.constraint(
-            constraint,
-            "cs constraint",
-            equation.SSA_steps.begin()->source);
-          previous = cs;
-        }
-        else {
           less_than_or_equal_exprt constraint{previous, cs};
           //log.warning() << format(constraint) << messaget::eom;
           equation.constraint(
@@ -282,7 +269,6 @@ void lazy_c_seqt::create_cs_constraint(
             "cs constraint",
             equation.SSA_steps.begin()->source);
           previous = cs;
-        }
       }
       if(round == rounds)
       {
@@ -296,7 +282,7 @@ void lazy_c_seqt::create_cs_constraint(
         previous = cs;
       }
     }
-    for (size_t label = 1; label <= labels[thread]; label++)
+    for (size_t label = 0; label <= labels[thread]; label++)
     {
       for(size_t round = 1; round <= rounds; ++round)
       {
@@ -317,35 +303,54 @@ void lazy_c_seqt::create_cs_constraint(
 
         std::string active_name =
           "__CPROVER_active_thread_T" + std::to_string(thread);
-        std::optional<symbol_exprt> active_thread =
-          previous_shared(active_name, label, 0, thread, round);
         exprt active_thread_value = true_exprt{};
-        if(active_thread.has_value())
-        {
-          active_thread_value = active_thread.value();
+        if (label > 0) {
+          std::optional<symbol_exprt> active_thread =
+            previous_shared(active_name, label, 0, thread, round);
+          if(active_thread.has_value())
+          {
+            active_thread_value = active_thread.value();
+          }
         }
 
-        greater_than_exprt expr_1{cs_curr, label_exp};
-        exprt expr_2;
-        if(round == 1)
-          expr_2 = true_exprt{};
-        else
-        {
-          expr_2 = less_than_or_equal_exprt{cs_prev, label_exp};
+
+        if (label != 0) {
+          greater_than_exprt expr_1{cs_curr, label_exp};
+          exprt expr_2;
+          if(round == 1)
+            expr_2 = true_exprt{};
+          else
+          {
+            expr_2 = less_than_or_equal_exprt{cs_prev, label_exp};
+          }
+          and_exprt expr_3{expr_1, expr_2};
+          equal_exprt enabled_expr{enabled, expr_3};
+          simplify(enabled_expr, ns);
+          //log.warning() << format(enabled_expr) << messaget::eom;
+          equation.constraint(
+            enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
+          implies_exprt active_expr{enabled, active_thread_value};
+          simplify(active_expr, ns);
+          //log.warning() << format(active_expr) << messaget::eom;
+          equation.constraint(active_expr, "cs constraint", equation.SSA_steps.begin()->source);
         }
-        and_exprt expr_3{expr_1, expr_2};
-        equal_exprt enabled_expr{enabled, expr_3};
-        simplify(enabled_expr, ns);
-        //log.warning() << format(enabled_expr) << messaget::eom;
-        equation.constraint(
-          enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
+        else {
+          equal_exprt enabled_expr{enabled, false_exprt{}};
+          simplify(enabled_expr, ns);
+          //log.warning() << format(enabled_expr) << messaget::eom;
+          equation.constraint(
+            enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
+        }
 
-        implies_exprt active_expr{enabled, active_thread_value};
-        simplify(active_expr, ns);
-        //log.warning() << format(active_expr) << messaget::eom;
-        equation.constraint(active_expr, "cs constraint", equation.SSA_steps.begin()->source);
-
-        and_exprt expr_5{enabled, guards[thread].at(label)};
+        exprt guard = true_exprt{};
+        exprt expr_5;
+        if (label > 0) {
+          guard = guards[thread].at(label);
+          expr_5 = and_exprt{enabled, guard};
+        }
+        else {
+          expr_5 = enabled;
+        }
         equal_exprt constraint{exec, expr_5};
         simplify(constraint, ns);
         //log.warning() << format(constraint) << messaget::eom;
