@@ -706,11 +706,15 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
+          exprt enabled_exp = true_exprt{};
+          if (write.label < labels[write.thread]) {
+            enabled_exp = not_exprt{create_enabled_symbol(write.label+1,thread,round)};
+          }
           exprt exp = implies_exprt{
             create_exec_symbol(write.label,thread,round),
             and_exprt{
               equal_exprt{create_dr_round_symbol(1),from_integer({round}, unsignedbv_typet{rounds_bits})},
-              not_exprt{create_enabled_symbol(write.label+1,thread,round)}
+              enabled_exp
             }};
           exp2 = and_exprt{exp2, exp};
         }
@@ -781,11 +785,15 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
+          exprt enabled_exp = true_exprt{};
+          if (write.label > 1) {
+            enabled_exp = not_exprt{create_enabled_symbol(write.label-1,thread,round)};
+          }
           exprt exp = implies_exprt{
             create_exec_symbol(write.label,thread,round),
             and_exprt{
               equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{rounds_bits})},
-              not_exprt{create_enabled_symbol(write.label-1,thread,round)}
+              enabled_exp
             }};
           exp2 = and_exprt{exp2, exp};
         }
@@ -825,11 +833,15 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
 
         exprt exp2 = true_exprt{};
         for (std::size_t round = 1; round <= rounds; round++) {
+          exprt enabled_exp = true_exprt{};
+          if (read.label > 1) {
+            enabled_exp = not_exprt{create_enabled_symbol(read.label-1,thread,round)};
+          }
           exprt exp = implies_exprt{
             create_exec_symbol(read.label,thread,round),
             and_exprt{
               equal_exprt{create_dr_round_symbol(2),from_integer({round}, unsignedbv_typet{rounds_bits})},
-              not_exprt{create_enabled_symbol(read.label-1,thread,round)}
+              enabled_exp
             }};
           exp2 = and_exprt{exp2, exp};
         }
