@@ -68,9 +68,6 @@ void lazy_c_seqt::create_write_constraints(
     {
       for(const auto &write : this->writes.at(global_variable))
       {
-        if(&write == this->writes.at(global_variable).begin().base()) {
-          continue;
-        }
         const symbol_exprt lazy_variable_exprt = create_lazy_symbol(
           write.label,
           write.thread,
@@ -122,6 +119,9 @@ void lazy_c_seqt::create_read_constraints(
         {
           temp_constraint = if_exprt{exec, previous.value(), temp_constraint};
         }
+        else {
+          temp_constraint = if_exprt{exec, read.s_it->ssa_lhs, temp_constraint};
+        }
       }
       equal_exprt final_constraint{read.s_it->ssa_lhs, temp_constraint};
       //log.warning() << format(final_constraint) << messaget::eom;
@@ -167,6 +167,8 @@ std::optional<symbol_exprt> lazy_c_seqt::previous_shared(
       previous = lazy_variable.symbol;
       continue;
     }
+    if (previous == lazy_variables.at(variable).front().symbol && (label > lazy_variables.at(variable).front().label || (label <= lazy_variables.at(variable).front().label && num > lazy_variables.at(variable).front().num)))
+      return std::nullopt;
     return previous;
   }
   return previous;
