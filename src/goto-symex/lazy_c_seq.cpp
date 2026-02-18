@@ -74,9 +74,6 @@ void lazy_c_seqt::create_write_constraints(
     {
       for(const auto &write : this->writes.at(global_variable))
       {
-        if(&write == this->writes.at(global_variable).begin().base()) {
-          continue;
-        }
         const symbol_exprt lazy_variable_exprt = create_lazy_symbol(
           write.label,
           write.thread,
