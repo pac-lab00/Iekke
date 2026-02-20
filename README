@@ -79,6 +79,6 @@ Otherwise, if there exists any loop whose unwind limit cannot be statically sugg
 
 For SV-COMP use, please ensure that the script deagle and the binary deagle_exe are placed in the same directory, and run
 ```
-./deagle <property> <input file>
+./iekke <property> <input file>
 ```
 where ``<property>`` can be unreach-call.prp, no-data-race.prp, no-overflow.prp, or valid-memsafety.prp.
