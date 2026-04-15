@@ -36,6 +36,10 @@ void lazy_c_seqt::operator()(
 
   create_cs_constraint(equation/*, message_handler*/);
 
+  create_read_canonical(equation);
+
+  create_write_canonical(equation);
+
   handling_atomic_sections(equation/*, message_handler*/);
 
   if(datarace) {
@@ -55,7 +59,7 @@ void lazy_c_seqt::create_write_constraints(
 
   //log.warning() << "-------------------WRITES--------------------------"
   //              << messaget::eom;
-
+  unsigned last_id = 0;
   for(auto global_variable : global_variables)
   {
     if(this->writes.count(global_variable) == 0)
@@ -74,8 +78,17 @@ void lazy_c_seqt::create_write_constraints(
           round,
           write.s_it->ssa_lhs,
           write.s_it->ssa_lhs.type());
+        irep_idt id_name = "id_T" + std::to_string(event.thread) + "_L" +
+                             std::to_string(event.label) + "_R" + std::to_string(round);
+        symbol_exprt id_symbol{id_name, integer_typet{}};
+        exprt id_constraint = equal_exprt(
+            id_symbol,
+          from_integer(last_id, integer_typet{})
+      );
         lazy_variable lazy_struct =
-          lazy_variable{round, write.label, write.num, write.thread, lazy_variable_exprt};
+          lazy_variable{round, write.label, write.num, write.thread, last_id, lazy_variable_exprt,
+            id_constraint};
+        last_id++;
         this->lazy_variables[global_variable].emplace_back(lazy_struct);
 
         const symbol_exprt exec =
@@ -1377,4 +1390,104 @@ symbol_exprt lazy_c_seqt::create_dr_loc_symbol(unsigned num)
   dr_loc.emplace(num, loc_expr);
 
   return loc_expr;
+}
+void lazy_c_seqt::create_write_canonical(
+  symex_target_equationt &equation)
+{
+  for(auto global_variable : global_variables)
+  {
+    if(this->writes.count(global_variable) == 0)
+      continue;
+    for(std::size_t round = 1; round <= rounds; ++round)
+    {
+      for(const auto &write : this->writes.at(global_variable))
+      {
+        exprt exec = create_exec_symbol(write.label, write.thread, round);
+        exprt cs = equal_exprt(create_cs_symbol(write.thread, round), from_integer(write.label, type));
+        exprt fire_cond = and_exprt(exec, cs);
+
+        const exprt id_prev = create_id_symbol(write, round - 1);
+        const exprt id_curr = create_id_symbol(write, round);
+
+
+        exprt write_a = implies_exprt(fire_cond,
+          greater_than_exprt(id_prev, create_WINR_symbol(global_variable, round - 1)));
+
+        exprt is_winr = equal_exprt(create_WINR_symbol(global_variable, round), id_curr);
+        exprt write_b = implies_exprt(and_exprt(fire_cond, is_winr),
+          greater_than_exprt(id_prev, create_LW_symbol(global_variable, round)));
+
+        equation.constraint(or_exprt(write_a, write_b), "write canonical", write.s_it->source);
+      }
+    }
+  }
+}
+
+void lazy_c_seqt::create_read_canonical(
+  symex_target_equationt &equation) {
+
+  for(auto global_variable : global_variables)
+  {
+    if(this->reads.count(global_variable) == 0)
+      continue;
+    for(const auto &read : this->reads.at(global_variable))
+    {
+      for(std::size_t round = rounds; round >= 1; --round)
+      {
+        const symbol_exprt exec =
+          create_exec_symbol(read.label, read.thread, round);
+
+        exprt read_canonical = implies_exprt{
+          and_exprt{exec, equal_exprt{create_cs_symbol(read.thread, round), read.label}},
+          not_equal_exprt{
+            create_LW_symbol(global_variable, round),
+            create_LW_symbol(global_variable, round-1)}};
+
+        equation.constraint(
+          read_canonical, "read canonical", read.s_it->source);
+      }
+    }
+  }
+}
+
+
+
+  exprt lazy_c_seqt::create_LW_symbol(irep_id variable, t_size roundL)
+  {
+   const unsigned_int_typet type;
+
+    exprt lw = from_integer(0, type);
+
+  for(std::size_t round = 1; round <= roundL; ++round) {
+    for(const auto &write : this->writes.at(variable)) {
+      exprt exec = create_exec_symbol(write.label, write.thread, round);
+      exprt id = create_id_symbol(write, round, variable);
+      lw = if_exprt(exec, id, lw);
+    }
+  }
+  return lw;
+  }
+
+exprt lazy_c_seqt::create_WINR_symbol(irep_id variable, std::size_t roundL)
+{
+  const unsigned_int_typet type;
+  exprt winr = from_integer(0, type);
+
+  for(std::size_t round = 1; round <= roundL; ++round) {
+    for(const auto &read : this->reads.at(variable)) {
+      exprt exec_read = create_exec_symbol(read.label, read.thread, round);
+      exprt lw_at_r = create_LW_symbol(variable, round);
+
+      winr = if_exprt(exec_read, lw_at_r, winr);
+    }
+  }
+  return winr;
+}
+exprt lazy_c_seqt::create_id_symbol(const shared_event &event, std::size_t round, irep_id variable)
+{
+  for(const auto &lazy_variable : lazy_variables.at(variable)) {
+    if(lazy_variable.label == event.label && lazy_variable.round == round && lazy_variable.thread == event.thread)
+      return lazy_variable.exptr_id;
+  }
+
 }

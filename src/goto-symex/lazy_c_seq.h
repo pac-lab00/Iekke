@@ -15,7 +15,6 @@ public:
     : ns(ns), rounds(rounds), datarace(datarace)
   {
   }
-
   void operator()(symex_target_equationt &, message_handlert &);
 
 private:
@@ -37,7 +36,9 @@ private:
     unsigned label;
     unsigned num;
     unsigned thread;
+    unsigned id;
     symbol_exprt symbol;
+    exprt exptr_id;
   };
   struct active_thread
   {
@@ -134,6 +135,7 @@ private:
     unsigned thread,
     std::size_t round);
 
+  void create_read_canonical(symex_target_equationt &equation);
   void create_cs_constraint(
     symex_target_equationt &equation/*,
     message_handlert &message_handler*/);
@@ -184,6 +186,8 @@ private:
   symbol_exprt create_dr_atom_symbol(unsigned num);
 
   symbol_exprt create_dr_loc_symbol(unsigned num);
+
+  void create_write_canonical(symex_target_equationt &equation);
 
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
