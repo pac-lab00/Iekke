@@ -188,7 +188,9 @@ private:
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
   void create_write_canonical(symex_target_equationt &equation);
-
+  exprt create_LW_symbol(irep_idt variable, std::size_t roundL);
+  exprt create_WINR_symbol(irep_idt variable, std::size_t roundL);
+  exprt create_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
     exprt &guard,
