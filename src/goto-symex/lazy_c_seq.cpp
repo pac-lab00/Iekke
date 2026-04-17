@@ -1453,7 +1453,6 @@ void lazy_c_seqt::create_read_canonical(
     create_LW_symbol(global_variable, round - 1)
   )
 );
-        log.warning() << format(constraint) << messaget::eom;
         equation.constraint(
           read_canonical, "read canonical", read.s_it->source);
       }
