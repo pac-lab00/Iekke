@@ -1411,7 +1411,7 @@ void lazy_c_seqt::create_write_canonical(
       for(const auto &write : this->writes.at(global_variable))
       {
         exprt exec = create_exec_symbol(write.label, write.thread, round);
-        exprt cs = equal_exprt(create_cs_symbol(write.thread, round), from_integer(write.label, unsignedbv_typet(32)));
+        exprt cs = equal_exprt(create_cs_symbol(write.thread, round), from_integer(write.label, unsignedbv_typet(threads_bits)));
         exprt fire_cond = and_exprt(exec, cs);
 
         const exprt id_prev = create_id_symbol(write, round - 1,global_variable);
@@ -1447,12 +1447,13 @@ void lazy_c_seqt::create_read_canonical(
 
         exprt read_canonical = implies_exprt(and_exprt(
     exec,
-    equal_exprt(create_cs_symbol(read.thread, round), from_integer(read.label, unsignedbv_typet(32)))),
+    equal_exprt(create_cs_symbol(read.thread, round), from_integer(read.label, unsignedbv_typet(threads_bits)))),
     notequal_exprt(
     create_LW_symbol(global_variable, round),
     create_LW_symbol(global_variable, round - 1)
   )
 );
+        log.warning() << format(constraint) << messaget::eom;
         equation.constraint(
           read_canonical, "read canonical", read.s_it->source);
       }
@@ -1464,7 +1465,7 @@ void lazy_c_seqt::create_read_canonical(
 
 exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, size_t roundL)
   {
-    exprt lw = from_integer(0, unsignedbv_typet(32));
+    exprt lw = from_integer(0, unsignedbv_typet( threads_bits));
 
   for(std::size_t round = 1; round <= roundL; ++round) {
     for(const auto &write : this->writes.at(variable)) {
@@ -1478,7 +1479,7 @@ exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, size_t roundL)
 
 exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, std::size_t roundL)
 {
-  exprt winr = from_integer(0, unsignedbv_typet(32));
+  exprt winr = from_integer(0, unsignedbv_typet( threads_bits));
 
   for(std::size_t round = 1; round <= roundL; ++round) {
     for(const auto &read : this->reads.at(variable)) {
@@ -1492,7 +1493,7 @@ exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, std::size_t roundL)
 }
 exprt lazy_c_seqt::create_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
 {
-  exprt id = from_integer(0, unsignedbv_typet(32));
+  exprt id = from_integer(0, unsignedbv_typet (threads_bits));
   for(const auto &lazy_variable : lazy_variables.at(variable)) {
     if(lazy_variable.label == event.label && lazy_variable.round == round && lazy_variable.thread == event.thread) {
       id= lazy_variable.exptr_id;
