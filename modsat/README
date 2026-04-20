@@ -1,0 +1,15 @@
+This is an implementation of a SAT modulo SAT solver based on Minisat 2.2.
+It is designed to solve instances that have been partitioned into multiple CNFs which share relatively few variables between them.
+Right now it is paired with a simple, incremental bounded model checker to provide a source of modular CNFs to solve. 
+
+As a side-effect of proving an instance UNSAT, this solver will produce interpolants between each module. These can be found in the vector `Solver->interpolant'
+
+Build with 
+
+$cd Release
+$make
+
+or
+
+$cd Static
+$make
