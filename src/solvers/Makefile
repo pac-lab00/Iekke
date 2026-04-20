@@ -22,6 +22,15 @@ ifneq ($(MINISAT2),)
   CLEANFILES += $(MINISAT2_LIB) $(patsubst %$(OBJEXT), %$(DEPEXT), $(MINISAT2_LIB))
 endif
 
+MODSAT ?= ../../modsat
+ifneq ($(wildcard $(MODSAT)/core/Solver.cc),)
+  MODSAT_SRC=sat/satcheck_sms.cpp
+  MODSAT_INCLUDE=-I $(MODSAT)
+  MODSAT_LIB=$(MODSAT)/core/Solver$(OBJEXT) $(MODSAT)/core/Config$(OBJEXT)
+  CP_CXXFLAGS += -DHAVE_MODSAT
+  CLEANFILES += $(MODSAT_LIB) $(patsubst %$(OBJEXT), %$(DEPEXT), $(MODSAT_LIB))
+endif
+
 ifneq ($(IPASIR),)
   IPASIR_SRC=sat/satcheck_ipasir.cpp
   IPASIR_INCLUDE=-I $(IPASIR)
@@ -74,6 +83,7 @@ SRC = $(BOOLEFORCE_SRC) \
       $(GLUCOSE_SRC) \
       $(LINGELING_SRC) \
       $(MINISAT2_SRC) \
+      $(MODSAT_SRC) \
       $(IPASIR_SRC) \
       $(MINISAT_SRC) \
       $(PICOSAT_SRC) \
@@ -254,8 +264,25 @@ $(GLUCOSE)/core/Solver$(OBJEXT): $(GLUCOSE)/core/Solver.cc
 endif
 endif
 
+# satcheck_sms.cpp e i sorgenti di modsat vengono compilati con
+# -DMinisat=ModSat per spostare le loro definizioni dal namespace
+# Minisat (usato da minisat-2.2.1) a un namespace ModSat separato.
+# Questo evita i conflitti di multiple definition a link time.
+# -fpermissive e' richiesto da friend decl con default argument.
+MODSAT_CXXFLAGS = -DMinisat=ModSat -fpermissive
+
+sat/satcheck_sms$(OBJEXT): sat/satcheck_sms.cpp
+	$(CXX) $(CP_CXXFLAGS) $(INCLUDES) $(MODSAT_INCLUDE) $(MODSAT_CXXFLAGS) -c sat/satcheck_sms.cpp -o sat/satcheck_sms$(OBJEXT)
+
+# Build rules per gli oggetti di modsat
+$(MODSAT)/core/Solver$(OBJEXT): $(MODSAT)/core/Solver.cc
+	$(CXX) $(CP_CXXFLAGS) -I $(MODSAT) $(MODSAT_CXXFLAGS) -c $< -o $@
+$(MODSAT)/core/Config$(OBJEXT): $(MODSAT)/core/Config.cpp
+	$(CXX) $(CP_CXXFLAGS) -I $(MODSAT) $(MODSAT_CXXFLAGS) -c $< -o $@
+
 INCLUDES += -I .. \
   $(CHAFF_INCLUDE) $(BOOLEFORCE_INCLUDE) $(MINISAT_INCLUDE) $(MINISAT2_INCLUDE) \
+  $(MODSAT_INCLUDE) \
   $(IPASIR_INCLUDE) \
   $(SQUOLEM2_INC) $(CUDD_INCLUDE) $(GLUCOSE_INCLUDE) \
 	$(PICOSAT_INCLUDE) $(LINGELING_INCLUDE) $(CADICAL_INCLUDE)
@@ -274,7 +301,7 @@ endif
 endif
 
 SOLVER_LIB = $(CHAFF_LIB) $(BOOLEFORCE_LIB) $(MINISAT_LIB) \
-        $(MINISAT2_LIB) $(SQUOLEM2_LIB) $(CUDD_LIB) \
+        $(MINISAT2_LIB) $(MODSAT_LIB) $(SQUOLEM2_LIB) $(CUDD_LIB) \
         $(PICOSAT_LIB) $(LINGELING_LIB) $(GLUCOSE_LIB) $(CADICAL_LIB)
 
 SOLVER_OBJS = $(filter %$(OBJEXT), $(SOLVER_LIB))

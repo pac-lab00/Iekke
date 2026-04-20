@@ -416,6 +416,7 @@ void postprocess_equation(
 }
 
 #include <solvers/sat/satcheck_minisat2.h>
+#include <solvers/sat/satcheck_sms.h>
 #include <solvers/prop/prop_conv_solver.h>
 
 std::chrono::duration<double> prepare_property_decider(
@@ -434,6 +435,40 @@ std::chrono::duration<double> prepare_property_decider(
 
   convert_symex_target_equation(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
+
+
+  {
+    auto &_prop_for_sms = property_decider.get_solver()->prop();
+    if(auto *sms = dynamic_cast<sms_solvert*>(&_prop_for_sms))
+    {
+      std::cout << "SMS: converting canonical constraints into slave\n";
+      sms->redirect_to_slave = true;
+      equation.convert_canonical_constraints(
+        property_decider.get_decision_procedure());
+      sms->redirect_to_slave = false;
+
+      bvt shared_vars;
+      if(auto *dp = dynamic_cast<prop_conv_solvert*>(
+           &property_decider.get_decision_procedure()))
+      {
+        for(const auto &sym : dp->get_symbols())
+        {
+          if(!sym.second.is_constant())
+            shared_vars.push_back(sym.second);
+        }
+      }
+
+      std::cout << "SMS: attaching slave with "
+                << shared_vars.size() << " shared variables\n";
+      sms->attach_slave(shared_vars);
+    }
+    else
+    {
+      equation.convert_canonical_constraints(
+        property_decider.get_decision_procedure());
+    }
+  }
+
   property_decider.update_properties_goals_from_symex_target_equation(
     properties);
   property_decider.convert_goals();

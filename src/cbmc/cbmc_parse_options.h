@@ -33,7 +33,7 @@ class optionst;
 
 // clang-format off
 #define CBMC_OPTIONS \
-  "(deagle)(datarace)(goblint)(locksmith)" \
+  "(deagle)(datarace)(goblint)(locksmith)(sms)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \
   OPT_FUNCTIONS \

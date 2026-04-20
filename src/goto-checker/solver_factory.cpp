@@ -214,6 +214,7 @@ make_satcheck_prop(message_handlert &message_handler, const optionst &options)
 }
 
 #include "solvers/sat/satcheck_minisat2.h"
+#include "solvers/sat/satcheck_sms.h"
 
 static std::unique_ptr<propt>
 get_sat_solver(message_handlert &message_handler, const optionst &options)
@@ -268,6 +269,11 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
   {
     solver->set_prop(make_satcheck_prop<deagle_solvert>(message_handler, options));
     std::cout << "Deagle's solver is set!!!!!!\n";
+  }
+  else if(options.get_bool_option("sms"))
+  {
+    solver->set_prop(make_satcheck_prop<sms_solvert>(message_handler, options));
+    std::cout << "ModSAT SMS solver is set!!!!!!\n";
   }
   // __SZH_ADD_END__
   else if(
@@ -627,6 +633,9 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
   }
 
   // __SZH_ADD_BEGIN__ : default
+  if(cmdline.isset("sms"))
+    options.set_option("sms", true), solver_set = true;
+
   if(cmdline.isset("deagle") || !solver_set)
     options.set_option("deagle", true);
 
