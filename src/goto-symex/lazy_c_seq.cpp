@@ -65,8 +65,12 @@ void lazy_c_seqt::create_write_constraints(
     if(this->writes.count(global_variable) == 0)
       continue;
     exprt previous = this->writes.at(global_variable).front().s_it->ssa_lhs;
-    irep_idt id_name = "id_T0_L_0_R_0";
-    symbol_exprt id_symbol{id_name, unsignedbv_typet(threads_bits)};
+
+    irep_idt id_name = "id_T0_L0_R0";
+    symbol_exprt id_symbol{id_name, unsignedbv_typet(bit_writes[global_variable])};
+    equal_exptr constraint{last_id, id_symbol};
+
+    equation.constraint(constraint, "id constraint", this->writes.at(global_variable).front().s_it->source);
     lazy_variable first_lazy_struct = lazy_variable{
       0, 0, 0, 0, last_id, this->writes.at(global_variable).front().s_it->ssa_lhs, id_symbol};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
@@ -83,7 +87,9 @@ void lazy_c_seqt::create_write_constraints(
           write.s_it->ssa_lhs.type());
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
                              std::to_string(write.label) + "_R" + std::to_string(round);
-        symbol_exprt id_symbol{id_name, unsignedbv_typet(threads_bits)};
+        symbol_exprt id_symbol{id_name, unsignedbv_typet(bit_writes[global_variable])};
+        equal_exptr constraint{last_id, id_symbol};
+        equation.constraint(constraint, "id constraint", write.s_it->source);
         lazy_variable lazy_struct =
           lazy_variable{round, write.label, write.num, write.thread, last_id, lazy_variable_exprt,
             id_symbol};
@@ -122,6 +128,8 @@ void lazy_c_seqt::create_read_constraints(
       exprt temp_constraint = read.s_it->ssa_lhs;
       for(std::size_t round = rounds; round >= 1; --round)
       {
+        lazy_variable_read lazy_variable_read{round,read.label,read.num, read.thread};
+        lazy_variables_read[global_variable].emplace_back(lazy_variable_read);
         const symbol_exprt exec =
           create_exec_symbol(read.label, read.thread, round);
 
@@ -1209,6 +1217,9 @@ void lazy_c_seqt::collect_reads_and_writes(
       }
     }
   }
+  for(auto global_variable : global_variables) {
+    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable) + 1);
+  }
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
 }
@@ -1401,20 +1412,21 @@ void lazy_c_seqt::create_write_canonical(
     {
       for(const auto &write : this->writes.at(global_variable))
       {
-        exprt exec = create_exec_symbol(write.label, write.thread, round);
+        const exprt cs_1 = greater_than_exprt(create_cs_symbol(write.thread, round),
+          from_integer(read.label, unsignedbv_typet(n_bit[write.thread])));
         exprt cs = equal_exprt(create_cs_symbol(write.thread, round), from_integer(write.label, unsignedbv_typet(n_bit[write.thread])));
-        exprt fire_cond = and_exprt(exec, cs);
+        exprt fire_cond = and_exprt(cs_1, cs);
 
-        const exprt id_prev = create_id_symbol(write, round - 1,global_variable);
-        const exprt id_curr = create_id_symbol(write, round,global_variable);
+        const exprt id_prev = get_id_symbol(write, round - 1,global_variable);
+        const exprt id_curr = get_id_symbol(write, round,global_variable);
 
 
         exprt write_a = implies_exprt(fire_cond,
-          greater_than_exprt(id_prev, create_WINR_symbol(global_variable, round - 1)));
+          greater_than_exprt(id_prev, create_WINR_symbol(global_variable, write,round - 1)));
 
-        exprt is_winr = equal_exprt(create_WINR_symbol(global_variable, round), id_curr);
+        exprt is_winr = equal_exprt(create_WINR_symbol(global_variable, write,round), id_curr);
         exprt write_b = implies_exprt(and_exprt(fire_cond, is_winr),
-          greater_than_exprt(id_prev, create_LW_symbol(global_variable, round)));
+          greater_than_exprt(id_prev, create_LW_symbol(global_variable, write.thread, write.label,write.num,round)));
 
         equation.constraint(or_exprt(write_a, write_b), "write canonical", write.s_it->source);
       }
@@ -1433,15 +1445,16 @@ void lazy_c_seqt::create_read_canonical(
     {
       for(std::size_t round = rounds; round >= 1; --round)
       {
-        const symbol_exprt exec =
-          create_exec_symbol(read.label, read.thread, round);
+        const exprt cs = greater_than_exprt(create_cs_symbol(read.thread, round),
+          from_integer(read.label, unsignedbv_typet(n_bit[read.thread])));
+
 
         exprt read_canonical = implies_exprt(and_exprt(
-    exec,
-    equal_exprt(create_cs_symbol(read.thread, round), from_integer(read.label, unsignedbv_typet(n_bit[read.thread])))),
+    cs,
+    equal_exprt(create_cs_symbol(read.thread, round-1), from_integer(read.label, unsignedbv_typet(n_bit[read.thread])))),
     notequal_exprt(
-    create_LW_symbol(global_variable, round),
-    create_LW_symbol(global_variable, round - 1)
+    create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation),
+    create_LW_symbol(global_variable, read.thread, read.label,read.num,round - 1, equation)
   )
 );
         equation.constraint(
@@ -1453,37 +1466,83 @@ void lazy_c_seqt::create_read_canonical(
 
 
 
-exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, size_t roundL)
+symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,  symex_target_equationt &equation)
   {
-    exprt lw = from_integer(0, unsignedbv_typet( threads_bits));
-  if(this->reads.count(variable) == 0)
-    return lw;
-  for(std::size_t round = 1; round <= roundL; ++round) {
-    for(const auto &write : this->writes.at(variable)) {
-      exprt exec = create_exec_symbol(write.label, write.thread, round);
-      exprt id = create_id_symbol(write, round, variable);
-      lw = if_exprt(exec, id, lw);
+  std::optional<lazy_variable>prev_op = get_previous_write(thread, label, num,round, variable);
+  if(this->lw_variables.count(variable) == 0 && round==0 || !prev_op.has_value()) {
+    irep_idt id_name = "LW_" + std::to_string(prev.thread) + "_L" +
+                             std::to_string(prev.label) + "_R0";
+    symbol_exprt symbol_lw{lw_id, unsignedbv_typet(bit_writes[variable])};
+    equal_exprt final_constraint{symbol_lw, 0};
+
+    equation.constraint(
+           final_constraint,"lw canonical",  equation.SSA_steps.begin()->source);
+    lw_variable lw_variable_struct{round,0,0, symbol_lw};
+    lw_variables.at(variable).emplace_back(lw_variable_struct);
+    return symbol_lw;
+  }
+  lazy_variable prev= prev_op.value();
+  for(const auto &lw_variable : this->lw_variables.at(variable)) {
+    if(lw_variable.label == prev.label && lw_variable.thread == prev.thread && lw_variable.round == prev.round) {
+      return lw_variable.exptr_id;
     }
   }
-  return lw;
+  auto& last = lw_variables.at(variable).back();
+
+  symbol_exprt exec = create_exec_symbol(prev.label, prev.thread, prev.round);
+  symbol_exprt id = prev.exptr_id;
+
+  irep_idt lw_id= "LW_T" + std::to_string(prev.thread) + "_L" +
+                             std::to_string(prev.label) + "_R" + std::to_string(round);
+  symbol_exprt symbol_lw{lw_id, unsignedbv_typet(bit_writes[variable])};
+
+  if_exprt constraint{exec, id, last.exptr_id};
+  equal_exprt final_constraint{symbol_lw, constraint};
+
+  equation.constraint(
+         final_constraint, "lw canonical", equation.SSA_steps.begin()->source);
+  lw_variable lw_variable_struct{round,prev.label,prev.thread, symbol_lw};
+  lw_variables.at(variable).emplace_back(lw_variable_struct);
+  return symbol_lw;
   }
 
-exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, std::size_t roundL)
+symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, shared_event &event,size_t round,  symex_target_equationt &equation)
 {
-  exprt winr = from_integer(0, unsignedbv_typet( threads_bits));
-  if(this->reads.count(variable) == 0)
-    return winr;
-  for(std::size_t round = 1; round <= roundL; ++round) {
-    for(const auto &read : this->reads.at(variable)) {
-      exprt exec_read = create_exec_symbol(read.label, read.thread, round);
-      exprt lw_at_r = create_LW_symbol(variable, round);
-
-      winr = if_exprt(exec_read, lw_at_r, winr);
+  std::optional<lazy_variable_read>next_op = get_next_read(event,round, variable);
+  if (!next_op.has_value()) {
+    return nullptr;
+  }
+  if (this->winr_variables.count(variable) == 0) {
+    this->winr_variables[variable].emplace_back(nullptr);
+  }
+  lazy_variable_read next= next_op.value();
+  for(const auto &winr_variable : this->winr_variables.at(variable)) {
+    if(winr_variable.label == next.label && winr_variable.thread == next.thread && winr_variable.round == next.round) {
+      return winr_variable.exptr_id;
     }
   }
-  return winr;
+  symbol_exprt exec = create_exec_symbol(next.label, next.thread, next.round);
+  symbol_exprt lw = create_LW_symbol(variable, next.thread, next.label, next.num, round, equation);
+  irep_idt winr_id= "WINR_T" + std::to_string(next.thread) + "_L" +
+                             std::to_string(next.label) + "_R" + std::to_string(round);
+  symbol_exprt symbol_winr{winr_id, unsignedbv_typet(bit_writes[variable])};
+  winr_variable winr_next=this->winr_variables.at(variable).front();
+  symbol_exprt winr_symbol_next;
+  if (winr_next == nullptr) {
+    winr_symbol_next = nullptr; //placeholder
+  }else {
+    winr_symbol_next = winr_next.exptr_id;
+  }
+  if_exprt constraint{exec, lw,  winr_symbol_next };
+  equal_exprt final_constraint{symbol_winr, constraint};
+  equation.constraint(
+         final_constraint, "winr canonical", equation.SSA_steps.begin()->source);
+  winr_variable winr_variable_struct{round,next.label,next.thread, symbol_winr};
+  winr_variables.at(variable).insert(winr_variables.begin(),winr_variable_struct);
+  return symbol_winr;
+
 }
-exprt lazy_c_seqt::create_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
+symbol_exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
 {
   exprt id = from_integer(0, unsignedbv_typet (threads_bits));
   for(const auto &lazy_variable : lazy_variables.at(variable)) {
@@ -1493,4 +1552,77 @@ exprt lazy_c_seqt::create_id_symbol(const shared_event &event, std::size_t round
     }
   }
   return id;
+}
+std::optional<lazy_c_seqt::lazy_variable> lazy_c_seqt::get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable)
+{
+  if(lazy_variables.count(variable) == 0)
+    return std::nullopt;
+  lazy_variable previous = lazy_variables.at(variable).front();
+  for(const auto &lazy_variable : lazy_variables.at(variable))
+  {
+    if(round > lazy_variable.round)
+    {
+      previous = lazy_variable;
+      continue;
+    }
+    if(round == lazy_variable.round && thread > lazy_variable.thread)
+    {
+      previous = lazy_variable;
+      continue;
+    }
+    if(
+      round == lazy_variable.round && thread == lazy_variable.thread &&
+      label > lazy_variable.label)
+    {
+      previous = lazy_variable;
+      continue;
+    }
+    if(
+      round == lazy_variable.round && thread == lazy_variable.thread &&
+      event.label == lazy_variable.label && num > lazy_variable.num)
+    {
+      previous = lazy_variable;
+      continue;
+    }
+    if (previous == lazy_variables.at(variable).front().symbol && (label > lazy_variables.at(variable).front().label || (label <= lazy_variables.at(variable).front().label && num > lazy_variables.at(variable).front().num)))
+      return std::nullopt;
+    return previous;
+  }
+  return previous;
+}
+std::optional<lazy_c_seqt::lazy_variable> lazy_c_seqt::get_next_read(const shared_event &event, std::size_t round, irep_idt variable) {
+  if(lazy_variables_read.count(variable) == 0)
+    return std::nullopt;
+  lazy_variables_read next = lazy_variables_read.at(variable).back();
+  for(const auto &lazy_variable : lazy_variables_read.at(variable))
+  {
+    if(round < lazy_variable.round)
+    {
+      next = lazy_variable;
+      continue;
+    }
+    if(round == lazy_variable.round && event.thread < lazy_variable.thread)
+    {
+      next = lazy_variable;
+      continue;
+    }
+    if(
+      round == lazy_variable.round && event.thread == lazy_variable.thread &&
+      label < lazy_variable.label)
+    {
+      next = lazy_variable;
+      continue;
+    }
+    if(
+      round == lazy_variable.round && event.thread == lazy_variable.thread &&
+      event.label == lazy_variable.label && event.num < lazy_variable.num)
+    {
+      next= lazy_variable;
+      continue;
+    }
+    if (next == lazy_variables.at(variable).back().symbol && (event.label < lazy_variables.at(variable).back().label || (event.label <= lazy_variables.at(variable).back().label && event.num< lazy_variables.at(variable).back().num)))
+      return std::nullopt;
+    return next;
+  }
+  return next;
 }
