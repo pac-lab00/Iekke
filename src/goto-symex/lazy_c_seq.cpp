@@ -2,7 +2,7 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_c_seq.h"
-
+#include <iostream>
 #include <thread>
 #include <util/cprover_prefix.h>
 #include <util/format.h>
@@ -23,7 +23,6 @@ void lazy_c_seqt::operator()(
   messaget log{message_handler};
   log.statistics() << "Adding LazyCSeq constraints with " << rounds << " rounds"
                    << messaget::eom;
-
   //check_shared_event(equation, message_handler);
 
   handling_active_threads(equation/*, message_handler*/);
@@ -67,13 +66,9 @@ void lazy_c_seqt::create_write_constraints(
       continue;
     exprt previous = this->writes.at(global_variable).front().s_it->ssa_lhs;
     irep_idt id_name = "id_T0_L_0_R_0";
-    symbol_exprt id_symbol{id_name, unsignedbv_typet(32)};
-    exprt id_constraint = equal_exprt(
-        id_symbol,
-      from_integer(last_id, unsignedbv_typet(32))
-  );
+    symbol_exprt id_symbol{id_name, unsignedbv_typet(threads_bits)};
     lazy_variable first_lazy_struct = lazy_variable{
-      0, 0, 0, 0, last_id, this->writes.at(global_variable).front().s_it->ssa_lhs};
+      0, 0, 0, 0, last_id, this->writes.at(global_variable).front().s_it->ssa_lhs, id_symbol};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
     last_id++;
     for(std::size_t round = 1; round <= rounds; ++round)
@@ -88,14 +83,10 @@ void lazy_c_seqt::create_write_constraints(
           write.s_it->ssa_lhs.type());
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
                              std::to_string(write.label) + "_R" + std::to_string(round);
-        symbol_exprt id_symbol{id_name, unsignedbv_typet(32)};
-        exprt id_constraint = equal_exprt(
-            id_symbol,
-          from_integer(last_id, unsignedbv_typet(32))
-      );
+        symbol_exprt id_symbol{id_name, unsignedbv_typet(threads_bits)};
         lazy_variable lazy_struct =
           lazy_variable{round, write.label, write.num, write.thread, last_id, lazy_variable_exprt,
-            id_constraint};
+            id_symbol};
         last_id++;
         this->lazy_variables[global_variable].emplace_back(lazy_struct);
 
@@ -1411,7 +1402,7 @@ void lazy_c_seqt::create_write_canonical(
       for(const auto &write : this->writes.at(global_variable))
       {
         exprt exec = create_exec_symbol(write.label, write.thread, round);
-        exprt cs = equal_exprt(create_cs_symbol(write.thread, round), from_integer(write.label, unsignedbv_typet(threads_bits)));
+        exprt cs = equal_exprt(create_cs_symbol(write.thread, round), from_integer(write.label, unsignedbv_typet(n_bit[write.thread])));
         exprt fire_cond = and_exprt(exec, cs);
 
         const exprt id_prev = create_id_symbol(write, round - 1,global_variable);
@@ -1447,7 +1438,7 @@ void lazy_c_seqt::create_read_canonical(
 
         exprt read_canonical = implies_exprt(and_exprt(
     exec,
-    equal_exprt(create_cs_symbol(read.thread, round), from_integer(read.label, unsignedbv_typet(threads_bits)))),
+    equal_exprt(create_cs_symbol(read.thread, round), from_integer(read.label, unsignedbv_typet(n_bit[read.thread])))),
     notequal_exprt(
     create_LW_symbol(global_variable, round),
     create_LW_symbol(global_variable, round - 1)
@@ -1465,7 +1456,8 @@ void lazy_c_seqt::create_read_canonical(
 exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, size_t roundL)
   {
     exprt lw = from_integer(0, unsignedbv_typet( threads_bits));
-
+  if(this->reads.count(variable) == 0)
+    return lw;
   for(std::size_t round = 1; round <= roundL; ++round) {
     for(const auto &write : this->writes.at(variable)) {
       exprt exec = create_exec_symbol(write.label, write.thread, round);
@@ -1479,7 +1471,8 @@ exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, size_t roundL)
 exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, std::size_t roundL)
 {
   exprt winr = from_integer(0, unsignedbv_typet( threads_bits));
-
+  if(this->reads.count(variable) == 0)
+    return winr;
   for(std::size_t round = 1; round <= roundL; ++round) {
     for(const auto &read : this->reads.at(variable)) {
       exprt exec_read = create_exec_symbol(read.label, read.thread, round);
