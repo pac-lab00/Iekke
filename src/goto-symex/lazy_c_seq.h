@@ -38,7 +38,7 @@ private:
     unsigned thread;
     unsigned id;
     symbol_exprt symbol;
-    exprt exptr_id;
+    symbol_exprt exptr_id;
   };
   struct lazy_variable_read
   {
@@ -53,14 +53,14 @@ private:
     std::size_t round;
     unsigned label;
     unsigned thread;
-    equal_exptr exptr_id;
+    symbol_exprt exptr_id;
   };
   struct winr_variable
   {
     std::size_t round;
     unsigned label;
     unsigned thread;
-    equal_exptr exptr_id;
+    symbol_exprt exptr_id;
   };
   struct active_thread
   {
@@ -117,7 +117,7 @@ private:
   std::vector<shared_event> blocking_events;
   std::vector<shared_event> shared_events;
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
-  std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables_read;
+  std::unordered_map<irep_idt, std::vector<lazy_variable_read>> lazy_variables_read;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
   std::vector<exec> exec_vector;
   std::vector<exec_tot> exec_tot_vector;
@@ -214,14 +214,16 @@ private:
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
   void create_write_canonical(symex_target_equationt &equation);
-  symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,  symex_target_equationt &equation);
+  symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,  symex_target_equationt &equation);
 
-  symbol_exprt create_WINR_symbol(irep_idt variable, shared_event &event,size_t round,  symex_target_equationt &equation);
+  symbol_exprt create_WINR_symbol(irep_idt variable, const shared_event &event,size_t round,  symex_target_equationt &equation);
 
-  std::optional<lazy_variable> lazy_c_seqt::get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
+  std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
 
-  symbol_exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
-  std::optional<shared_event> lazy_c_seqt::get_next_read(const shared_event &event, std::size_t round, irep_idt variable);
+  symbol_exprt get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
+
+  std::optional<lazy_variable_read>get_next_read(const shared_event &event, std::size_t round, irep_idt variable);
+
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
     exprt &guard,
