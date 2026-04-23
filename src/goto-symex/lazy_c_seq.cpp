@@ -1471,19 +1471,26 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
   const auto &src = equation.SSA_steps.begin()->source;
   std::optional<lazy_variable> prev_op = get_previous_write(thread, label, num, round, variable);
 
-  auto emit = [&](unsigned t, unsigned l, size_t id_round, const exprt &rhs) {
+  auto emit = [&](unsigned t, unsigned l, size_t id_round, size_t struct_round, const exprt &rhs) {
     irep_idt lw_id = "LW_T" + std::to_string(t) + "_L" + std::to_string(l) + "_R" + std::to_string(id_round);
     symbol_exprt sym{lw_id, type};
     equation.constraint(equal_exprt{sym, rhs}, "lw canonical", src);
-    lw_variables[variable].push_back({round, l, t, sym});
+    lw_variables[variable].push_back({struct_round, l, t, sym});
     return sym;
   };
 
-  if((lw_variables.count(variable) == 0 || round == 0) && prev_op.has_value())
-    return emit(prev_op->thread, prev_op->label, 0, from_integer(0, type));
-
   if(!prev_op.has_value())
-    return emit(0, 0, 0, from_integer(0, type));
+    return emit(0, 0, 0, round, from_integer(0, type));
+
+  if(round == 0) {
+    for(const auto &lw : lw_variables[variable])
+      if(lw.round == 0 && lw.label == prev_op->label && lw.thread == prev_op->thread)
+        return lw.exptr_id;
+    return emit(prev_op->thread, prev_op->label, 0, 0, from_integer(0, type));
+  }
+
+  if(lw_variables.count(variable) == 0)
+    emit(prev_op->thread, prev_op->label, 0, 0, from_integer(0, type));
 
   const lazy_variable &prev = *prev_op;
   for(const auto &lw : lw_variables.at(variable))
@@ -1492,7 +1499,7 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
 
   auto &last = lw_variables.at(variable).back();
   symbol_exprt exec = create_exec_symbol(prev.label, prev.thread, prev.round);
-  return emit(prev.thread, prev.label, round, if_exprt{exec, prev.exptr_id, last.exptr_id});
+  return emit(prev.thread, prev.label, round, round, if_exprt{exec, prev.exptr_id, last.exptr_id});
 }
 
 symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_event &event, size_t round, symex_target_equationt &equation)
@@ -1509,13 +1516,16 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
     return sym;
   };
 
-  if(!next_op.has_value()) {
+  if(winr_variables.count(variable) == 0) {
     unsigned max_val = 0;
     for(const auto &[k, v] : labels)
       if(v > max_val) max_val = v;
-    return emit(threads, max_val, rounds,
+    emit(threads, max_val, rounds,
       from_integer(1ULL << (bit_writes[variable] - 1), unsignedbv_typet(bit_writes[variable])));
   }
+
+  if(!next_op.has_value())
+    return winr_variables.at(variable).front().exptr_id;
 
   const lazy_variable_read &next = *next_op;
   for(const auto &w : winr_variables.at(variable))
