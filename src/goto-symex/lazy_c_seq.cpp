@@ -1428,7 +1428,7 @@ void lazy_c_seqt::create_write_canonical(
         exprt write_b = implies_exprt(and_exprt(fire_cond, is_winr),
           greater_than_exprt(id_prev, create_LW_symbol(global_variable, write.thread, write.label,write.num,round,equation)));
 
-        equation.constraint(or_exprt(write_a, write_b), "write canonical", write.s_it->source);
+        equation.constraint(or_exprt{write_a, write_b}, "write canonical", write.s_it->source);
       }
     }
   }
@@ -1476,7 +1476,7 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
     equation.constraint(
            final_constraint,"lw canonical",  equation.SSA_steps.begin()->source);
     lw_variable lw_variable_struct{round,prev_op.value().label,prev_op.value().thread, symbol_lw};
-    lw_variables.at(variable).emplace_back(lw_variable_struct);
+    lw_variables[variable].emplace_back(lw_variable_struct);
     return symbol_lw;
   }
   if (!prev_op.has_value()) {
@@ -1487,7 +1487,7 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
     equation.constraint(
            final_constraint,"lw canonical",  equation.SSA_steps.begin()->source);
     lw_variable lw_variable_struct{round,0,0, symbol_lw};
-    lw_variables.at(variable).emplace_back(lw_variable_struct);
+    lw_variables[variable].emplace_back(lw_variable_struct);
     return symbol_lw;
   }
   lazy_variable prev= prev_op.value();
@@ -1534,6 +1534,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
         final_constraint, "winr canonical", equation.SSA_steps.begin()->source);
     winr_variable winr_variable_struct{rounds,max_val,this->threads, symbol_winr};
     this->winr_variables[variable].emplace_back(winr_variable_struct);
+    return symbol_winr;
   }
   lazy_variable_read next= next_op.value();
   for(const auto &winr_variable : this->winr_variables.at(variable)) {
