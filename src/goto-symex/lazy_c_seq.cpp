@@ -1219,7 +1219,7 @@ void lazy_c_seqt::collect_reads_and_writes(
     }
   }
   for(auto global_variable : global_variables) {
-    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable));
+    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable))+1;
   }
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
