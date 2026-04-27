@@ -1496,17 +1496,22 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
   for(const auto &lw : lw_variables.at(variable))
     if(lw.label == prev.label && lw.thread == prev.thread && lw.round == prev.round)
       return lw.exptr_id;
-
-  auto &last = lw_variables.at(variable).back();
   symbol_exprt exec = create_exec_symbol(prev.label, prev.thread, prev.round);
-  return emit(prev.thread, prev.label, round, round, if_exprt{exec, prev.exptr_id, last.exptr_id});
+  prev_op = get_previous_write(prev.thread, prev.label, prev.num, prev.round, variable);
+  if(prev_op.has_value()) {
+    lazy_variable prev_value=*prev_op;
+    for(const auto &lw : lw_variables.at(variable))
+      if(lw.label == prev_value.label && lw.thread == prev_value.thread && lw.round == prev_value.round)
+        return emit(prev.thread, prev.label, round,  round,if_exprt{exec, prev.exptr_id, lw.exptr_id});
+  }
+  return emit(prev.thread, prev.label, round,  round, if_exprt{exec, prev.exptr_id, from_integer(0, type)});
 }
 
 symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_event &event, size_t round, symex_target_equationt &equation)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
-  std::optional<lazy_variable_read> next_op = get_next_read(event, round, variable);
+  std::optional<lazy_variable_read> next_op = get_next_read(event.thread,event.label,event.num, round, variable);
 
   auto emit = [&](unsigned t, unsigned l, size_t r, const exprt &rhs) {
     irep_idt winr_id = "WINR_T" + std::to_string(t) + "_L" + std::to_string(l) + "_R" + std::to_string(r);
@@ -1531,11 +1536,18 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
   for(const auto &w : winr_variables.at(variable))
     if(w.label == next.label && w.thread == next.thread && w.round == next.round)
       return w.exptr_id;
+  next_op = get_next_read(next.thread, next.label, next.num,next.round, variable);
 
   symbol_exprt exec = create_exec_symbol(next.label, next.thread, next.round);
   symbol_exprt lw = create_LW_symbol(variable, next.thread, next.label, next.num, round, equation);
-  symbol_exprt winr_next = winr_variables.at(variable).back().exptr_id;
-  return emit(next.thread, next.label, round, if_exprt{exec, lw, winr_next});
+
+  if(next_op.has_value()) {
+    lazy_variable_read next_value=*next_op;
+    for(const auto &winr : winr_variables.at(variable))
+      if(winr.label == next_value.label && winr.thread == next_value.thread && winr.round == next_value.round)
+        return emit(next.thread, next.label, round, if_exprt{exec, lw, winr.exptr_id});
+  }
+  return emit(next.thread, next.label, round,  if_exprt{exec, lw, from_integer(1ULL << (bit_writes[variable] - 1),unsignedbv_typet(bit_writes[variable]))});
 }
 symbol_exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
 {
@@ -1589,7 +1601,8 @@ std::optional<lazy_c_seqt::lazy_variable> lazy_c_seqt::get_previous_write(unsign
   }
   return previous;
 }
-std::optional<lazy_c_seqt::lazy_variable_read> lazy_c_seqt::get_next_read(const shared_event &event, std::size_t round, irep_idt variable) {
+std::optional<lazy_c_seqt::lazy_variable_read> lazy_c_seqt::get_next_read(unsigned thread, unsigned label, unsigned num,
+  std::size_t round, irep_idt variable) {
   if(lazy_variables_read.count(variable) == 0)
     return std::nullopt;
 
@@ -1602,21 +1615,21 @@ std::optional<lazy_c_seqt::lazy_variable_read> lazy_c_seqt::get_next_read(const 
       next = lazy_variable;
       continue;
     }
-    if(round == lazy_variable.round && event.thread < lazy_variable.thread)
+    if(round == lazy_variable.round && thread < lazy_variable.thread)
     {
       next = lazy_variable;
       continue;
     }
     if(
-      round == lazy_variable.round && event.thread == lazy_variable.thread &&
-      event.label < lazy_variable.label)
+      round == lazy_variable.round && thread == lazy_variable.thread &&
+      label < lazy_variable.label)
     {
       next = lazy_variable;
       continue;
     }
     if(
-      round == lazy_variable.round && event.thread == lazy_variable.thread &&
-      event.label == lazy_variable.label && event.num < lazy_variable.num)
+      round == lazy_variable.round && thread == lazy_variable.thread &&
+      label == lazy_variable.label && num < lazy_variable.num)
     {
       next= lazy_variable;
       continue;
@@ -1624,7 +1637,8 @@ std::optional<lazy_c_seqt::lazy_variable_read> lazy_c_seqt::get_next_read(const 
     if (next.round == back.round &&
       next.label == back.label &&
       next.thread == back.thread &&
-      next.num == back.num && (event.label < lazy_variables_read.at(variable).front().label || (event.label <= lazy_variables_read.at(variable).front().label && event.num< lazy_variables_read.at(variable).front().num)))
+      next.num == back.num && (label < lazy_variables_read.at(variable).front().label || (
+      label <= lazy_variables_read.at(variable).front().label && num< lazy_variables_read.at(variable).front().num)))
       return std::nullopt;
     return next;
   }
