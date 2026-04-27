@@ -35,9 +35,9 @@ void lazy_c_seqt::operator()(
 
   create_cs_constraint(equation/*, message_handler*/);
 
-  create_read_canonical(equation);
+  create_read_canonical(equation/*, message_handler*/);
 
-  create_write_canonical(equation);
+  create_write_canonical(equation/*, message_handler*/);
 
   handling_atomic_sections(equation/*, message_handler*/);
 
@@ -1403,7 +1403,7 @@ symbol_exprt lazy_c_seqt::create_dr_loc_symbol(unsigned num)
   return loc_expr;
 }
 void lazy_c_seqt::create_write_canonical(
-  symex_target_equationt &equation)
+  symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   for(auto global_variable : global_variables)
   {
@@ -1422,11 +1422,11 @@ void lazy_c_seqt::create_write_canonical(
 
 
         exprt write_a = implies_exprt(fire_cond,
-          greater_than_exprt(id_prev, create_WINR_symbol(global_variable, write,round - 1,equation)));
+          greater_than_exprt(id_prev, create_WINR_symbol(global_variable, write,round - 1,equation/*, message_handler*/)));
 
-        exprt is_winr = equal_exprt(create_WINR_symbol(global_variable, write,round,equation), id_curr);
+        exprt is_winr = equal_exprt(create_WINR_symbol(global_variable, write,round,equation/*, message_handler*/), id_curr);
         exprt write_b = implies_exprt(and_exprt(fire_cond, is_winr),
-          greater_than_exprt(id_prev, create_LW_symbol(global_variable, write.thread, write.label,write.num,round,equation)));
+          greater_than_exprt(id_prev, create_LW_symbol(global_variable, write.thread, write.label,write.num,round,equation/*, message_handler*/)));
 
         equation.constraint(or_exprt{write_a, write_b}, "write canonical", write.s_it->source);
       }
@@ -1435,7 +1435,7 @@ void lazy_c_seqt::create_write_canonical(
 }
 
 void lazy_c_seqt::create_read_canonical(
-  symex_target_equationt &equation) {
+  symex_target_equationt &equation/*,message_handlert &message_handler*/) {
 
   for(auto global_variable : global_variables)
   {
@@ -1452,8 +1452,8 @@ void lazy_c_seqt::create_read_canonical(
     cs,
     equal_exprt(create_cs_symbol(read.thread, round-1), from_integer(read.label, unsignedbv_typet(n_bit[read.thread])))),
     notequal_exprt(
-    create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation),
-    create_LW_symbol(global_variable, read.thread, read.label,read.num,round - 1, equation)
+    create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation/*, message_handler*/),
+    create_LW_symbol(global_variable, read.thread, read.label,read.num,round - 1, equation/*, message_handler*/)
   )
 );
         equation.constraint(
@@ -1465,7 +1465,8 @@ void lazy_c_seqt::create_read_canonical(
 
 
 
-symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round, symex_target_equationt &equation)
+symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
+  symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
@@ -1497,9 +1498,9 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
     if(lw.label == prev.label && lw.thread == prev.thread && lw.round == prev.round)
       return lw.exptr_id;
   symbol_exprt exec = create_exec_symbol(prev.label, prev.thread, prev.round);
-  prev_op = get_previous_write(prev.thread, prev.label, prev.num, prev.round, variable);
-  if(prev_op.has_value()) {
-    lazy_variable prev_value=*prev_op;
+    std::optional<lazy_variable>prev_op_ = get_previous_write(prev.thread, prev.label, prev.num, prev.round, variable);
+  if(prev_op_.has_value()) {
+    lazy_variable prev_value=*prev_op_;
     for(const auto &lw : lw_variables.at(variable))
       if(lw.label == prev_value.label && lw.thread == prev_value.thread && lw.round == prev_value.round)
         return emit(prev.thread, prev.label, round,  round,if_exprt{exec, prev.exptr_id, lw.exptr_id});
@@ -1507,7 +1508,7 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
   return emit(prev.thread, prev.label, round,  round, if_exprt{exec, prev.exptr_id, from_integer(0, type)});
 }
 
-symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_event &event, size_t round, symex_target_equationt &equation)
+symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_event &event, size_t round, symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
@@ -1521,7 +1522,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
     return sym;
   };
 
-  if(winr_variables.count(variable) == 0) {
+  if(winr_variables.count(variable) == 0 || !next_op.has_value()) {
     unsigned max_val = 0;
     for(const auto &[k, v] : labels)
       if(v > max_val) max_val = v;
@@ -1529,20 +1530,17 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
       from_integer(1ULL << (bit_writes[variable] - 1), unsignedbv_typet(bit_writes[variable])));
   }
 
-  if(!next_op.has_value())
-    return winr_variables.at(variable).front().exptr_id;
-
   const lazy_variable_read &next = *next_op;
   for(const auto &w : winr_variables.at(variable))
     if(w.label == next.label && w.thread == next.thread && w.round == next.round)
       return w.exptr_id;
-  next_op = get_next_read(next.thread, next.label, next.num,next.round, variable);
+  std::optional<lazy_variable_read>next_op_ = get_next_read(next.thread, next.label, next.num,next.round, variable);
 
   symbol_exprt exec = create_exec_symbol(next.label, next.thread, next.round);
-  symbol_exprt lw = create_LW_symbol(variable, next.thread, next.label, next.num, round, equation);
+  symbol_exprt lw = create_LW_symbol(variable, next.thread, next.label, next.num, round, equation/*, message_handler*/);
 
-  if(next_op.has_value()) {
-    lazy_variable_read next_value=*next_op;
+  if(next_op_.has_value()) {
+    lazy_variable_read next_value=*next_op_;
     for(const auto &winr : winr_variables.at(variable))
       if(winr.label == next_value.label && winr.thread == next_value.thread && winr.round == next_value.round)
         return emit(next.thread, next.label, round, if_exprt{exec, lw, winr.exptr_id});

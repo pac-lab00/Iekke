@@ -161,7 +161,6 @@ private:
     unsigned thread,
     std::size_t round);
 
-  void create_read_canonical(symex_target_equationt &equation);
   void create_cs_constraint(
     symex_target_equationt &equation/*,
     message_handlert &message_handler*/);
@@ -213,10 +212,15 @@ private:
 
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
-  void create_write_canonical(symex_target_equationt &equation);
-  symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,  symex_target_equationt &equation);
+  void create_read_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
-  symbol_exprt create_WINR_symbol(irep_idt variable, const shared_event &event,size_t round,  symex_target_equationt &equation);
+  void create_write_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
+  symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  symbol_exprt create_WINR_symbol(irep_idt variable, const shared_event &event,size_t round,  symex_target_equationt &equation
+    /*,message_handlert &message_handler*/);
 
   std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
 
