@@ -1409,7 +1409,7 @@ void lazy_c_seqt::create_write_canonical(
   {
     if(this->writes.count(global_variable) == 0)
       continue;
-    for(std::size_t round = 1; round <= rounds; ++round)
+    for(std::size_t round = rounds; round >= 1; --round)
     {
       for(const auto &write : this->writes.at(global_variable))
       {
@@ -1436,33 +1436,33 @@ void lazy_c_seqt::create_write_canonical(
 
 void lazy_c_seqt::create_read_canonical(
   symex_target_equationt &equation/*,message_handlert &message_handler*/) {
-
   for(auto global_variable : global_variables)
   {
     if(this->reads.count(global_variable) == 0)
       continue;
-    for(const auto &read : this->reads.at(global_variable))
-    {
-      for(std::size_t round = rounds; round >= 1; --round)
+    for(std::size_t round = 1; round <= rounds; ++round){
+      for(const auto &read : this->reads.at(global_variable))
       {
-        const exprt cs = create_enabled_symbol(read.label, read.thread, round);;
+
+        {
+          const exprt cs = create_enabled_symbol(read.label, read.thread, round);;
 
 
-        exprt read_canonical = implies_exprt(and_exprt(
-    cs,
-    equal_exprt(create_cs_symbol(read.thread, round-1), from_integer(read.label, unsignedbv_typet(n_bit[read.thread])))),
-    notequal_exprt(
-    create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation/*, message_handler*/),
-    create_LW_symbol(global_variable, read.thread, read.label,read.num,round - 1, equation/*, message_handler*/)
-  )
-);
-        equation.constraint(
-          read_canonical, "read canonical", read.s_it->source);
+          exprt read_canonical = implies_exprt(and_exprt(
+      cs,
+      equal_exprt(create_cs_symbol(read.thread, round-1), from_integer(read.label, unsignedbv_typet(n_bit[read.thread])))),
+      notequal_exprt(
+      create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation/*, message_handler*/),
+      create_LW_symbol(global_variable, read.thread, read.label,read.num,round - 1, equation/*, message_handler*/)
+    )
+  );
+          equation.constraint(
+            read_canonical, "read canonical", read.s_it->source);
+        }
       }
     }
   }
 }
-
 
 
 symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
