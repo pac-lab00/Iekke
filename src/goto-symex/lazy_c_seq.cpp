@@ -1219,7 +1219,7 @@ void lazy_c_seqt::collect_reads_and_writes(
     }
   }
   for(auto global_variable : global_variables) {
-    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable))+1;
+    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable));
   }
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
@@ -1545,7 +1545,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
       if(winr.label == next_value.label && winr.thread == next_value.thread && winr.round == next_value.round)
         return emit(next.thread, next.label, round, if_exprt{exec, lw, winr.exptr_id});
   }
-  return emit(next.thread, next.label, round,  if_exprt{exec, lw, from_integer(1ULL << (bit_writes[variable] - 1),unsignedbv_typet(bit_writes[variable]))});
+  return emit(next.thread, next.label, round,  if_exprt{exec, lw, from_integer((1ULL << bit_writes[variable]) - 1),unsignedbv_typet(bit_writes[variable]))});
 }
 symbol_exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
 {
