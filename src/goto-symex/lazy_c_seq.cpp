@@ -1527,7 +1527,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
     for(const auto &[k, v] : labels)
       if(v > max_val) max_val = v;
     emit(threads, max_val, rounds,
-      from_integer(1ULL << (bit_writes[variable] - 1), unsignedbv_typet(bit_writes[variable])));
+      from_integer((1ULL << bit_writes[variable]) - 1, unsignedbv_typet(bit_writes[variable])));
   }
 
   const lazy_variable_read &next = *next_op;
