@@ -66,7 +66,7 @@ void lazy_c_seqt::create_write_constraints(
       continue;
     exprt previous = this->writes.at(global_variable).front().s_it->ssa_lhs;
 
-    irep_idt id_name = "id_T0_L0_R0";
+    irep_idt id_name = "id_T0_L0_R0_V"+id2string(global_variable);
     symbol_exprt id_symbol{id_name, unsignedbv_typet(bit_writes[global_variable])};
     equal_exprt constraint{from_integer(last_id, unsignedbv_typet{bit_writes[global_variable]}), id_symbol};
 
@@ -86,7 +86,7 @@ void lazy_c_seqt::create_write_constraints(
           write.s_it->ssa_lhs,
           write.s_it->ssa_lhs.type());
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
-                             std::to_string(write.label) + "_R" + std::to_string(round);
+                             std::to_string(write.label) + "_R" + std::to_string(round)+ "_V"+id2string(global_variable);
         symbol_exprt id_symbol{id_name, unsignedbv_typet(bit_writes[global_variable])};
         equal_exprt constraint_id{from_integer(last_id, unsignedbv_typet{bit_writes[global_variable]}), id_symbol};
         equation.constraint(constraint_id, "id constraint", write.s_it->source);
@@ -1473,7 +1473,7 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
   std::optional<lazy_variable> prev_op = get_previous_write(thread, label, num, round, variable);
 
   auto emit = [&](unsigned t, unsigned l, size_t id_round, size_t struct_round, const exprt &rhs) {
-    irep_idt lw_id = "LW_T" + std::to_string(t) + "_L" + std::to_string(l) + "_R" + std::to_string(id_round);
+    irep_idt lw_id = "LW_T" + std::to_string(t) + "_L" + std::to_string(l) + "_R" + std::to_string(id_round)+"_V"+id2string(variable);
     symbol_exprt sym{lw_id, type};
     equation.constraint(equal_exprt{sym, rhs}, "lw canonical", src);
     lw_variables[variable].push_back({struct_round, l, t, sym});
@@ -1515,7 +1515,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
   std::optional<lazy_variable_read> next_op = get_next_read(event.thread,event.label,event.num, round, variable);
 
   auto emit = [&](unsigned t, unsigned l, size_t r, const exprt &rhs) {
-    irep_idt winr_id = "WINR_T" + std::to_string(t) + "_L" + std::to_string(l) + "_R" + std::to_string(r);
+    irep_idt winr_id = "WINR_T" + std::to_string(t) + "_L" + std::to_string(l) + "_R" + std::to_string(r)+"_V"+id2string(variable);
     symbol_exprt sym{winr_id, type};
     equation.constraint(equal_exprt{sym, rhs}, "winr canonical", src);
     winr_variables[variable].push_back({r, l, t, sym});
@@ -1545,7 +1545,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
       if(winr.label == next_value.label && winr.thread == next_value.thread && winr.round == next_value.round)
         return emit(next.thread, next.label, round, if_exprt{exec, lw, winr.exptr_id});
   }
-  return emit(next.thread, next.label, round,  if_exprt{exec, lw, from_integer((1ULL << bit_writes[variable]) - 1),unsignedbv_typet(bit_writes[variable]))});
+  return emit(next.thread, next.label, round,  if_exprt{exec, lw, from_integer((1ULL << bit_writes[variable]) - 1, unsignedbv_typet(bit_writes[variable]))});
 }
 symbol_exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
 {
