@@ -33,6 +33,8 @@ void lazy_c_seqt::operator()(
 
   create_read_constraints(equation/*, message_handler*/);
 
+  create_lazy_variable_read();
+
   create_cs_constraint(equation/*, message_handler*/);
 
   create_read_canonical(equation/*, message_handler*/);
@@ -128,8 +130,6 @@ void lazy_c_seqt::create_read_constraints(
       exprt temp_constraint = read.s_it->ssa_lhs;
       for(std::size_t round = rounds; round >= 1; --round)
       {
-        lazy_variable_read lazy_variable_read{round,read.label,read.num, read.thread};
-        lazy_variables_read[global_variable].emplace_back(lazy_variable_read);
         const symbol_exprt exec =
           create_exec_symbol(read.label, read.thread, round);
 
@@ -1543,15 +1543,16 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
   std::optional<lazy_variable_read>next_op_ = get_next_read(next.thread, next.label, next.num,next.round, variable);
 
   symbol_exprt exec = create_exec_symbol(next.label, next.thread, next.round);
-  symbol_exprt lw = create_LW_symbol(variable, next.thread, next.label, next.num, round, equation/*, message_handler*/);
+  symbol_exprt lw = create_LW_symbol(variable, next.thread, next.label, next.num, next.round, equation/*, message_handler*/);
 
   if(next_op_.has_value()) {
     lazy_variable_read next_value=*next_op_;
-    for(const auto &winr : winr_variables.at(variable))
+    for(const auto &winr : winr_variables.at(variable)) {
       if(winr.label == next_value.label && winr.thread == next_value.thread && winr.round == next_value.round)
-        return emit(next.thread, next.label, round, if_exprt{exec, lw, winr.exptr_id});
+        return emit(next.thread, next.label, next.round, if_exprt{exec, lw, winr.exptr_id});
+    }
   }
-  return emit(next.thread, next.label, round,  if_exprt{exec, lw, from_integer((1ULL << bit_writes[variable]) - 1, unsignedbv_typet(bit_writes[variable]))});
+  return emit(next.thread, next.label, next.round,  if_exprt{exec, lw, from_integer((1ULL << bit_writes[variable]) - 1, unsignedbv_typet(bit_writes[variable]))});
 }
 symbol_exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
 {
@@ -1605,6 +1606,22 @@ std::optional<lazy_c_seqt::lazy_variable> lazy_c_seqt::get_previous_write(unsign
   }
   return previous;
 }
+void lazy_c_seqt::create_lazy_variable_read() {
+  for(auto global_variable : global_variables)
+  {
+    if(this->reads.count(global_variable) == 0)
+      continue;
+    for(std::size_t round = rounds; round >= 1; --round) {
+      for(const auto &read : this->reads.at(global_variable)) {
+        lazy_variable_read lazy_variable_read{round,read.label,read.num, read.thread};
+        lazy_variables_read[global_variable].emplace_back(lazy_variable_read);
+        {
+        }
+      }
+    }
+  }
+}
+
 std::optional<lazy_c_seqt::lazy_variable_read> lazy_c_seqt::get_next_read(unsigned thread, unsigned label, unsigned num,
   std::size_t round, irep_idt variable) {
   if(lazy_variables_read.count(variable) == 0)

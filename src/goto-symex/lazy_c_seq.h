@@ -228,6 +228,7 @@ private:
 
   std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
 
+  void create_lazy_variable_read();
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
     exprt &guard,
