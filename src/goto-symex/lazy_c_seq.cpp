@@ -1494,7 +1494,7 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
   }
 
   if(lw_variables.count(variable) == 0)
-    emit(prev_op->thread, prev_op->label, 0, 0, from_integer(0, type));
+    return emit(prev_op->thread, prev_op->label, 0, 0, from_integer(0, type));
 
   const lazy_variable &prev = *prev_op;
   for(const auto &lw : lw_variables.at(variable))
@@ -1532,7 +1532,7 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, const shared_eve
     unsigned max_val = 0;
     for(const auto &[k, v] : labels)
       if(v > max_val) max_val = v;
-    emit(threads, max_val, rounds,
+    return emit(threads, max_val, rounds,
       from_integer((1ULL << bit_writes[variable]) - 1, unsignedbv_typet(bit_writes[variable])));
   }
 
