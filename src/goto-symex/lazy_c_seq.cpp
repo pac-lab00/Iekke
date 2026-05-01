@@ -63,20 +63,16 @@ void lazy_c_seqt::create_write_constraints(
 
   for(auto global_variable : global_variables)
   {
-    unsigned last_id = 0;
     if(this->writes.count(global_variable) == 0)
       continue;
     exprt previous = this->writes.at(global_variable).front().s_it->ssa_lhs;
 
-    irep_idt id_name = "id_T0_L0_R0_V"+id2string(global_variable);
-    symbol_exprt id_symbol{id_name, unsignedbv_typet(bit_writes[global_variable])};
-    equal_exprt constraint{from_integer(last_id, unsignedbv_typet{bit_writes[global_variable]}), id_symbol};
-
-    equation.constraint(constraint, "id constraint", this->writes.at(global_variable).front().s_it->source);
+    irep_idt sentinel_id_name = "id_T0_L0_R0_V"+id2string(global_variable);
+    symbol_exprt sentinel_id_symbol{sentinel_id_name, unsignedbv_typet(bit_writes[global_variable])};
     lazy_variable first_lazy_struct = lazy_variable{
-      0, 0, 0, 0, last_id, this->writes.at(global_variable).front().s_it->ssa_lhs, id_symbol};
+      0, 0, 0, 0, 0, this->writes.at(global_variable).front().s_it->ssa_lhs, sentinel_id_symbol};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
-    last_id++;
+
     for(std::size_t round = 1; round <= rounds; ++round)
     {
       for(const auto &write : this->writes.at(global_variable))
@@ -90,12 +86,9 @@ void lazy_c_seqt::create_write_constraints(
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
                              std::to_string(write.label) + "_R" + std::to_string(round)+ "_V"+id2string(global_variable);
         symbol_exprt id_symbol{id_name, unsignedbv_typet(bit_writes[global_variable])};
-        equal_exprt constraint_id{from_integer(last_id, unsignedbv_typet{bit_writes[global_variable]}), id_symbol};
-        equation.constraint(constraint_id, "id constraint", write.s_it->source);
         lazy_variable lazy_struct =
-          lazy_variable{round, write.label, write.num, write.thread, last_id, lazy_variable_exprt,
+          lazy_variable{round, write.label, write.num, write.thread, 0, lazy_variable_exprt,
             id_symbol};
-        last_id++;
         this->lazy_variables[global_variable].emplace_back(lazy_struct);
 
         const symbol_exprt exec =
@@ -109,6 +102,23 @@ void lazy_c_seqt::create_write_constraints(
 
         previous = lazy_variable_exprt;
       }
+    }
+
+    auto &lvs = this->lazy_variables[global_variable];
+    std::sort(lvs.begin(), lvs.end(),
+      [](const lazy_variable &a, const lazy_variable &b) {
+        return std::tie(a.round, a.thread, a.label, a.num)
+             < std::tie(b.round, b.thread, b.label, b.num);
+      });
+
+    const auto &front_src = this->writes.at(global_variable).front().s_it->source;
+    for(std::size_t i = 0; i < lvs.size(); ++i)
+    {
+      lvs[i].id = static_cast<unsigned>(i);
+      equation.constraint(
+        equal_exprt{from_integer(i, unsignedbv_typet{bit_writes[global_variable]}),
+                    lvs[i].exptr_id},
+        "id constraint", front_src);
     }
   }
 }
@@ -1219,7 +1229,7 @@ void lazy_c_seqt::collect_reads_and_writes(
     }
   }
   for(auto global_variable : global_variables) {
-    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable));
+    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable)*rounds);
   }
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
