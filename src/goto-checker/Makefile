@@ -24,6 +24,12 @@ INCLUDES= -I ..
 include ../config.inc
 include ../common
 
+# Z3 SMS fork backend define (--specsms flag in solver_factory)
+Z3 ?= ../../z3
+ifneq ($(wildcard $(Z3)/src/sat/sms/sms_solver.h),)
+  CP_CXXFLAGS += -DHAVE_SMS_Z3
+endif
+
 CLEANFILES = goto-checker$(LIBEXT)
 
 all: goto-checker$(LIBEXT)

@@ -417,6 +417,9 @@ void postprocess_equation(
 
 #include <solvers/sat/satcheck_minisat2.h>
 #include <solvers/sat/satcheck_sms.h>
+#ifdef HAVE_SMS_Z3
+#include <solvers/sat/satcheck_sms_z3.h>
+#endif
 #include <solvers/prop/prop_conv_solver.h>
 
 std::chrono::duration<double> prepare_property_decider(
@@ -439,8 +442,7 @@ std::chrono::duration<double> prepare_property_decider(
 
   {
     auto &_prop_for_sms = property_decider.get_solver()->prop();
-    if(auto *sms = dynamic_cast<sms_solvert*>(&_prop_for_sms))
-    {
+    auto handle_sms = [&](auto *sms) {
       std::cout << "SMS: converting canonical constraints into slave\n";
       sms->redirect_to_slave = true;
       equation.convert_canonical_constraints(
@@ -461,7 +463,18 @@ std::chrono::duration<double> prepare_property_decider(
       std::cout << "SMS: attaching slave with "
                 << shared_vars.size() << " shared variables\n";
       sms->attach_slave(shared_vars);
+    };
+
+    if(auto *sms = dynamic_cast<sms_solvert*>(&_prop_for_sms))
+    {
+      handle_sms(sms);
     }
+#ifdef HAVE_SMS_Z3
+    else if(auto *smsz = dynamic_cast<sms_z3_solvert*>(&_prop_for_sms))
+    {
+      handle_sms(smsz);
+    }
+#endif
     else
     {
       equation.convert_canonical_constraints(

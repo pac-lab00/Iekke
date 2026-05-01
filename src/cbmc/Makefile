@@ -56,6 +56,14 @@ LIBS =
 include ../config.inc
 include ../common
 
+# z3 SMS link (when fork present)
+Z3 ?= ../../z3
+Z3_BUILD ?= $(Z3)/build
+ifneq ($(wildcard $(Z3)/src/sat/sms/sms_solver.h),)
+  LIBS += -L $(Z3_BUILD) -lz3 -Wl,-rpath,$(abspath $(Z3_BUILD))
+  CP_CXXFLAGS += -DHAVE_SMS_Z3
+endif
+
 CLEANFILES = deagle_exe$(EXEEXT)
 
 all: deagle_exe$(EXEEXT)
