@@ -52,6 +52,7 @@ private:
   {
     std::size_t round;
     unsigned label;
+    unsigned num;
     unsigned thread;
     symbol_exprt exptr_id;
   };
@@ -59,6 +60,7 @@ private:
   {
     std::size_t round;
     unsigned label;
+    unsigned num;
     unsigned thread;
     symbol_exprt exptr_id;
   };
