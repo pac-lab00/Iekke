@@ -56,9 +56,9 @@ LIBS =
 include ../config.inc
 include ../common
 
-CLEANFILES = deagle_exe$(EXEEXT)
+CLEANFILES = iekke_exe$(EXEEXT)
 
-all: deagle_exe$(EXEEXT)
+all: iekke_exe$(EXEEXT)
 
 ifneq ($(wildcard ../bv_refinement/Makefile),)
   OBJ += ../bv_refinement/bv_refinement$(LIBEXT)
@@ -72,10 +72,10 @@ endif
 
 ###############################################################################
 
-deagle_exe$(EXEEXT): $(OBJ)
+iekke_exe$(EXEEXT): $(OBJ)
 	$(LINKBIN)
 
 .PHONY: cbmc-mac-signed
 
-cbmc-mac-signed: deagle_exe$(EXEEXT)
-	strip deagle_exe$(EXEEXT) ; codesign -v -s $(OSX_IDENTITY) deagle_exe$(EXEEXT)
+cbmc-mac-signed: iekke_exe$(EXEEXT)
+	strip iekke_exe$(EXEEXT) ; codesign -v -s $(OSX_IDENTITY) iekke_exe$(EXEEXT)
