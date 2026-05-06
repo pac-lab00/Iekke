@@ -121,16 +121,35 @@ void sms_solvert::attach_slave(const bvt &shared_vars)
   if(no_variables() == 0)
     return;
 
-  (void)shared_vars;
+  // modsat::attachTo treats [super_vars[0], super_vars.last()] as the shared
+  // range and uses super_offset = super_vars[0] - local_vars[0]. Master and
+  // slave share the same prop_conv_solvert, so var_no matches 1:1 and offset
+  // is 0. Compute the consecutive bounding range over the non-constant shared
+  // literals provided by the caller.
+  int min_var = std::numeric_limits<int>::max();
+  int max_var = -1;
+  for(const auto &lit : shared_vars)
+  {
+    if(lit.is_constant())
+      continue;
+    int v = static_cast<int>(lit.var_no());
+    if(v < min_var)
+      min_var = v;
+    if(v > max_var)
+      max_var = v;
+  }
 
-  Minisat::vec<Minisat::Var> super_vars, local_vars;
-  super_vars.push(0);
-  super_vars.push(no_variables() - 1);
-  local_vars.push(0);
-  local_vars.push(no_variables() - 1);
+  if(max_var < 0)
+    return;
+
+  Minisat::vec<Minisat::Var> super_vars_v, local_vars_v;
+  super_vars_v.push(min_var);
+  super_vars_v.push(max_var);
+  local_vars_v.push(min_var);
+  local_vars_v.push(max_var);
 
   impl->master.addTheory(&impl->slave);
-  impl->slave.attachTo(&impl->master, super_vars, local_vars);
+  impl->slave.attachTo(&impl->master, super_vars_v, local_vars_v);
   slave_attached = true;
 }
 

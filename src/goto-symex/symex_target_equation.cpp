@@ -487,7 +487,9 @@ void symex_target_equationt::convert_constraints(
   {
     if(step.is_constraint() && !step.ignore && !step.converted
        && step.comment != "write canonical"
-       && step.comment != "read canonical")
+       && step.comment != "read canonical"
+       && step.comment != "lw canonical"
+       && step.comment != "winr canonical")
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
@@ -512,7 +514,9 @@ void symex_target_equationt::convert_canonical_constraints(
   {
     if(step.is_constraint() && !step.ignore && !step.converted
        && (step.comment == "write canonical"
-           || step.comment == "read canonical"))
+           || step.comment == "read canonical"
+           || step.comment == "lw canonical"
+           || step.comment == "winr canonical"))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);

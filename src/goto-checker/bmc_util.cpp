@@ -443,6 +443,8 @@ std::chrono::duration<double> prepare_property_decider(
   {
     auto &_prop_for_sms = property_decider.get_solver()->prop();
     auto handle_sms = [&](auto *sms) {
+      std::size_t pre_redirect_var_count = sms->no_variables();
+
       std::cout << "SMS: converting canonical constraints into slave\n";
       sms->redirect_to_slave = true;
       equation.convert_canonical_constraints(
@@ -455,8 +457,12 @@ std::chrono::duration<double> prepare_property_decider(
       {
         for(const auto &sym : dp->get_symbols())
         {
-          if(!sym.second.is_constant())
-            shared_vars.push_back(sym.second);
+          const literalt &lit = sym.second;
+          if(lit.is_constant())
+            continue;
+          if(lit.var_no() >= pre_redirect_var_count)
+            continue;
+          shared_vars.push_back(lit);
         }
       }
 
