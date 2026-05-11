@@ -374,9 +374,9 @@ void postprocess_equation(
 
   if(equation.has_threads())
   {
-    if(options.get_unsigned_int_option("lazy-c-seq-rounds") > 0)
+    if(options.get_unsigned_int_option("rounds") > 0)
     {
-      lazy_c_seqt(ns, options.get_unsigned_int_option("lazy-c-seq-rounds"), options.get_bool_option("datarace"))(
+      lazy_c_seqt(ns, options.get_unsigned_int_option("rounds"), options.get_bool_option("datarace"))(
         equation, ui_message_handler);
     }
     else
