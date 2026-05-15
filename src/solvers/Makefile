@@ -294,7 +294,7 @@ $(MODSAT)/core/Config$(OBJEXT): $(MODSAT)/core/Config.cpp
 # Z3 SMS adapter: -I z3/src must precede CBMC -I .. so util/symbol.h
 # resolves to z3 (class symbol) not CBMC (class symbolt). Use -isystem
 # for CBMC paths to give -I (z3) higher precedence.
-SMS_Z3_CXXFLAGS = -fpermissive -std=c++17 -MMD -MP -DHAVE_SMS_Z3 -DHAVE_MINISAT2 -DHAVE_MODSAT -D_MP_GMP -include cstdint -O2 -Wno-pedantic -Wno-deprecated-declarations -Wno-error=template-body
+SMS_Z3_CXXFLAGS = -fpermissive -std=c++17 -MMD -MP -DHAVE_SMS_Z3 -DHAVE_MINISAT2 -DHAVE_MODSAT -D_MP_GMP -include cstdint -O2 -Wno-pedantic -Wno-deprecated-declarations
 sat/satcheck_sms_z3$(OBJEXT): sat/satcheck_sms_z3.cpp
 	$(CXX) -I $(Z3)/src -isystem .. -isystem ../../minisat-2.2.1 -isystem ../../modsat $(SMS_Z3_CXXFLAGS) -c sat/satcheck_sms_z3.cpp -o sat/satcheck_sms_z3$(OBJEXT)
 
