@@ -1,10 +1,8 @@
-Lazy-PO is the approach used to build a tool called Iekke.
-
 # Iekke V1.0
 
 ## Introduction
 Iekke is SAT-based concurrent program verification tool. It is built on top of Deagle (front-end) and MiniSAT-2.2.1 (back-end). The basic idea of Iekke is to simulate sequentialization using partial order constraints, establishing a number of rounds.
-The source code of Iekke is available on https://github.com/paolo-di-biase/Lazy-PO.
+The source code of Iekke is available on https://github.com/pac-lab00/Iekke.
 
 ## Installation
 ### Dependencies
@@ -25,25 +23,8 @@ Note: Higher versions of Bison may generate *.tab.h/*.tab.cpp that triggers warn
 ## Usage
 
 ```
-iekke_exe <input file> <unwind options> <specifications> --lazy-c-seq-rounds <num>
+iekke_exe <input file> <unwind options> <specifications> --rounds <num>
 ```
-
-``<unwind options>`` can be either of the following:
-- **--unwind n** : unwind all loops for n times.
-- **--unwindset loop_id0:n0,loop_id1:n1,...** : respectively set an unwind limit for each loop. Please run "``iekke_exe <input file> --show-loops``" to view the loop_id for each loop.
-
-If unwind options are not provided, Iekke tries to iteratively unwind each loop until it is fully unwound. For instance, in
-```
-int n = 10;
-while(n--) {body;}
-```
-Iekke unwinds it 10 times and stops.
-
-However, in
-```
-while(1) {body;}
-```
-Iekke unwinds it over and over again and never terminates.
 
 ``<specifications>`` includes:
 - **--unwinding-assertions**: generate an assertion for whether each loop is fully unwinded. This specification is strongly preferred in academic usage: if the user-defined assertion is TRUE but an unwinding assertion is violated, this TRUE result of used-defined assertion is not conclusive, indicating that one needs to enlarge the unwind limit and try again. This option is directly inherited from CBMC.
