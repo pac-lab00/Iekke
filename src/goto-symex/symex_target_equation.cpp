@@ -486,8 +486,9 @@ void symex_target_equationt::convert_constraints(
   for(auto &step : SSA_steps)
   {
     if(step.is_constraint() && !step.ignore && !step.converted
-       && step.comment != "write canonical"
-       && step.comment != "read canonical"
+       && step.comment != "atomic_block_canonical"
+       && step.comment != "abr"
+       && step.comment != "abw"
        && step.comment != "lw canonical"
        && step.comment != "winr canonical")
     {
@@ -513,8 +514,9 @@ void symex_target_equationt::convert_canonical_constraints(
   for(auto &step : SSA_steps)
   {
     if(step.is_constraint() && !step.ignore && !step.converted
-       && (step.comment == "write canonical"
-           || step.comment == "read canonical"
+       && (step.comment == "atomic_block_canonical"
+           || step.comment == "abr"
+           || step.comment == "abw"
            || step.comment == "lw canonical"
            || step.comment == "winr canonical"))
     {

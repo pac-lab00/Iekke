@@ -7,6 +7,7 @@
 #include "symex_target_equation.h"
 
 #include <optional>
+#include <vector>
 
 class lazy_c_seqt
 {
@@ -73,6 +74,7 @@ private:
   struct exec
   {
     unsigned label;
+    unsigned num;
     unsigned thread;
     std::size_t round;
     symbol_exprt symbol;
@@ -80,6 +82,7 @@ private:
   struct exec_tot
   {
     unsigned label;
+    unsigned num;
     unsigned thread;
     symbol_exprt symbol;
   };
@@ -102,7 +105,20 @@ private:
     std::size_t thread;
     symbol_exprt symbol;
   };
-
+  struct atomic_block
+  {
+    unsigned thread;
+    unsigned label;
+    std::map<irep_idt, std::vector<shared_event>> reads;  // x -> read events; i = event.num
+    std::map<irep_idt, std::vector<shared_event>> writes; // x -> write events
+  };
+  struct atomic_block_round
+  {
+    unsigned thread;
+    unsigned label;
+    unsigned round;
+    symbol_exprt symbol;
+  };
   std::size_t threads = 0;
   std::size_t threads_bits;
   std::size_t rounds_bits;
@@ -122,15 +138,18 @@ private:
   std::unordered_map<irep_idt, std::vector<lazy_variable_read>> lazy_variables_read;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
   std::vector<exec> exec_vector;
+  std::vector<atomic_block_round> atomic_block_rounds;
   std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
   std::vector<cs> cs_vector;
   std::vector<reach> reach_vector;
   std::vector<std::pair<unsigned, std::pair<std::size_t, std::size_t>>>
-    atomic_sections; // < thread < start_label, end_label > >
+    atomic_sections;
+  std::map<std::pair<unsigned, unsigned>, atomic_block>
+    atomic_blocks;
   std::unordered_map<unsigned, unsigned> n_bit;
   std::unordered_map<unsigned, unsigned> labels;
-  std::unordered_map<unsigned,std::unordered_map<unsigned, exprt>> guards; // < thread, < label, guard > >
+  std::unordered_map<unsigned,std::unordered_map<unsigned, std::vector<exprt>>> guards; // < thread, < label, < num, guard > > >
 
   void handling_active_threads(
     symex_target_equationt &equation/*,
@@ -147,6 +166,8 @@ private:
   void collect_reads_and_writes(
     const symex_target_equationt::SSA_stepst &ssa_steps/*,
     message_handlert &message_handler*/);
+
+  void build_atomic_blocks();
 
   void create_write_constraints(
     symex_target_equationt &equation/*,
@@ -192,10 +213,10 @@ private:
     typet type);
 
   symbol_exprt
-  create_exec_symbol(unsigned label, unsigned thread, std::size_t round);
+  create_exec_symbol(unsigned label, unsigned num, unsigned thread, std::size_t round);
 
   symbol_exprt
-  create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned thread);
+  create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
 
   symbol_exprt
   create_enabled_symbol(unsigned label, unsigned thread, std::size_t round);
@@ -214,14 +235,20 @@ private:
 
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
-  void create_read_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_lw_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
-  void create_write_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_winr_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  void create_atomic_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  symbol_exprt create_ABW(const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
   symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
   symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
-  symbol_exprt create_WINR_symbol(irep_idt variable, const shared_event &event,size_t round,  symex_target_equationt &equation
+  symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,  symex_target_equationt &equation
     /*,message_handlert &message_handler*/);
 
   std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
