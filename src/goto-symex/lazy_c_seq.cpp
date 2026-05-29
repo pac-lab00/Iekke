@@ -1544,7 +1544,15 @@ symbol_exprt lazy_c_seqt::create_ABR(
       exprt lw_neq = notequal_exprt{
         create_LW_symbol(global_variable, rd.thread, rd.label, rd.num, round, equation),
         create_LW_symbol(global_variable, rd.thread, rd.label, rd.num, round - 1, equation)};
-      result = or_exprt{result, and_exprt{exec, lw_neq}};
+      if(round >= 2) {
+        exprt could_fire_prev = and_exprt{
+          create_enabled_symbol(rd.label, rd.thread, round - 1),
+          equal_exprt{create_cs_symbol(rd.thread, round - 2),
+                      from_integer(rd.label, unsignedbv_typet(n_bit[rd.thread]))}};
+        result = or_exprt{result, and_exprt{exec, or_exprt{lw_neq, not_exprt{could_fire_prev}}}};
+      } else {
+        result = or_exprt{result, and_exprt{exec, lw_neq}};
+      }
     }
   }
   irep_idt abr_r = "ABR_T" + std::to_string(thread) + "_L" + std::to_string(label) +
