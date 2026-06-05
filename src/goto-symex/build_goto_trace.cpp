@@ -202,6 +202,37 @@ replace_nondet_in_type(exprt &expr, const decision_proceduret &solver)
     replace_nondet_in_type(sub, solver);
 }
 
+static bool get_round_robin_trace_time(
+  const SSA_stept &SSA_step,
+  const decision_proceduret &decision_procedure,
+  mp_integer &dest)
+{
+  if(SSA_step.round_robin_exec_symbols.empty())
+    return false;
+
+  for(std::size_t i = 0; i < SSA_step.round_robin_exec_symbols.size(); ++i)
+  {
+    if(decision_procedure.get(SSA_step.round_robin_exec_symbols[i]).is_true())
+    {
+      const mp_integer round = i + 1;
+      const mp_integer thread = SSA_step.round_robin_thread;
+      const mp_integer label = SSA_step.round_robin_label;
+      const mp_integer num = SSA_step.round_robin_num;
+      const mp_integer trace_order = SSA_step.round_robin_trace_order;
+
+      dest =
+        round * power(2, 128) +
+        thread * power(2, 96) +
+        label * power(2, 64) +
+        num * power(2, 32) +
+        trace_order;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void build_goto_trace(
   const symex_target_equationt &target,
   ssa_step_predicatet is_last_step_to_keep,
@@ -241,6 +272,12 @@ void build_goto_trace(
     if(!decision_procedure.get(SSA_step.guard_handle).is_true())
       continue;
 
+    mp_integer round_robin_time = 0;
+    const bool has_round_robin_time =
+      get_round_robin_trace_time(SSA_step, decision_procedure, round_robin_time);
+    if(!SSA_step.round_robin_exec_symbols.empty() && !has_round_robin_time)
+      continue;
+
     if(it->is_constraint() ||
        it->is_spawn())
       continue;
@@ -265,7 +302,11 @@ void build_goto_trace(
         // know it to get the value so just use typeless
 
         // __SZH_ADD_BEGIN__
-        if(!target.oc_edges.empty()) // use deagle
+        if(has_round_robin_time)
+        {
+          current_time = round_robin_time;
+        }
+        else if(!target.oc_edges.empty()) // use deagle
         {
           std::string name = id2string(it->ssa_lhs.get_identifier());
           if(target.oc_result_order.find(name) != target.oc_result_order.end())

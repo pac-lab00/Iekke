@@ -116,8 +116,15 @@ private:
     message_handlert &message_handler*/);
 
   void collect_reads_and_writes(
-    const symex_target_equationt::SSA_stepst &ssa_steps/*,
+    symex_target_equationt::SSA_stepst &ssa_steps/*,
     message_handlert &message_handler*/);
+
+  void annotate_round_robin_trace_event(
+    SSA_stept &step,
+    unsigned label,
+    unsigned num,
+    unsigned thread,
+    unsigned trace_order);
 
   void create_write_constraints(
     symex_target_equationt &equation/*,

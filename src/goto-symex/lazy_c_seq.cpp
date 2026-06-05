@@ -1027,7 +1027,7 @@ void lazy_c_seqt::handling_datarace(
 }
 
 void lazy_c_seqt::collect_reads_and_writes(
-  const symex_target_equationt::SSA_stepst &ssa_steps/*,
+  symex_target_equationt::SSA_stepst &ssa_steps/*,
   message_handlert &message_handler*/)
 {
   // messaget log{message_handler};
@@ -1036,10 +1036,84 @@ void lazy_c_seqt::collect_reads_and_writes(
   //               << messaget::eom;
 
   unsigned num = 0;
-  symex_target_equationt::SSA_stepst::const_iterator prev =
+  symex_target_equationt::SSA_stepst::iterator prev =
         ssa_steps.begin();
+  std::map<unsigned, std::vector<symex_target_equationt::SSA_stepst::iterator>>
+    pending_trace_steps;
 
-  for(symex_target_equationt::SSA_stepst::const_iterator s_it =
+  struct trace_position
+  {
+    bool valid = false;
+    unsigned label = 0;
+    unsigned num = 0;
+    unsigned thread = 0;
+    unsigned next_order = 0;
+  };
+  std::map<unsigned, trace_position> last_trace_positions;
+
+  const auto should_stage_trace_step = [](const SSA_stept &step) {
+    if(!step.round_robin_exec_symbols.empty())
+      return false;
+
+    if(step.is_assignment())
+    {
+      return step.assignment_type != symex_targett::assignment_typet::PHI &&
+             step.assignment_type != symex_targett::assignment_typet::GUARD;
+    }
+
+    return step.is_decl() || step.is_function_call() ||
+           step.is_function_return() || step.is_goto() || step.is_location() ||
+           step.is_output();
+  };
+
+  const auto annotate_with_position = [this](SSA_stept &step, trace_position &pos) {
+    annotate_round_robin_trace_event(
+      step,
+      pos.label,
+      pos.num,
+      pos.thread,
+      pos.next_order++);
+  };
+
+  const auto annotate_trace_event =
+    [this, &pending_trace_steps, &last_trace_positions, &annotate_with_position](
+      symex_target_equationt::SSA_stepst::iterator event,
+      unsigned label,
+      unsigned event_num,
+      unsigned thread,
+      symex_target_equationt::SSA_stepst::iterator next,
+      const symex_target_equationt::SSA_stepst::iterator &end) {
+      unsigned event_order = 0;
+      auto &pending = pending_trace_steps[thread];
+      auto &last_position = last_trace_positions[thread];
+
+      if(last_position.valid)
+      {
+        for(auto pending_step : pending)
+          annotate_with_position(*pending_step, last_position);
+      }
+      else
+      {
+        trace_position first_position{true, label, event_num, thread, 0};
+        for(auto pending_step : pending)
+          annotate_with_position(*pending_step, first_position);
+        event_order = first_position.next_order;
+      }
+      pending.clear();
+
+      annotate_round_robin_trace_event(
+        *event,
+        label,
+        event_num,
+        thread,
+        event_order);
+
+      last_position = trace_position{true, label, event_num, thread, event_order + 1};
+      if(next != end && next->is_assignment())
+        annotate_with_position(*next, last_position);
+    };
+
+  for(symex_target_equationt::SSA_stepst::iterator s_it =
         ssa_steps.begin();
       s_it != ssa_steps.end();
       s_it++)
@@ -1049,6 +1123,9 @@ void lazy_c_seqt::collect_reads_and_writes(
       threads = s_it->source.thread_nr;
       labels[s_it->source.thread_nr] = 0;
     }
+
+    if(should_stage_trace_step(*s_it))
+      pending_trace_steps[s_it->source.thread_nr].push_back(s_it);
 
     if(s_it->is_assert() || s_it->is_assume())
     {
@@ -1062,6 +1139,13 @@ void lazy_c_seqt::collect_reads_and_writes(
 
       exprt where = from_integer(-1,size_type());
       shared_event shared_event{s_it, where, labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+      annotate_trace_event(
+        s_it,
+        shared_event.label,
+        shared_event.num,
+        shared_event.thread,
+        ssa_steps.end(),
+        ssa_steps.end());
       guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
       // log.warning() << "Thread: " << shared_event.s_it->source.thread_nr
@@ -1121,6 +1205,13 @@ void lazy_c_seqt::collect_reads_and_writes(
         }
 
         shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+        annotate_trace_event(
+          s_it,
+          shared_event.label,
+          shared_event.num,
+          shared_event.thread,
+          next,
+          ssa_steps.end());
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
         // log.warning()
@@ -1175,6 +1266,13 @@ void lazy_c_seqt::collect_reads_and_writes(
         }
 
         shared_event shared_event{s_it, where,  labels[s_it->source.thread_nr], num, s_it->source.thread_nr};
+        annotate_trace_event(
+          s_it,
+          shared_event.label,
+          shared_event.num,
+          shared_event.thread,
+          next,
+          ssa_steps.end());
         guards[s_it->source.thread_nr].emplace(std::pair(labels[s_it->source.thread_nr], s_it->guard));
 
         // log.warning()
@@ -1197,8 +1295,46 @@ void lazy_c_seqt::collect_reads_and_writes(
       }
     }
   }
+
+for(auto &thread_and_pending : pending_trace_steps)
+{
+  unsigned thread = thread_and_pending.first;
+  auto last_position_it = last_trace_positions.find(thread);
+
+  trace_position fallback{true, 0, 0, thread, 0};
+  trace_position &pos = (last_position_it != last_trace_positions.end() &&
+                         last_position_it->second.valid)
+                          ? last_position_it->second
+                          : fallback;
+
+  for(auto pending_step : thread_and_pending.second)
+  {
+    if(pending_step->round_robin_exec_symbols.empty())
+      annotate_with_position(*pending_step, pos);
+  }
+}
+
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
+}
+
+void lazy_c_seqt::annotate_round_robin_trace_event(
+  SSA_stept &step,
+  unsigned label,
+  unsigned num,
+  unsigned thread,
+  unsigned trace_order)
+{
+  step.round_robin_label = label;
+  step.round_robin_num = num;
+  step.round_robin_thread = thread;
+  step.round_robin_trace_order = trace_order;
+  step.round_robin_exec_symbols.clear();
+  step.round_robin_exec_symbols.reserve(rounds);
+
+  for(std::size_t round = 1; round <= rounds; ++round)
+    step.round_robin_exec_symbols.push_back(
+      create_exec_symbol(label, thread, round));
 }
 
 symbol_exprt lazy_c_seqt::create_lazy_symbol(
