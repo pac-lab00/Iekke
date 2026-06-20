@@ -402,8 +402,8 @@ __CPROVER_HIDE:;
 int pthread_rwlock_destroy(pthread_rwlock_t *lock)
 {
   __CPROVER_HIDE:;
-  __CPROVER_assert(*((signed char *)lock)==0,
-    "rwlock held upon destroy");
+  // __CPROVER_assert(*((signed char *)lock)==0,
+  //   "rwlock held upon destroy");
   *((signed char *)lock)=-1;
 
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
@@ -684,8 +684,8 @@ int pthread_create(
 
 int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
 { __CPROVER_HIDE:
-  *((unsigned *)cond)=0;
-  if(attr) (void)*attr;
+  // *((unsigned *)cond)=0;
+  // if(attr) (void)*attr;
   return 0;
 }
 
@@ -698,9 +698,9 @@ int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
 
 int pthread_cond_signal(pthread_cond_t *cond)
 { __CPROVER_HIDE:
-  __CPROVER_atomic_begin();
-  (*((unsigned *)cond))++;
-  __CPROVER_atomic_end();
+  // __CPROVER_atomic_begin();
+  // (*((unsigned *)cond))++;
+  // __CPROVER_atomic_end();
   return 0;
 }
 
@@ -713,9 +713,9 @@ int pthread_cond_signal(pthread_cond_t *cond)
 
 int pthread_cond_broadcast(pthread_cond_t *cond)
 { __CPROVER_HIDE:
-  __CPROVER_atomic_begin();
-  *((unsigned *)cond)=(unsigned)-1;
-  __CPROVER_atomic_end();
+  // __CPROVER_atomic_begin();
+  // *((unsigned *)cond)=(unsigned)-1;
+  // __CPROVER_atomic_end();
   return 0;
 }
 
@@ -743,14 +743,14 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
 
   __CPROVER_clear_may(mutex, "mutex-locked");
   #endif
+
   pthread_mutex_unlock(mutex);
-  __CPROVER_atomic_begin();
-  if(*((unsigned *)cond))
-    (*((unsigned *)cond))--;
-  // __CPROVER_assume(*((unsigned *)cond));
-  // (*((unsigned *)cond))--;
-  __CPROVER_atomic_end();
   pthread_mutex_lock(mutex);
+
+  // __CPROVER_atomic_begin();
+  // if(*((unsigned *)cond))
+  //   (*((unsigned *)cond))--;
+  // __CPROVER_atomic_end();
 
   return 0; // we never fail
 }
@@ -966,7 +966,7 @@ __CPROVER_HIDE:;
   // use of shared variables.
   __CPROVER_thread_key_dtors[__CPROVER_next_thread_key] = destructor;
 #else
-  // __CPROVER_precondition(destructor == 0, "destructors are not yet supported");
+  __CPROVER_precondition(destructor == 0, "destructors are not yet supported");
 #endif
   *key = __CPROVER_next_thread_key++;
   return 0;

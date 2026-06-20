@@ -47,6 +47,7 @@ void goto_check_c(
   "(retain-trivial-checks)"                                                    \
   "(error-label):"                                                             \
   "(no-assertions)(no-assumptions)"                                            \
+  "(refined-pointer-analysis)"                                                 \
   "(assert-to-assume)" \
   "(alloc-check)"
 
@@ -93,6 +94,7 @@ void goto_check_c(
                      cmdline.isset("retain-trivial-checks")); \
   options.set_option("assertions", !cmdline.isset("no-assertions")); /* NOLINT(whitespace/line_length) */ \
   options.set_option("assumptions", !cmdline.isset("no-assumptions")); /* NOLINT(whitespace/line_length) */ \
+  options.set_option("refined-pointer-analysis", cmdline.isset("refined-pointer-analysis")); /* NOLINT(whitespace/line_length) */ \
   options.set_option("assert-to-assume", cmdline.isset("assert-to-assume")); /* NOLINT(whitespace/line_length) */ \
   options.set_option("retain-trivial", cmdline.isset("retain-trivial")); /* NOLINT(whitespace/line_length) */ \
   if(cmdline.isset("error-label")) \

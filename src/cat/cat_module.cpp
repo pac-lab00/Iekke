@@ -83,13 +83,8 @@ cat_relationt cat_modulet::make_base(std::string name)
 {
     cat_relationt relation(name, TERMINAL, std::vector<std::string>{});
     relation_map[name] = relation;
+    base_relations.insert(name);
     return relation;
-}
-
-cat_relationt cat_modulet::make_free()
-{
-    std::string name = "free" + std::to_string(rel_number++);
-    return make_base(name);
 }
 
 void cat_modulet::rename_relation(cat_relationt relation, std::string new_name, bool is_rec)
@@ -101,13 +96,6 @@ void cat_modulet::rename_relation(cat_relationt relation, std::string new_name, 
 
     if(is_rec || recursive_relations.find(old_name) != recursive_relations.end())
         recursive_relations.insert(new_name);
-
-    if(old_name.find("free") != std::string::npos)
-    {
-        std::cout << new_name << " is free\n";
-        free_relations.insert(new_name);
-        set_arity(new_name, 2);
-    }
 
     for(auto& relation_pair : relation_map)
         for(auto& operand : relation_pair.second.operands)
@@ -144,6 +132,8 @@ void cat_modulet::addConstraint(rel_axiomt axiom_type, cat_relationt relation)
     build_positivity(relation.name, positivity);
     build_need_must_may_set(relation.name, false);
     build_necessary(relation.name);
+
+    build_need_cutting(relation.name, false);
 }
 
 void cat_modulet::build_arity(std::string relation_name)
@@ -313,6 +303,25 @@ void cat_modulet::build_necessary(std::string relation_name)
     auto& relation = relation_map[relation_name];
     for(auto& operand : relation.operands)
         build_necessary(operand);
+}
+
+void cat_modulet::build_need_cutting(std::string relation_name, bool passing_negativity)
+{
+    static std::set<std::string> visited_relations;
+    if(contains(visited_relations, relation_name))
+        return;
+    visited_relations.insert(relation_name);
+
+    if(contains(need_cutting_relations, relation_name))
+        return;
+    passing_negativity = passing_negativity || contains(negative_relations, relation_name);
+
+    if(passing_negativity)
+        need_cutting_relations.insert(relation_name);
+
+    auto relation = relation_map[relation_name];
+    for(auto& operand : relation.operands)
+        build_need_cutting(operand, passing_negativity);
 }
 
 rel_axiomt cat_modulet::get_axiom(std::string real_name)
@@ -572,78 +581,24 @@ void cat_modulet::remove_duplicate_propagate_edges()
     }
 }
 
-void cat_modulet::replace_plus()
+void cat_modulet::remove_cut_propagate_edges()
 {
-    for(auto& relation_pair : relation_map)
+    for(auto& backward_pair : propagate_backward)
     {
-        auto relation_name = relation_pair.first;
-        auto relation = relation_pair.second;
-        if(relation.op_type != PLUS)
-            continue;
-
-        auto operand = relation.operands[0];
-        auto seq_relation = make_relation(rel_opt::SEQ, std::vector<std::string>{relation_name, relation_name});
-        auto new_relation = cat_relationt(relation_name, rel_opt::ALT, std::vector<std::string>{operand, seq_relation.name});
-        relation_map[relation_name] = new_relation;
-        recursive_relations.insert(relation_name);
-
-        std::cout << "replace plus: " << get_relation_str(relation.op_type, relation.operands) << " becomes " << get_relation_str(new_relation.op_type, new_relation.operands) << "\n";
-
-        if(contains(positive_relations, relation_name))
-            positive_relations.insert(seq_relation.name);
-        if(contains(negative_relations, relation_name))
-            negative_relations.insert(seq_relation.name);
-        if(contains(necessary_relations, relation_name))
-            necessary_relations.insert(seq_relation.name);
-        if(contains(unary_relations, relation_name))
-            unary_relations.insert(seq_relation.name);
-        if(contains(binary_relations, relation_name))
-            binary_relations.insert(seq_relation.name);
-    }
-}
-
-void cat_modulet::recursion_simulation()
-{  
-    for(auto relation : recursive_relations)
-        if(negative_relations.find(relation) != negative_relations.end())
-            recursion_simulation_per_relation(relation);
-}
-
-void cat_modulet::recursion_simulation_per_relation(std::string relation)
-{
-    std::string new_relation = relation + "_prime";
-    auto new_free = make_free();
-    rename_relation(new_free, new_relation, false);
-
-    for(auto& relation_pair : relation_map)
-    {
-        auto& operands = relation_pair.second.operands;
-        for(auto& operand_relation : operands)
-            if(operand_relation == relation)
-                operand_relation = new_relation;
+        auto to_relation = backward_pair.first;
+        if(need_cutting_relations.find(to_relation) != need_cutting_relations.end())
+            backward_pair.second.clear();
     }
 
-    auto new_bigger_than_old = make_relation(rel_opt::SUB, {new_relation, relation});
-    addConstraint(rel_axiomt::EMPTY, new_bigger_than_old);
-    positive_relations.insert(new_bigger_than_old.name);
-    necessary_relations.insert(new_bigger_than_old.name);
-    binary_relations.insert(new_bigger_than_old.name);
-
-    auto old_bigger_than_new = make_relation(rel_opt::SUB, {relation, new_relation});
-    addConstraint(rel_axiomt::EMPTY, old_bigger_than_new);
-    positive_relations.insert(old_bigger_than_new.name);
-    necessary_relations.insert(old_bigger_than_new.name);
-    binary_relations.insert(old_bigger_than_new.name);
-
-    // both positive and negative
-    positive_relations.insert(relation);
-    negative_relations.insert(relation);
-
-    positive_relations.insert(new_relation);
-    negative_relations.insert(new_relation);
-    necessary_relations.insert(new_relation);
-    binary_relations.insert(new_relation);
-
-    binary_musts[new_relation] = binary_musts[relation];
-    binary_mays[new_relation] = binary_mays[relation];
+    for(auto& forward_pair : propagate_forward)
+    {
+        for(auto it = forward_pair.second.begin(); it != forward_pair.second.end();)
+        {
+            auto& edge = *it;
+            if(need_cutting_relations.find(edge.to) != need_cutting_relations.end())
+                it = forward_pair.second.erase(it);
+            else
+                it++;
+        }
+    }
 }

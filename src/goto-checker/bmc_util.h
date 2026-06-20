@@ -182,6 +182,7 @@ void run_property_decider(
   "(unwinding-assertions)" \
   "(no-unwinding-assertions)" \
   "(mm-strict-guard)" \
+  "(mm-cutting)" \
   "(mm-flag)" \
   "(unwind-suggest)" \
   "(no-self-loops-to-assumptions)" \

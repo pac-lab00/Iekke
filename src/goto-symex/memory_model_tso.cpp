@@ -25,7 +25,7 @@ operator()(symex_target_equationt &equation, message_handlert &message_handler)
 
   read_from(equation);
 
-  if(!use_deagle)
+  if(!use_deagle || equation.use_deagle_icd)
     write_serialization_external(equation);
   
   program_order(equation);

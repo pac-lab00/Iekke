@@ -11,6 +11,7 @@ SRC = auto_objects.cpp \
       memory_model_sc.cpp \
       memory_model_tso.cpp \
       memory_model_general.cpp \
+      memory_model_general_cutter.cpp \
       partial_order_concurrency.cpp \
       path_storage.cpp \
       postcondition.cpp \

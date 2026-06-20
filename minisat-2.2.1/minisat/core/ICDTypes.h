@@ -22,21 +22,8 @@ struct ICD_reasont // the reason for a single edge in ICD is one literal or two
 	int num;
 	Minisat::Lit l1;
 	Minisat::Lit l2;
-	ICD_reasont(): num(0) {}
-	ICD_reasont(Minisat::Lit _l1)
-	{
-		num = 1;
-		l1 = _l1;
-		// if(_l1 == Minisat::Lit(0))
-		// {
-		// 	num = 0;
-		// }
-		// else
-		// {
-		// 	num = 1;
-		// 	l1 = _l1;
-		// }
-	}
+	ICD_reasont(): num(0), l1(lit_Error), l2(lit_Error) {}
+	ICD_reasont(Minisat::Lit _l1): num(1), l1(_l1), l2(lit_Error) {}
 	ICD_reasont(Minisat::Lit _l1, Minisat::Lit _l2): num(2), l1(_l1), l2(_l2) {}
 	ICD_reasont(ICD_reasont r1, ICD_reasont r2)
 	{

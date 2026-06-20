@@ -1,4 +1,4 @@
-// A Bison parser, made by GNU Bison 3.5.1.
+// A Bison parser, made by GNU Bison 3.5.2.
 
 // Skeleton interface for Bison LALR(1) parsers in C++
 
@@ -1619,7 +1619,7 @@ switch (yytype)
     enum
     {
       yyeof_ = 0,
-      yylast_ = 171,     ///< Last index in yytable_.
+      yylast_ = 167,     ///< Last index in yytable_.
       yynnts_ = 6,  ///< Number of nonterminal symbols.
       yyfinal_ = 2, ///< Termination state number.
       yyntokens_ = 41  ///< Number of tokens.

@@ -22,8 +22,6 @@ inline bool oc_reasonable(edge_kindt kind) //for initially existing edges
 
 ClosureSolver::ClosureSolver()
 {
-    conflict_cycle = 0;
-    theory_propagation = 0;
     Solver();
 }
 
@@ -45,6 +43,12 @@ void ClosureSolver::save_raw_graph(oc_edge_tablet& _oc_edge_table, oc_guard_mapt
 
 void ClosureSolver::set_graph()
 {
+    oc_edge_tablet race_table;
+    oc_edge_tablet apo_table;
+    oc_edge_tablet po_table;
+    oc_edge_tablet rf_table;
+    oc_edge_tablet ws_table;
+
     for(auto pair: oc_edge_table) //init nodes first
     {
         if(pair.first.first == "" || pair.first.second == "")
@@ -52,6 +56,18 @@ void ClosureSolver::set_graph()
 
         graph.get_node(pair.first.first);
         graph.get_node(pair.first.second);
+
+        auto kind = str_to_kind(pair.second.second);
+        if(kind == OC_RACE)
+            race_table.push_back(pair);
+        else if(kind == OC_APO)
+            apo_table.push_back(pair);
+        else if(kind == OC_PO)
+            po_table.push_back(pair);
+        else if(kind == OC_RF)
+            rf_table.push_back(pair);
+        else if(kind == OC_WS)
+            ws_table.push_back(pair);
     }
 
     // for(auto pair: oc_guard_map)
@@ -87,71 +103,75 @@ void ClosureSolver::set_graph()
             std::cout << "guard of " << u << "(" << write_name << ") is " << var(guard_literal) << "(" << sign(guard_literal) << ")\n";
     }
 
-    for(auto pair: oc_edge_table) //race first 
+    for(auto pair: race_table) //race first 
     {
-        if(pair.first.first == "" || pair.first.second == "")
-            continue;
-
         int u = graph.get_node(pair.first.first);
         int v = graph.get_node(pair.first.second);
-        edge_kindt kind = str_to_kind(pair.second.second);
-
-        if(kind != OC_RACE)
-            continue;
-
         Lit& l = pair.second.first;
         graph.init_race(u, v, l);
     }
 
-    for(auto pair: oc_edge_table) //atomic po second
+    for(auto pair: apo_table) //atomic po second
     {
-        if(pair.first.first == "" || pair.first.second == "")
-            continue;
-
         int u = graph.get_node(pair.first.first);
         int v = graph.get_node(pair.first.second);
-        edge_kindt kind = str_to_kind(pair.second.second);
-
-        if(kind != OC_APO)
-            continue;
 
         if(OC_VERBOSITY >= 1)
-            std::cout << "initing " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ") " << kind_to_str(kind) << "\n";
+            std::cout << "initing apo edge " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ")\n";
 
         graph.activate_apo(u, v);
     }
 
     graph.atomic_remove_self();
 
-    for(auto pair: oc_edge_table) // others last
+    for(auto pair: rf_table)
     {
-        if(pair.first.first == "" || pair.first.second == "")
-            continue;
-
         int u = graph.get_node(pair.first.first);
         int v = graph.get_node(pair.first.second);
-        edge_kindt kind = str_to_kind(pair.second.second);
-
-        if(kind == OC_RACE || kind == OC_APO)
-            continue;
+        Lit& l = pair.second.first;
 
         if(OC_VERBOSITY >= 1)
-            std::cout << "initing " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ") " << kind_to_str(kind) << "\n";
+            std::cout << "initing rf edge " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ")\n";
 
-        if(oc_reasonable(kind))
+        graph.init_reasonable_edge(u, v, OC_RF, l);
+    }
+
+    for(auto pair: po_table)
+    {
+        int u = graph.get_node(pair.first.first);
+        int v = graph.get_node(pair.first.second);
+
+        if(OC_VERBOSITY >= 1)
+            std::cout << "initing po edge " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ")\n";
+
+        if(graph.activate_edge(u, v, OC_PO, closure_empty_reason))
         {
-            Lit& l = pair.second.first;
-            graph.init_reasonable_edge(u, v, kind, l);
-        }
-        else
-        {
-            if(graph.activate_edge(u, v, kind, closure_empty_reason))
-            {
-                std::cout << "WARNING: Find cycle during set_graph\n";
-                ok = false;
-            }
+            std::cout << "WARNING: Find cycle during set_graph\n";
+            ok = false;
         }
     }
+
+    // for(auto pair: ws_table)
+    // {
+    //     int u = graph.get_node(pair.first.first);
+    //     int v = graph.get_node(pair.first.second);
+    //     Lit& l = pair.second.first;
+
+    //     // TODO: which is correct?
+    //     if(l.x == -1)
+    //     {
+    //         if(OC_VERBOSITY >= 1)
+    //             std::cout << "initing a trivially true ws edge " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ")\n";
+
+    //         if(graph.light_guard(u) || graph.light_guard(v) || graph.activate_edge(u, v, OC_WS, closure_empty_reason))
+    //         {
+    //             std::cout << "WARNING: Find cycle during set_graph\n";
+    //             ok = false;
+    //         }
+    //     }
+    // }
+
+    graph.get_co_pairs();
 
     if(OC_VERBOSITY >= 1)
         std::cout << "apply literal assignment after setting graph\n";
@@ -285,9 +305,14 @@ lbool ClosureSolver::search(int nof_conflicts)
                 decisions++;
                 next = pickBranchLit();
 
-                if (next == lit_Undef)
-                    // Model found:
-                    return l_True;
+                if (next == lit_Undef) {
+                    addMissingCoClauses();
+                    next = pickBranchLit();
+                    if(next == lit_Undef) {
+                        // Model found:
+                        return l_True;
+                    }
+                }
             }
 
             // Increase decision level and enqueue 'next'
@@ -351,9 +376,6 @@ lbool ClosureSolver::solve_()
         model.growTo(nVars());
         for (int i = 0; i < nVars(); i++) model[i] = value(i);
 
-        if(!graph.co_complete_check())
-            status = l_Undef;
-
         graph.final_check();
         graph.show_rf();
         graph.show_model();
@@ -362,6 +384,7 @@ lbool ClosureSolver::solve_()
         ok = false;
 
     std::cout << "ClosureSolver finishes with " << conflicts << " conflicts, " << decisions << " decisions, and " << propagations << " propagations. " << theory_propagation << " theory propagations and " << conflict_cycle << " cycles included.\n";
+    std::cout << "Attempts to add co clauses: " << attempt_adding_co << ". Added co clauses: " << added_co_clauses << ". Total co pairs: " << graph.co_pairs.size() << ".\n";
 
     cancelUntil(0);
     return status;
@@ -745,6 +768,45 @@ void ClosureSolver::setRawGraph(oc_edge_tablet& _oc_edge_table, oc_guard_mapt& _
 {
     oc_edge_table = _oc_edge_table;
     oc_guard_map = _oc_guard_map;
+}
+
+void ClosureSolver::addMissingCoClauses()
+{
+    auto incomplete_co_pairs = graph.find_incomplete_co_pairs();
+
+    if(incomplete_co_pairs.empty())
+        return;
+
+    for(auto& pair : incomplete_co_pairs)
+    {
+        int node1 = pair.first, node2 = pair.second;
+
+        if(OC_VERBOSITY >= 1)
+            std::cout << "adding co between nodes " << node1 << " " << node2 << "\n";
+
+        Var var12 = newVar(), var21 = newVar();
+        Lit lit12 = mkLit(var12), lit21 = mkLit(var21);
+        Lit guard_lit1 = graph.nodes[node1].guard;
+        Lit guard_lit2 = graph.nodes[node2].guard;
+        vec<Lit> co_clause;
+        co_clause.push(lit12);
+        co_clause.push(lit21);
+        if(guard_lit1.x != -1)
+            co_clause.push(~guard_lit1);
+        if(guard_lit2.x != -1)
+            co_clause.push(~guard_lit2);
+
+        CRef cr = ca.alloc(co_clause, true);
+        learnts.push(cr);
+        attachClause(cr);
+        claBumpActivity(ca[cr]);
+
+        graph.init_reasonable_edge(node1, node2, OC_NA, lit12);
+        graph.init_reasonable_edge(node2, node1, OC_NA, lit21);
+    }
+
+    attempt_adding_co++;
+    added_co_clauses += incomplete_co_pairs.size();
 }
 
 // __SZH_ADD_END__

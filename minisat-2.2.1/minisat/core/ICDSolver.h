@@ -23,6 +23,7 @@ class ICDSolver : public Solver
     ICD graph;
 
     oc_edge_tablet oc_edge_table;
+    std::map<std::string, int>* oc_result_order;
 
     std::vector<std::pair<Lit, literal_set>> literals_to_assign;
 
@@ -36,13 +37,14 @@ protected:
     void analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlevel);
 public:
     ICDSolver();
-    void init();
-    void setRawGraph(oc_edge_tablet& _oc_edge_table);
+
+    void save_raw_graph(oc_edge_tablet& _oc_edge_table, std::map<std::string, int>& _oc_result_order);
     void set_graph();
 
     lbool solve_();
     bool solve() { budgetOff(); assumptions.clear(); return solve_() == l_True; }
-    bool solve(const vec<Lit>& assumps) { budgetOff(); assumps.copyTo(assumptions); return solve_() == l_True; }
+    inline bool solve(const vec<Lit>& assumps){ budgetOff(); assumps.copyTo(assumptions); return solve_() == l_True; }
+    inline lbool solveLimited(const vec<Lit>& assumps){ assumps.copyTo(assumptions); return solve_(); }
 
     void assign_literal(Lit l, literal_set& lv);
     void assign_literal(Lit l, literal_vector& lv);

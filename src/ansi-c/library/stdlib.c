@@ -78,6 +78,7 @@ void _Exit(int status)
 
 void abort(void)
 {
+  // __CPROVER_precondition(0, "abort didn't happen");
   __CPROVER_assume(0);
 #ifdef LIBRARY_CHECK
   __builtin_unreachable();
@@ -266,28 +267,28 @@ void free(void *ptr)
 {
   __CPROVER_HIDE:;
   // If ptr is NULL, no operation is performed.
-  // __CPROVER_precondition(
-  //   ptr == 0 || __CPROVER_r_ok(ptr, 0),
-  //   "free argument must be NULL or valid pointer");
-  // __CPROVER_precondition(ptr==0 || __CPROVER_DYNAMIC_OBJECT(ptr),
-  //                        "free argument must be dynamic object");
-  // __CPROVER_precondition(ptr==0 || __CPROVER_POINTER_OFFSET(ptr)==0,
-  //                        "free argument has offset zero");
+  __CPROVER_precondition(
+    ptr == 0 || __CPROVER_r_ok(ptr, 0),
+    "free argument must be NULL or valid pointer");
+  __CPROVER_precondition(ptr==0 || __CPROVER_DYNAMIC_OBJECT(ptr),
+                         "free argument must be dynamic object");
+  __CPROVER_precondition(ptr==0 || __CPROVER_POINTER_OFFSET(ptr)==0,
+                         "free argument has offset zero");
 
   // catch double free
-  // __CPROVER_precondition(ptr==0 || __CPROVER_deallocated!=ptr,
-  //                        "double free");
+  __CPROVER_precondition(ptr==0 || __CPROVER_deallocated!=ptr,
+                         "double free");
 
   // catch people who try to use free(...) for stuff
   // allocated with new[]
-  // __CPROVER_precondition(
-  //   ptr == 0 || __CPROVER_new_object != ptr || !__CPROVER_malloc_is_new_array,
-  //   "free called for new[] object");
+  __CPROVER_precondition(
+    ptr == 0 || __CPROVER_new_object != ptr || !__CPROVER_malloc_is_new_array,
+    "free called for new[] object");
 
   // catch people who try to use free(...) with alloca
-  // __CPROVER_precondition(
-  //   ptr == 0 || __CPROVER_alloca_object != ptr,
-  //   "free called for stack-allocated object");
+  __CPROVER_precondition(
+    ptr == 0 || __CPROVER_alloca_object != ptr,
+    "free called for stack-allocated object");
 
   if(ptr!=0)
   {

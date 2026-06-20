@@ -19,7 +19,7 @@ const int OC_VERBOSITY = 0;
 
 #define neg(lv) {for(auto& l : lv) l = ~l;}
 
-#define PROPAGATE_METHOD 1 //-1: nothing; 0: only rf; 1: and ws, fr. Seems that -1 is just the same as 0. And 1 is the only choice
+#define PROPAGATE_INTENSITY 1 //-1: nothing; 0: only rf; 1: and ws, fr
 
 using namespace Minisat;
 
@@ -133,26 +133,6 @@ void closure::init(ClosureSolver* _solver)
 {
     solver = _solver;
     nodes = std::vector<closure_nodet>();
-}
-
-std::string get_address(std::string name)
-{
-    // std::regex element_pattern("([^\\#]*)#\\d+(\\[\\[[a-zA-Z0-9]+\\]\\])");
-    // std::smatch element_results;
-    // if(regex_match(name, element_results, element_pattern))
-    //     return element_results[1].str() + element_results[2].str();
-
-    // std::regex member_pattern("([^\\#]*)#\\d+(\\.\\.[a-zA-Z0-9_]+)");
-    // std::smatch member_results;
-    // if(regex_match(name, member_results, member_pattern))
-    //     return member_results[1].str() + member_results[2].str();
-
-    std::regex pattern("([^\\#]*)#\\d+([^\\d].*)");
-    std::smatch results;
-    if(regex_match(name, results, pattern))
-        return results[1].str() + results[2].str();
-
-    return name.substr(0, name.find_first_of('#'));
 }
 
 int closure::get_node(std::string name)
@@ -595,7 +575,8 @@ bool closure::activate_directed_edge(closure_edget &edge, bool need_closure)
 
             }
 
-#if (PROPAGATE_METHOD >= 0)
+#if (PROPAGATE_INTENSITY >= 0)
+
         //add vital edges, w-w and w-r, and for r-w, just disable rf
         for(auto to: nodes[to_rep].atomic_items)
             for(auto from: nodes[from_rep].atomic_items)
@@ -603,7 +584,7 @@ bool closure::activate_directed_edge(closure_edget &edge, bool need_closure)
                 if(nodes[to].address != nodes[from].address)
                     continue;
 
-#if (PROPAGATE_METHOD >= 1)
+#if (PROPAGATE_INTENSITY >= 1)
                 if(nodes[from].is_write && nodes[to].is_write) //w-w
                 {
                     if(OC_VERBOSITY >= 1)
@@ -633,7 +614,7 @@ bool closure::activate_directed_edge(closure_edget &edge, bool need_closure)
                     for(auto w1 : nodes[w2].in_vital)
                         add_trinary_pattern(w1, w2, r);
                 }
-#endif // (PROPAGATE_METHOD >= 1)
+#endif // (PROPAGATE_INTENSITY >= 1)
                 if(nodes[from].is_read && nodes[to].is_write) //special for rf, just set its rf_variable false
                 {
                     auto rf_lit_cand = check_tail_head_to_inactive_lit(to, from);
@@ -654,7 +635,7 @@ bool closure::activate_directed_edge(closure_edget &edge, bool need_closure)
                     solver->assign_literal(~rf_lit_cand, unit_lv);
                 }
             }
-#endif // (PROPAGATE_METHOD >= 0)
+#endif // (PROPAGATE_INTENSITY >= 0)
 
         if(need_closure)
         {
@@ -1256,43 +1237,43 @@ closure::simple_nodet closure::simplify_node(int node_id)
 
 std::vector<std::string> write_order;
 
-bool closure::co_complete_check() // true if ok, false if incomplete
+void closure::get_co_pairs()
 {
-    if(!pair_to_inactive_races.empty())
-        return true;
-
     for(int i = 0; i < int(nodes.size()); i++)
         for(int j = i + 1; j < int(nodes.size()); j++)
         {
             auto& node1 = nodes[i];
             auto& node2 = nodes[j];
-            if(!node1.is_write || !node2.is_write || node1.address != node2.address)
-                continue;
-
-            bool i_prior_to_j = has_edge(i, j);
-            bool j_prior_to_i = has_edge(j, i);
-
-            if(!(i_prior_to_j || j_prior_to_i))
-            {
-                bool ok = false;
-                int base_level = trail_edge_lim.size();
-                push_scope();
-                ok = !activate_edge(i, j, OC_NA, empty_lv);
-                pop_scope(base_level);
-                if(!ok)
-                {
-                    push_scope();
-                    ok = !activate_edge(i, j, OC_NA, empty_lv);
-                    pop_scope(base_level);
-                }
-                if(!ok)
-                {
-                    std::cout << "Write " << node1 << " and " << node2 << " cannot be ordered!\n";
-                    return false;
-                }
-            }
+            if(node1.is_write && node2.is_write && node1.address == node2.address && !union_check(i, j))
+                co_pairs.push_back(std::make_pair(i, j));
         }
-    return true;
+}
+
+std::vector<std::pair<int, int>> closure::find_incomplete_co_pairs()
+{
+    std::vector<std::pair<int, int>> pairs;
+
+    if(!pair_to_inactive_races.empty()) // in data race detection, we do not care about incomplete co pairs
+        return pairs;
+
+    for(auto candidate_pair : co_pairs)
+    {
+        int i = candidate_pair.first, j = candidate_pair.second;
+        auto& node1 = nodes[i];
+        auto& node2 = nodes[j];
+        if(!node1.is_write || !node2.is_write || node1.address != node2.address)
+            continue;
+
+        if(!node1.guard_lighted || !node2.guard_lighted)
+            continue;
+
+        bool i_prior_to_j = has_edge(i, j);
+        bool j_prior_to_i = has_edge(j, i);
+
+        if(!(i_prior_to_j || j_prior_to_i))
+            pairs.push_back(candidate_pair);
+    }
+    return pairs;
 }
 
 void closure::final_check()
@@ -1340,8 +1321,13 @@ void closure::final_check()
         {
             auto item = item_location.first;
             auto name = simple_nodes[item].name;
-            write_order.push_back(name);
-            solver->oc_result_order->insert(std::make_pair(name, node_order));
+            // if(simple_nodes[item].is_write && 
+            //     name.find("__CPROVER") == std::string::npos && 
+            //     name.find("argv'") == std::string::npos)
+            {
+                write_order.push_back(name);
+                solver->oc_result_order->insert(std::make_pair(name, node_order));
+            }
         }
 
         for(auto out_node : simple_nodes[visiting_node].out)

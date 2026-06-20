@@ -34,18 +34,6 @@ _Bool __atomic_always_lock_free(__CPROVER_size_t, void *);
 _Bool __atomic_is_lock_free(__CPROVER_size_t, void *);
 
 // __SZH_ADD_BEGIN__
-void __atomic_store(void *, void *, int);
-void __atomic_store_n(void *, void *, int);
-void __atomic_load(void *, void *, int);
-void __atomic_load_n(void *, void *, int);
-_Bool __atomic_compare_exchange(int *, int *, int, int, int, int);
-void __atomic_exchange(int *, int *, int *, int);
-int __atomic_fetch_add(int *, int, int);
-int __atomic_fetch_sub(int *, int, int);
-int __atomic_fetch_and(int *, int, int);
-int __atomic_fetch_or(int *, int, int);
-int __atomic_fetch_xor(int *, int, int);
-
 int __LKMM_LOAD(int *, int);
 void __LKMM_STORE(int*, int, int);
 void __LKMM_FENCE(int);

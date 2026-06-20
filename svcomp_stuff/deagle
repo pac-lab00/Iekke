@@ -96,7 +96,7 @@ if len(sys.argv) < 3:
 
 property_path = sys.argv[1]
 program_path = sys.argv[2]
-flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
+flags = "--refined-pointer-analysis --graphml-witness error-witness.graphml "
 
 if "unreach-call.prp" in property_path:
     flags += ""

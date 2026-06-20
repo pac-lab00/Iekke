@@ -54,6 +54,12 @@ struct Lit {
     bool operator <  (Lit p) const { return x < p.x;  } // '<' makes p, ~p adjacent in the ordering.
 };
 
+// __SZH_ADD_BEGIN__: for using unordered_set and unordered_map on Lit
+class LitHasher {
+public:
+    size_t operator()(const Lit& lit) const { return hash(lit.x); }
+};
+// __SZH_ADD_END__
 
 inline  Lit  mkLit     (Var var, bool sign = false) { Lit p; p.x = var + var + (int)sign; return p; }
 inline  Lit  operator ~(Lit p)              { Lit q; q.x = p.x ^ 1; return q; }

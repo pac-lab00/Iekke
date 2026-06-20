@@ -121,7 +121,9 @@ public:
     void push_scope();
     void pop_scope(int new_level);
 
-    bool co_complete_check();
+    std::vector<std::pair<int, int>> co_pairs;
+    void get_co_pairs();
+    std::vector<std::pair<int, int>> find_incomplete_co_pairs();
 
     void show_edges();
     void show_rf();
