@@ -383,41 +383,35 @@ void postprocess_equation(
     else
     {
       std::unique_ptr<memory_model_baset> memory_model =
-        get_memory_model(options, ns);
+      get_memory_model(options, ns);
 
       // __SZH_ADD_BEGIN__
-      if(options.get_bool_option("deagle"))
+      if(options.get_bool_option("deagle-closure"))
+      {
         memory_model->use_deagle = true;
-
+        equation.use_deagle_closure = true;
+      }
+      if(options.get_bool_option("deagle-icd"))
+      {
+        memory_model->use_deagle = true;
+        equation.use_deagle_icd = true;
+      }
+      if(options.get_bool_option("deagle-segment"))
+      {
+        memory_model->use_deagle = true;
+        equation.use_deagle_segment = true;
+      }
       if(options.get_bool_option("datarace"))
         memory_model->enable_datarace = true;
       // __SZH_ADD_END__
-    // __SZH_ADD_BEGIN__
-    if(options.get_bool_option("deagle-closure"))
-    {
-      memory_model->use_deagle = true;
-      equation.use_deagle_closure = true;
-    }
-    if(options.get_bool_option("deagle-icd"))
-    {
-      memory_model->use_deagle = true;
-      equation.use_deagle_icd = true;
-    }
-    if(options.get_bool_option("deagle-segment"))
-    {
-      memory_model->use_deagle = true;
-      equation.use_deagle_segment = true;
-    }
-    if(options.get_bool_option("datarace"))
-      memory_model->enable_datarace = true;
-    // __SZH_ADD_END__
 
-    // __WP_ADD_BEGIN__
-    if(options.get_bool_option("deadlock"))
-      memory_model->enable_deadlock = true;
-    // __WP_ADD_END__
+      // __WP_ADD_BEGIN__
+      if(options.get_bool_option("deadlock"))
+        memory_model->enable_deadlock = true;
+      // __WP_ADD_END__
 
-    (*memory_model)(equation, ui_message_handler);
+      (*memory_model)(equation, ui_message_handler);
+    }
   }
 
   messaget log(ui_message_handler);
