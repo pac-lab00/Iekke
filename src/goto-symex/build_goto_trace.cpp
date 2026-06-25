@@ -370,7 +370,10 @@ void build_goto_trace(
       last_step_was_kept = true;
     }
 
-    time_map[current_time].push_back(it);
+    if(has_round_robin_time)
+      time_map[round_robin_time].push_back(it);
+    else
+      time_map[current_time].push_back(it);
   }
 
   INVARIANT(
