@@ -1,6 +1,9 @@
 Copyright (c) 2021-2026, Fei He, Zhihang Sun, and Hongyu Fan, 
 		School of Software, Tsinghua University
 
+(c) 2025-2026, Di Biase Paolo, Bernd Fischer, Salvatore La Torre, Peter Schrammel, Gennaro Parlato
+GSSI, Stellenbosch University, University of Salerno, Diffblue Ltd, University of Molise
+
 All rights reserved.
 
 Except where otherwise noted, Deagle is distributed under the BSD 4-Clause License.
