@@ -10,11 +10,12 @@ Author: Michael Tautschnig, michael.tautschnig@cs.ox.ac.uk
 /// Memory model for partial order concurrency
 
 #include "memory_model.h"
+#include <iostream>
 
 #include <util/std_expr.h>
 
 memory_model_baset::memory_model_baset(const namespacet &_ns)
-  : partial_order_concurrencyt(_ns), use_deagle(false), enable_datarace(false), var_cnt(0)
+  : partial_order_concurrencyt(_ns), use_deagle(false), enable_datarace(false), enable_deadlock(false), var_cnt(0)
 {
 }
 
@@ -48,6 +49,10 @@ void memory_model_baset::read_from(symex_target_equationt &equation)
 
   for(const auto &address : address_map)
   {
+    std::map<event_it, exprt::operandst> lock_w2unlock_rf;
+    std::map<event_it, exprt::operandst> lock_w2lock_rf;
+    std::set<event_it> lock_w;
+
     for(const auto &read_event : address.second.reads)
     {
       exprt::operandst rf_choice_symbols;
@@ -62,6 +67,21 @@ void memory_model_baset::read_from(symex_target_equationt &equation)
 
         rf_choice_symbols.push_back(register_read_from_choice_symbol(
           read_event, write_event, equation));
+        
+        // __WP_ADD_BEGIN__ for deadlock
+        if (enable_deadlock) {
+          if (id2string(write_event->source.function_id) == "pthread_mutex_lock") 
+          {
+            lock_w.insert(write_event);
+
+            if (id2string(read_event->source.function_id) == "pthread_mutex_unlock")
+              lock_w2unlock_rf[write_event].push_back(rf_choice_symbols.back());
+            
+            if (id2string(read_event->source.function_id) == "pthread_mutex_lock")
+              lock_w2lock_rf[write_event].push_back(rf_choice_symbols.back());
+          }
+        }
+        // __WP_ADD_END__ for deadlock
       }
 
       // uninitialised global symbol like symex_dynamic::dynamic_object*
@@ -92,6 +112,20 @@ void memory_model_baset::read_from(symex_target_equationt &equation)
         //   read_event->source);
       }
     }
+
+    // __WP_ADD_BEGIN__ for deadlock
+    if (enable_deadlock) {
+      std::cout << "Add the lock-read-from exclusive constraints!\n";
+      for(auto& write_event: lock_w)
+      {
+        add_constraint(
+          equation,
+          implies_exprt{disjunction(lock_w2unlock_rf[write_event]), not_exprt(disjunction(lock_w2lock_rf[write_event]))},
+          "rf-lock-exclusive",
+          write_event->source);
+      }
+    }
+    // __WP_ADD_END__ for deadlock
   }
 }
 
@@ -210,11 +244,16 @@ void memory_model_baset::add_oc_edge(symex_target_equationt &equation, std::stri
 
 void memory_model_baset::add_oc_label(symex_target_equationt &equation, event_it e, std::string label, exprt guard_expr)
 {
+  add_oc_label(equation, get_name(e), label, guard_expr);
+}
+
+void memory_model_baset::add_oc_label(symex_target_equationt &equation, std::string e_str, std::string label, exprt guard_expr)
+{
   if(guard_expr == false_exprt())
     return;
-  equation.oc_labels.push_back(oc_labelt(get_name(e), label, guard_expr));
+  equation.oc_labels.push_back(oc_labelt(e_str, label, guard_expr));
 
-  // std::cout << "add " << label << " label: " << get_name(e) << ", expr: " << format(guard_expr) << "\n";
+  // std::cout << "add " << label << " label: " << get_name(e) << "\n";
 }
 
 void memory_model_baset::data_race(symex_target_equationt &equation)
@@ -489,7 +528,7 @@ void memory_model_baset::build_per_loc_map(
        !e_it->is_shared_write()) continue;
 
     auto lhs = e_it->ssa_lhs;
-    std::string original_name = lhs.get_original_name().c_str();
+    std::string original_name = remove_level_2(lhs).get_identifier().c_str();
 
     dest[original_name].push_back(e_it);
   }

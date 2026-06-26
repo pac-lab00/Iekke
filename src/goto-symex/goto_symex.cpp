@@ -33,11 +33,6 @@ unsigned goto_symext::dynamic_counter=0;
 
 void goto_symext::do_simplify(exprt &expr)
 {
-  // __SZH_ADD_BEGIN__: simplify will remove some shared accesses, may make datarace wrong
-  if(enable_datarace)
-    return;
-  // __SZH_ADD_END__
-
   if(symex_config.simplify_opt)
     simplify(expr, ns);
 }

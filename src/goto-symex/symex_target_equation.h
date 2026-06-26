@@ -331,6 +331,8 @@ public:
 
   std::map<std::string, int> oc_result_order;
 
+  std::set<std::string> preserved_accesses;
+
   std::vector<std::pair<event_it, event_it>> numbered_dataraces;
   std::map<event_it, exprt> read_dirties;
   // __SZH_ADD_END__
@@ -352,8 +354,10 @@ protected:
 public:
   bool enable_datarace = false;
   std::set<std::string> datarace_lines;
-  void build_available_cond_map(std::map<std::string, exprt>& available_cond_map);
-  void build_index_map(std::map<std::string, exprt>& index_map);
+  void build_available_cond_map(std::map<std::string, exprt>& available_cond_map, const namespacet& ns);
+  int get_byte_length(const exprt& expr);
+  void build_byte_update_map(std::map<std::string, std::pair<exprt, exprt>>& byte_update_map, const namespacet& ns);
+  void build_with_map(std::map<std::string, exprt>& with_map, const namespacet& ns);
   void build_array_update_set(std::set<std::pair<std::string, std::string>>& apo_set);
   void build_same_pointer_set(std::set<std::pair<std::string, std::string>>& apo_set);
   void apply_same_line_atomic_set(const namespacet& ns, std::vector<symex_target_equationt::event_it>& same_line_events, std::set<std::pair<std::string, std::string>>& apo_set);
@@ -399,9 +403,20 @@ public:
   std::vector<std::pair<event_it, event_it>> datarace_pairs; //chosen races in this solving procedure
   // __SZH_ADD_END__
 
+  // __WP_ADD_BEGIN__ for deadlock information
+  std::map<unsigned, std::vector<event_it>> per_thread_lock_writes;
+  std::map<unsigned, std::vector<event_it>> per_thread_lock_begins;
+  std::vector<event_it> program_returns;
+  std::vector<event_it> loop_asserts_in_critical;
+  void build_deadlock();
+  // __SZH_ADD_END__
+
   // __SZH_ADD_BEGIN__
   bool use_cat = false;
   cat_modulet cat;
+  bool use_deagle_closure = false;
+  bool use_deagle_icd = false;
+  bool use_deagle_segment = false;
   // __SZH_ADD_END__
 };
 

@@ -31,8 +31,11 @@ class ClosureSolver : public Solver
     std::vector<std::pair<Lit, literal_set>> literals_to_assign;
     std::set<Lit> assigned_literals;
 
-    int conflict_cycle;
-    int theory_propagation;
+    int conflict_cycle = 0;
+    int theory_propagation = 0;
+
+    int attempt_adding_co = 0;
+    int added_co_clauses = 0;
 
 protected:
     CRef propagate();
@@ -66,6 +69,8 @@ public:
     void setRawGraph(oc_edge_tablet& _oc_edge_table, oc_guard_mapt& _oc_guard_map);
 
     std::map<std::string, int>* oc_result_order;
+
+    void addMissingCoClauses();
 };
 
 }

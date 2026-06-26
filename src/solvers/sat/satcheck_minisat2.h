@@ -27,6 +27,7 @@ class Solver; // NOLINT(readability/identifiers)
 class SimpSolver; // NOLINT(readability/identifiers)
 // __SZH_ADD_BEGIN__
 class ClosureSolver; // NOLINT(readability/identifiers)
+class SegmentSolver; // NOLINT(readability/identifiers)
 class MemoryModelSolver; // NOLINT(readability/identifiers)
 // __SZH_ADD_END__
 }
@@ -104,17 +105,39 @@ public:
 
 #include "../../../minisat-2.2.1/minisat/core/ClosureSolver.h"
 
-class deagle_solvert:
+class deagle_closure_solvert:
   public satcheck_minisat2_baset<Minisat::ClosureSolver>
 {
 public:
   using satcheck_minisat2_baset<Minisat::ClosureSolver>::satcheck_minisat2_baset;
   const std::string solver_text() override;
   void save_raw_graph(oc_edge_tablet& _oc_edge_table, oc_guard_mapt& _oc_guard_map, oc_location_mapt& _oc_location_map, std::map<std::string, int>& _oc_result_order);
-  void init();
+};
+
+#include "../../../minisat-2.2.1/minisat/core/ICDSolver.h"
+
+class deagle_icd_solvert:
+  public satcheck_minisat2_baset<Minisat::ICDSolver>
+{
+public:
+  using satcheck_minisat2_baset<Minisat::ICDSolver>::satcheck_minisat2_baset;
+  const std::string solver_text() override;
+  void save_raw_graph(oc_edge_tablet& _oc_edge_table, std::map<std::string, int>& _oc_result_order);
+};
+
+#include "../../../minisat-2.2.1/minisat/core/SegmentSolver.h"
+
+class deagle_segment_solvert:
+  public satcheck_minisat2_baset<Minisat::SegmentSolver>
+{
+public:
+  using satcheck_minisat2_baset<Minisat::SegmentSolver>::satcheck_minisat2_baset;
+  const std::string solver_text() override;
+  void save_raw_graph(oc_edge_tablet& _oc_edge_table, oc_guard_mapt& _oc_guard_map, oc_location_mapt& _oc_location_map, std::map<std::string, int>& _oc_result_order);
 };
 
 #include "../../../minisat-2.2.1/minisat/core/MemoryModelSolver.h"
+#include "../../../minisat-2.2.1/minisat/core/MemoryModelSolverStruct.h"
 class memory_model_solvert:
   public satcheck_minisat2_baset<Minisat::MemoryModelSolver>
 {

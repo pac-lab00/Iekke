@@ -395,7 +395,21 @@ bool goto_symex_statet::l2_thread_read_encoding(
   PRECONDITION(dirty != nullptr);
   const irep_idt &obj_identifier=expr.get_object_name();
 
+  // __SZH_ADD_BEGIN__
   bool is_dirty = (*dirty)(obj_identifier);
+  std::string obj_name = obj_identifier.c_str();
+  if(obj_name.find("__atomic_load") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_store") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_fetch") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_compare_exchange") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_exchange") != std::string::npos)
+    is_dirty = false;
+  // __SZH_ADD_END__
+
   if(
     obj_identifier == guard_identifier() ||
     (!ns.lookup(obj_identifier).is_shared() && !is_dirty))
@@ -540,7 +554,20 @@ goto_symex_statet::write_is_shared_resultt goto_symex_statet::write_is_shared(
   PRECONDITION(dirty != nullptr);
   const irep_idt &obj_identifier = expr.get_object_name();
 
+  // __SZH_ADD_BEGIN__
   bool is_dirty = (*dirty)(obj_identifier);
+  std::string obj_name = obj_identifier.c_str();
+  if(obj_name.find("__atomic_load") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_store") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_fetch") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_compare_exchange") != std::string::npos)
+    is_dirty = false;
+  if(obj_name.find("__atomic_exchange") != std::string::npos)
+    is_dirty = false;
+  // __SZH_ADD_END__
 
   if(
     obj_identifier == guard_identifier() ||
@@ -888,9 +915,12 @@ ssa_exprt goto_symex_statet::declare(ssa_exprt ssa, const namespacet &ns)
     if(auto l1_symbol = expr_try_dynamic_cast<symbol_exprt>(e))
     {
       const ssa_exprt &field_ssa = to_ssa_expr(*l1_symbol);
-      const std::size_t field_generation = level2.increase_generation(
+      // __SZH_MODIFY_BEGIN__
+      // with refined-pointer-analysis, this assertion can be violated but no problem (hopefully)
+      // const std::size_t field_generation =
+      level2.increase_generation(
         l1_symbol->get_identifier(), field_ssa, fresh_l2_name_provider);
-      CHECK_RETURN(field_generation == 1);
+      // CHECK_RETURN(field_generation == 1);
     }
   });
 

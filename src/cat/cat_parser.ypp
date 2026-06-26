@@ -150,7 +150,6 @@ rel:	"id"			    { $$ = drv.make_base("id"); }
 	| rel "?"		      { $$ = drv.make_qmark($1.name); }
 	| rel "^" "-1" 		{ $$ = drv.make_relation(rel_opt::FLIP, std::vector<std::string>{$1.name}); }
   | "fencerel" rel  { $$ = drv.make_fencerel($2.name); }
-  | "free"        { $$ = drv.make_free(); }
 	;
 
 %%

@@ -9,13 +9,9 @@
 #include "../../minisat/mtl/Queue.h"
 #include "../../minisat/core/Solver.h"
 #include "MemoryModelSolverStruct.h"
+#include "GraphTypes.h"
 
 #include <cat/cat_module.h>
-
-typedef std::vector<std::pair<std::pair<std::string, std::string>, std::pair<Minisat::Lit, std::string> > > oc_edge_tablet;
-typedef std::vector<std::pair<std::string, std::pair<Minisat::Lit, std::string> > > oc_label_tablet;
-typedef std::map<std::string, std::set<std::string>> oc_unary_mayst;
-typedef std::map<std::string, std::set<std::pair<std::string, std::string>>> oc_binary_mayst;
 
 namespace Minisat
 {
@@ -133,7 +129,7 @@ public:
     std::set<int> base_kinds;
     void build_sets(int arity, std::string kind, bool is_base);
     void set_nodes_and_kinds();
-    void set_may_sets();
+    void static_analyze();
     void set_graph();
     void set_neg_graph();
 
@@ -142,25 +138,29 @@ public:
     inline bool solve(const vec<Lit>& assumps){ budgetOff(); assumps.copyTo(assumptions); return solve_() == l_True; }
     inline lbool solveLimited(const vec<Lit>& assumps){ assumps.copyTo(assumptions); return solve_(); }
 
-    std::vector<std::string> node_names;
-    int node_num() { return int(node_names.size()); }
-    int get_node(std::string name)
+    std::vector<std::string> node_id2str;
+    std::map<std::string, int> node_str2id;
+    int node_num() { return int(node_id2str.size()); }
+
+    int get_node(std::string str)
     {
-        for(int i = 0; i < node_num(); i++)
-            if(node_names[i] == name)
-                return i;
-        int new_node = node_names.size();
-        node_names.push_back(name);
-        std::cout << new_node << " is " << name << "\n";
-        return new_node;
+        auto node_id_it = node_str2id.find(str);
+        if(node_id_it != node_str2id.end())
+            return node_id_it->second;
+
+        int new_node_id = node_num();
+        node_id2str.push_back(str);
+        node_str2id[str] = new_node_id;
+        std::cout << new_node_id << " is " << str << "\n";
+        return new_node_id;
     }
 
     struct labelt
     {
         int node;
         int kind;
-        mm_reasont reason;
-        labelt(int _n, int _k, Lit _l) : node(_n), kind(_k), reason(mm_reasont(_l)) {}
+        reasont reason;
+        labelt(int _n, int _k, Lit _l) : node(_n), kind(_k), reason(reasont(_l)) {}
     };
 
     struct edget
@@ -168,9 +168,9 @@ public:
         int node1;
         int node2;
         int kind;
-        mm_reasont reason;
-        edget(int _n1, int _n2, int _k, Lit _l) : node1(_n1), node2(_n2), kind(_k), reason(mm_reasont(_l)) {}
-        edget(int _n1, int _n2, int _k, mm_reasont _r) : node1(_n1), node2(_n2), kind(_k), reason(_r) {}
+        reasont reason;
+        edget(int _n1, int _n2, int _k, Lit _l) : node1(_n1), node2(_n2), kind(_k), reason(reasont(_l)) {}
+        edget(int _n1, int _n2, int _k, reasont _r) : node1(_n1), node2(_n2), kind(_k), reason(_r) {}
     };
     
     std::multimap<Lit, labelt> lit_to_labels;
@@ -261,20 +261,20 @@ public:
         lit_to_negedges.insert(std::make_pair(l, edget(node1, node2, kind, l)));
     }
 
-    bool add_label(int node, int kind, mm_reasont& reason);
+    bool add_label(int node, int kind, reasont& reason);
     bool add_label(labelt label) { return add_label(label.node, label.kind, label.reason); }
 
-    bool add_edge(int node1, int node2, int kind, mm_reasont& reason);
+    bool add_edge(int node1, int node2, int kind, reasont& reason);
     bool add_edge(edget edge) { return add_edge(edge.node1, edge.node2, edge.kind, edge.reason); }
 
-    bool add_neglabel(int node, int kind, mm_reasont& reason);
+    bool add_neglabel(int node, int kind, reasont& reason);
     bool add_neglabel(labelt label) { return add_neglabel(label.node, label.kind, label.reason); }
 
-    bool add_negedge(int node1, int node2, int kind, mm_reasont& reason);
+    bool add_negedge(int node1, int node2, int kind, reasont& reason);
     bool add_negedge(edget elem) { return add_negedge(elem.node1, elem.node2, elem.kind, elem.reason); }
 
-    bool add_dangerous_label(int node, int kind, mm_reasont& reason);
-    bool add_dangerous_edge(int node1, int node2, int kind, mm_reasont& reason);
+    bool add_dangerous_label(int node, int kind, reasont& reason);
+    bool add_dangerous_edge(int node1, int node2, int kind, reasont& reason);
 
     bool use_available_info(bool is_first);
 

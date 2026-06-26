@@ -22,13 +22,12 @@ class ICD
 private:
     //interact with solver
     ICDSolver* solver;
-    lbool get_assignment(Lit l);
 
     //basic information
 public:
     std::vector<ICD_nodet> nodes;
 private:
-    std::map<Lit, decide_entryt> lit_to_edge;
+    std::multimap<Lit, decide_entryt> lit_to_edge;
 
     //for backtracking
     vec<std::pair<int, int>> trail_edge;
@@ -46,6 +45,7 @@ private:
 
 public:
     ICD();
+    lbool get_assignment(Lit l);
     void init(ICDSolver* _solver);
 
     int get_node(std::string name); //get node, if the node does not exist, create it
@@ -77,7 +77,7 @@ public:
     void pop_scope(int new_level);
 
     void show_edges();
-    void final_check();
+    void show_model();
 
     std::vector<literal_vector> conflict_literals_vector;
 
@@ -90,7 +90,7 @@ public:
     void filter_reads(std::set<int>& src, std::vector<int>& dst); //filter those have rf_in
     void filter_writes_reasons(std::set<int> &src, std::vector<std::pair<int, literal_vector>> &dst, literal_vector& reason);
 
-    decide_entryt get_decide_entry(Lit l);
+    std::vector<decide_entryt> get_decide_entries(Lit l);
     bool use_available_info();
     int get_decision_level();
     bool remove_inactive_edges(int from, int to, Lit p);

@@ -26,14 +26,13 @@ ICDSolver::ICDSolver()
     Solver();
 }
 
-void ICDSolver::init()
-{
-    graph.init(this);
-}
-
-void ICDSolver::setRawGraph(oc_edge_tablet& _oc_edge_table)
+void ICDSolver::save_raw_graph(oc_edge_tablet& _oc_edge_table, std::map<std::string, int>& _oc_result_order)
 {
     oc_edge_table = _oc_edge_table;
+    oc_result_order = &_oc_result_order;
+
+    graph.init(this);
+    set_graph();
 }
 
 void ICDSolver::set_graph()
@@ -63,19 +62,17 @@ void ICDSolver::set_graph()
 
         int u = graph.get_node(pair.first.first);
         int v = graph.get_node(pair.first.second);
+        Lit& l = pair.second.first;
         edge_kindt kind = str_to_kind(pair.second.second);
 
         if(kind == OC_APO)
             continue;
 
         if(OC_VERBOSITY >= 1)
-            std::cout << "initing " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ") " << kind_to_str(kind) << "\n";
+            std::cout << "initing " << u << "(" << pair.first.first << ") " << v << "(" << pair.first.second << ") " << kind_to_str(kind) << " with literal " << var(l) << " (" << sign(l) << ")\n";
 
-        if(oc_reasonable(kind))
-        {
-            Lit& l = pair.second.first;
+        if(oc_reasonable(kind) && graph.get_assignment(l) != l_True)
             graph.init_reasonable_edge(u, v, kind, l);
-        }
         else
         {
             if(graph.activate_edge(u, v, kind, ICD_empty_reason))
@@ -88,7 +85,7 @@ void ICDSolver::set_graph()
 
     if(OC_VERBOSITY >= 1) //show apo info
     {
-        for(int i = 0; i < graph.nodes.size(); i++)
+        for(int i = 0; i < int(graph.nodes.size()); i++)
         {
             auto& node = graph.nodes[i];
             std::cout << i << "'s representative is " << graph.union_find_parent(i) << ", has atomic_in: ";
@@ -257,10 +254,11 @@ lbool ICDSolver::solve_()
         // Extend & copy model:
         model.growTo(nVars());
         for (int i = 0; i < nVars(); i++) model[i] = value(i);
+
+        graph.show_edges();
+        graph.show_model();
     }else if (status == l_False && conflict.size() == 0)
         ok = false;
-
-    graph.show_edges();
 
     std::cout << "ICDSolver finishes with " << conflicts << " conflicts, " << decisions << " decisions, and " << propagations << " propagations. " << conflict_cycle << " cycles included.\n";
 
@@ -285,8 +283,8 @@ CRef ICDSolver::propagate()
         num_props++;
 
         //our method
-        auto decide_entry = graph.get_decide_entry(p);
-        if(decide_entry.first.first != -1)
+        auto decide_entries = graph.get_decide_entries(p);
+        for(auto& decide_entry: decide_entries)
         {
             if(OC_VERBOSITY >= 1)
                 std::cout << var(p) << "(" << sign(p) << ") is related to an edge (" << toInt(assigns[var(p)]) << ")\n";

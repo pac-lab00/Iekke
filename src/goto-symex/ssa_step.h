@@ -183,6 +183,13 @@ public:
   // for SHARED_READ/SHARED_WRITE and ATOMIC_BEGIN/ATOMIC_END
   unsigned atomic_section_id = 0;
 
+  // for LazyCSeq/Round Robin trace reconstruction
+  std::vector<symbol_exprt> round_robin_exec_symbols;
+  unsigned round_robin_label = 0;
+  unsigned round_robin_num = 0;
+  unsigned round_robin_thread = 0;
+  unsigned round_robin_trace_order = 0;
+
   // for slicing
   bool ignore = false;
 

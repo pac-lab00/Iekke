@@ -1,6 +1,7 @@
 // __SZH_ADD_BEGIN__
 
 #include "MemoryModelSolver.h"
+#include "MemoryModelStaticAnalyzer.h"
 
 #include "../../minisat/mtl/Vec.h"
 #include "../../minisat/mtl/Heap.h"
@@ -26,7 +27,7 @@ const int MM_VERBOSITY = 0;
 
 using namespace Minisat;
 
-mm_reasont empty_reason;
+reasont mm_empty_reason;
 
 MemoryModelSolver::MemoryModelSolver()
 {
@@ -39,7 +40,7 @@ void MemoryModelSolver::save_raw_graph(oc_edge_tablet& _oc_edge_table, oc_label_
     oc_label_table = _oc_label_table;
     raw_cat_module = _cat_module;
     set_nodes_and_kinds();
-    set_may_sets();
+    static_analyze();
     set_graph();
     set_neg_graph();
 }
@@ -162,36 +163,33 @@ void MemoryModelSolver::set_nodes_and_kinds()
         build_sets(2, binary_kind, true);
 }
 
-void MemoryModelSolver::set_may_sets()
+void MemoryModelSolver::static_analyze()
 {
-    for(auto& pair : raw_cat_module.unary_mays)
+    MemoryModelStaticAnalyzert mm_analyzer(raw_cat_module, node_str2id, kind_str2id, kind_id2str, oc_edge_table, oc_label_table);
+    mm_analyzer.analyze();
+    unary_may_sets = mm_analyzer.unary_mays;
+    binary_may_sets = mm_analyzer.binary_mays;
+
+    if(MM_VERBOSITY >= 1)
     {
-        auto kind_str = pair.first;
-        auto kind_id = kind_str2id[kind_str];
-
-        if(int(unary_may_sets.size()) <= kind_id)
-            unary_may_sets.resize(kind_id + 1);
-        unary_may_sets[kind_id] = unary_may_sett(node_num());
-        auto& unary_may_set = unary_may_sets[kind_id];
-
-        auto& raw_may_set = pair.second;
-        for(auto& node_str : raw_may_set)
-            unary_may_set.set(get_node(node_str));
-    }
-
-    for(auto& pair : raw_cat_module.binary_mays)
-    {
-        auto kind_str = pair.first;
-        auto kind_id = kind_str2id[kind_str];
-
-        if(int(binary_may_sets.size()) <= kind_id)
-            binary_may_sets.resize(kind_id + 1);
-        binary_may_sets[kind_id] = binary_may_sett(node_num());
-        auto& binary_may_set = binary_may_sets[kind_id];
-
-        auto& raw_may_set = pair.second;
-        for(auto& node_pair : raw_may_set)
-            binary_may_set.set(get_node(node_pair.first), get_node(node_pair.second));
+        for(int kind = 0; kind < int(kind_id2str.size()); kind++)
+        {
+            auto kind_str = kind_id2str[kind];
+            if(kind_arities[kind] == 1)
+            {
+                std::cout << kind_str << "'s may set:\n\t";
+                for(auto node : unary_may_sets[kind].elements)
+                    std::cout << node << " ";
+                std::cout << "\n";
+            }
+            if(kind_arities[kind] == 2)
+            {
+                std::cout << kind_str << "'s may set:\n\t";
+                for(auto pair : binary_may_sets[kind].elements)
+                    std::cout << "(" << pair.first << ", " << pair.second << ") ";
+                std::cout << "\n";
+            }
+        }
     }
 
     // build neg_seq_components
@@ -233,9 +231,9 @@ void MemoryModelSolver::set_may_sets()
                     row.resize(node_num());
             }
 
-            for(auto pair : binary_may_sets[kind].get_elements())
+            for(auto pair : binary_may_sets[kind].elements)
             {
-                for(auto another_pair : binary_may_sets[another_kind].get_elements())
+                for(auto another_pair : binary_may_sets[another_kind].elements)
                 {
                     if(pair.second != another_pair.first)
                         continue;
@@ -269,7 +267,7 @@ void MemoryModelSolver::set_graph()
         else
         {
             labels_to_lit[kind][node] = l;
-            if(add_label(node, kind, empty_reason)) //todo
+            if(add_label(node, kind, mm_empty_reason)) //todo
             {
                 std::cout << "WARNING: Inconsistency during set_graph\n";
                 ok = false;
@@ -293,7 +291,7 @@ void MemoryModelSolver::set_graph()
         else
         {
             edges_to_lit[kind][std::make_pair(node1, node2)] = l;
-            if(add_edge(node1, node2, kind, empty_reason)) //todo
+            if(add_edge(node1, node2, kind, mm_empty_reason)) //todo
             {
                 std::cout << "WARNING: Inconsistency during set_graph\n";
                 ok = false;
@@ -817,13 +815,13 @@ void MemoryModelSolver::analyze(CRef confl, vec<Lit>& out_learnt, int& out_btlev
     for (int j = 0; j < analyze_toclear.size(); j++) seen[var(analyze_toclear[j])] = 0;    // ('seen[]' is now cleared)
 }
 
-bool Minisat::MemoryModelSolver::add_label(int node, int kind, mm_reasont& reason)
+bool MemoryModelSolver::add_label(int node, int kind, reasont& reason)
 {
     if(unary_sets[kind].contains(node)) // if this already exists
         return false;
 
     if(MM_VERBOSITY >= 1)
-        std::cout << "adding " << kind_id2str[kind] << " label " << node << " " << "\n";
+        std::cout << "adding label " << kind_id2str[kind] << " " << node << " (" << node_id2str[node] << ")\n";
 
     if(axioms[kind] == EMPTY)
     {
@@ -833,7 +831,7 @@ bool Minisat::MemoryModelSolver::add_label(int node, int kind, mm_reasont& reaso
 
     auto& unary_set = unary_sets[kind];
     unary_set.set(node, reason);
-    mm_reasont& this_reason = unary_set.get_reason(node);
+    reasont& this_reason = unary_set.get_reason(node);
     mm_trail.push_back(unary_trail(kind, node));
 
     for(auto& propagation: propagate_forward[kind])
@@ -850,8 +848,8 @@ bool Minisat::MemoryModelSolver::add_label(int node, int kind, mm_reasont& reaso
             auto& another_unary_set = unary_sets[another_kind];
             if(another_unary_set.contains(node))
             {
-                mm_reasont& another_reason = another_unary_set.get_reason(node);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_unary_set.get_reason(node);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_label(node, next_kind, next_reason));
             }
         }
@@ -862,8 +860,8 @@ bool Minisat::MemoryModelSolver::add_label(int node, int kind, mm_reasont& reaso
             auto& another_unary_may_set = unary_may_sets[another_kind];
             if(another_neg_unary_set.contains(node) || !another_unary_may_set.contains(node))
             {
-                mm_reasont& another_reason = another_neg_unary_set.get_reason(node);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_neg_unary_set.get_reason(node);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_label(node, next_kind, next_reason))
             }
         }
@@ -881,8 +879,8 @@ bool Minisat::MemoryModelSolver::add_label(int node, int kind, mm_reasont& reaso
             auto& another_all_elements = another_unary_set.all_elements();
             for(int another_element : another_all_elements)
             {
-                mm_reasont& another_reason = another_unary_set.get_reason(another_element);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_unary_set.get_reason(another_element);
+                reasont next_reason(&this_reason, &another_reason);
                 if(link.link_position == LEFT)
                     RETURN_IF_TRUE(add_edge(node, another_element, next_kind, next_reason))
                 else
@@ -901,7 +899,7 @@ bool Minisat::MemoryModelSolver::add_label(int node, int kind, mm_reasont& reaso
     return false;
 }
 
-bool Minisat::MemoryModelSolver::add_neglabel(int node, int kind, mm_reasont& reason)
+bool MemoryModelSolver::add_neglabel(int node, int kind, reasont& reason)
 {
     if(!need_negation[kind])
         return false;
@@ -910,20 +908,20 @@ bool Minisat::MemoryModelSolver::add_neglabel(int node, int kind, mm_reasont& re
         return false;
 
     if(MM_VERBOSITY >= 1)
-        std::cout << "adding " << kind_id2str[kind] << " negated label " << node << " " << "\n";
+        std::cout << "adding negated label " << kind_id2str[kind] << " " << node << " (" << node_id2str[node] << ")\n";
 
     auto& neg_unary_set = neg_unary_sets[kind];
     neg_unary_set.set(node, reason);
-    mm_reasont& this_reason = neg_unary_set.get_reason(node);
+    reasont& this_reason = neg_unary_set.get_reason(node);
     mm_trail.push_back(unary_trail(kind, node, false));
 
     if(axioms[kind] == NOT_EMPTY)
     {
         int existing_num = neg_unary_set.get_element_num();
-        int maximal_num = unary_may_sets[kind].get_elements().size();
+        int maximal_num = unary_may_sets[kind].elements.size();
         if(existing_num >= maximal_num)
         {
-            mm_reasont total_reason;
+            reasont total_reason;
             for(int n = 0; n < node_num(); n++)
                 total_reason.push_source_unless_trivial(&neg_unary_set.get_reason(n));
             conflict_clause = total_reason.get_full_reason();
@@ -945,8 +943,8 @@ bool Minisat::MemoryModelSolver::add_neglabel(int node, int kind, mm_reasont& re
             auto& another_unary_may_set = unary_may_sets[another_kind];
             if(another_neg_unary_set.contains(node) || !another_unary_may_set.contains(node))
             {
-                mm_reasont& another_reason = another_neg_unary_set.get_reason(node);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_neg_unary_set.get_reason(node);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_neglabel(node, next_kind, next_reason))
             }
         }
@@ -968,8 +966,8 @@ bool Minisat::MemoryModelSolver::add_neglabel(int node, int kind, mm_reasont& re
             auto& another_unary_set = unary_sets[another_kind];
             if(another_unary_set.contains(node))
             {
-                mm_reasont& another_reason = another_unary_set.get_reason(node);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_unary_set.get_reason(node);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_label(node, next_kind, next_reason))
             }
         }
@@ -1008,14 +1006,14 @@ bool Minisat::MemoryModelSolver::add_neglabel(int node, int kind, mm_reasont& re
     return false;
 }
 
-bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_reasont& reason)
+bool MemoryModelSolver::add_edge(int node1, int node2, int kind, reasont& reason)
 {
     if(binary_sets[kind].contains(node1, node2)) // if this already exists
         return false;
 
     if(MM_VERBOSITY >= 1)
     {
-        std::cout << "adding " << kind_id2str[kind] << " edge " << node1 << " " << node2 << " " << "\n";
+        std::cout << "adding edge " << kind_id2str[kind] << " " << node1 << " " << node2 << " (" << node_id2str[node1] << ", " << node_id2str[node2] << ")\n";
         auto full_reason = reason.get_full_reason();
         if(!full_reason.empty())
         {
@@ -1034,7 +1032,11 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
 
         if(MM_VERBOSITY >= 1)
         {
-            std::cout << "but dangerous edge " << node_names[node1] << "(" << node1 << ") " << node_names[node2] << "(" << node2 << ") " << kind_id2str[kind] << " is already there\n";
+            std::cout << "\tbut dangerous edge " << kind_id2str[kind] << " " << node1 << " " << node2 << " (" << node_id2str[node1] << ", " << node_id2str[node2] << ") is already there\n";
+            std::cout << "\twith reason: \n\t";
+            for (auto l: dangerous_reason)
+                std::cout << var(l) << "(" << sign(l) << ") ";
+            std::cout << "\n";
             // std::cout << "current model is:\n";
             // show_model();
         }
@@ -1044,7 +1046,7 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
 
     auto& binary_set = binary_sets[kind];
     binary_set.set(node1, node2, reason);
-    mm_reasont& this_reason = binary_set.get_reason(node1, node2);
+    reasont& this_reason = binary_set.get_reason(node1, node2);
     mm_trail.push_back(binary_trail(kind, node1, node2));
 
     for(auto& propagation: propagate_forward[kind])
@@ -1071,16 +1073,16 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
                 auto& node2_outs = another_binary_set.get_outs(node2);
                 for(auto node3_id : node2_outs)
                 {
-                    mm_reasont& another_reason = another_binary_set.get_reason(node2, node3_id);
-                    mm_reasont next_reason(&this_reason, &another_reason);
+                    reasont& another_reason = another_binary_set.get_reason(node2, node3_id);
+                    reasont next_reason(&this_reason, &another_reason);
                     RETURN_IF_TRUE(add_edge(node1, node3_id, next_kind, next_reason))
                 }
 
                 auto& node1_dangerous_outs = next_dangerous_binary_set.get_outs(node1);
                 for(auto node3_id : node1_dangerous_outs)
                 {
-                    mm_reasont& dangerous_reason = next_dangerous_binary_set.get_reason(node1, node3_id);
-                    mm_reasont next_reason(&this_reason, &dangerous_reason);
+                    reasont& dangerous_reason = next_dangerous_binary_set.get_reason(node1, node3_id);
+                    reasont next_reason(&this_reason, &dangerous_reason);
                     RETURN_IF_TRUE(add_dangerous_edge(node2, node3_id, another_kind, next_reason))
                 }
             }
@@ -1089,16 +1091,16 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
                 auto& node1_ins = another_binary_set.get_ins(node1);
                 for(auto node0_id : node1_ins)
                 {
-                    mm_reasont& another_reason = another_binary_set.get_reason(node0_id, node1);
-                    mm_reasont next_reason(&this_reason, &another_reason);
+                    reasont& another_reason = another_binary_set.get_reason(node0_id, node1);
+                    reasont next_reason(&this_reason, &another_reason);
                     RETURN_IF_TRUE(add_edge(node0_id, node2, next_kind, next_reason))
                 }
 
                 auto& node2_dangerous_ins = next_dangerous_binary_set.get_ins(node2);
                 for(auto node0_id : node2_dangerous_ins)
                 {
-                    mm_reasont& dangerous_reason = next_dangerous_binary_set.get_reason(node0_id, node2);
-                    mm_reasont next_reason(&this_reason, &dangerous_reason);
+                    reasont& dangerous_reason = next_dangerous_binary_set.get_reason(node0_id, node2);
+                    reasont next_reason(&this_reason, &dangerous_reason);
                     RETURN_IF_TRUE(add_dangerous_edge(node0_id, node1, another_kind, next_reason))
                 }
             }
@@ -1109,8 +1111,8 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
             auto& another_binary_set = binary_sets[another_kind];
             if(another_binary_set.contains(node1, node2))
             {
-                mm_reasont& another_reason = another_binary_set.get_reason(node1, node2);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_binary_set.get_reason(node1, node2);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_edge(node1, node2, next_kind, next_reason))
             }
         }
@@ -1121,8 +1123,8 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
             auto& another_neg_binary_set = neg_binary_sets[another_kind];
             if(another_neg_binary_set.contains(node1, node2) || !another_binary_may_set.contains(node1, node2))
             {
-                mm_reasont& another_reason = another_neg_binary_set.get_reason(node1, node2);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_neg_binary_set.get_reason(node1, node2);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_edge(node1, node2, next_kind, next_reason))
             }
         }
@@ -1131,6 +1133,63 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
             if(!need_negation[next_kind] || !binary_may_sets[next_kind].contains(node1, node2))
                 continue;
             RETURN_IF_TRUE(add_negedge(node1, node2, next_kind, this_reason))
+        }
+        else if(link.link_type == PLUS)
+        {
+            auto& next_binary_set = binary_sets[next_kind];
+            auto& next_dangerous_binary_set = dangerous_binary_sets[next_kind];
+            if(!next_binary_set.contains(node1, node2))
+            {
+                std::vector<std::pair<int, int>> waiting_list;
+                waiting_list.push_back(std::make_pair(node1, node2));
+                RETURN_IF_TRUE(add_edge(node1, node2, next_kind, reason))
+
+                while(!waiting_list.empty())
+                {
+                    int n1 = waiting_list.back().first;
+                    int n2 = waiting_list.back().second;
+                    reasont& reason_n1_n2 = next_binary_set.get_reason(n1, n2);
+                    waiting_list.pop_back();
+
+                    auto& n2_outs = next_binary_set.get_outs(n2);
+                    auto& n1_ins = next_binary_set.get_ins(n1);
+                    for(auto& n3 : n2_outs)
+                    {
+                        if(next_binary_set.contains(n1, n3))
+                            continue;
+                        reasont& reason_n2_n3 = next_binary_set.get_reason(n2, n3);
+                        reasont reason_n1_n3(&reason_n1_n2, &reason_n2_n3);
+                        RETURN_IF_TRUE(add_edge(n1, n3, next_kind, reason_n1_n3))
+                        waiting_list.push_back(std::make_pair(n1, n3));
+                    }
+                    for(auto& n0 : n1_ins)
+                    {
+                        if(next_binary_set.contains(n0, n2))
+                            continue;
+                        reasont& reason_n0_n1 = next_binary_set.get_reason(n0, n1);
+                        reasont reason_n0_n2(&reason_n0_n1, &reason_n1_n2);
+                        RETURN_IF_TRUE(add_edge(n0, n2, next_kind, reason_n0_n2))
+                        waiting_list.push_back(std::make_pair(n0, n2));
+                    }
+                }
+            }
+
+            RETURN_IF_TRUE(add_dangerous_edge(node2, node1, next_kind, reason)) // this was missing in the previous version, necessary?
+
+            auto& node1_dangerous_outs = next_dangerous_binary_set.get_outs(node1);
+            for(auto node3_id : node1_dangerous_outs)
+            {
+                reasont& dangerous_reason = next_dangerous_binary_set.get_reason(node1, node3_id);
+                reasont next_dangerous_reason(&dangerous_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_edge(node2, node3_id, next_kind, next_dangerous_reason))
+            }
+            auto& node2_dangerous_ins = next_dangerous_binary_set.get_ins(node2);
+            for(auto node0_id : node2_dangerous_ins)
+            {
+                reasont& dangerous_reason = next_dangerous_binary_set.get_reason(node0_id, node2);
+                reasont next_dangerous_reason(&dangerous_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_edge(node0_id, node1, next_kind, next_dangerous_reason))
+            }
         }
         else
         {
@@ -1141,7 +1200,7 @@ bool Minisat::MemoryModelSolver::add_edge(int node1, int node2, int kind, mm_rea
     return false;
 }
 
-bool Minisat::MemoryModelSolver::add_negedge(int node1, int node2, int kind, mm_reasont& reason)
+bool MemoryModelSolver::add_negedge(int node1, int node2, int kind, reasont& reason)
 {
     if(!need_negation[kind])
         return false;
@@ -1151,7 +1210,7 @@ bool Minisat::MemoryModelSolver::add_negedge(int node1, int node2, int kind, mm_
 
     if(MM_VERBOSITY >= 1)
     {
-        std::cout << "adding " << kind_id2str[kind] << " negated edge " << node1 << " " << node2 << " " << "\n";
+        std::cout << "adding negated edge " << kind_id2str[kind] << " " << node1 << " " << node2 << " (" << node_id2str[node1] << ", " << node_id2str[node2] << ")\n";
         auto full_reason = reason.get_full_reason();
         if(!full_reason.empty())
         {
@@ -1164,16 +1223,16 @@ bool Minisat::MemoryModelSolver::add_negedge(int node1, int node2, int kind, mm_
 
     auto& neg_binary_set = neg_binary_sets[kind];
     neg_binary_set.set(node1, node2, reason);
-    mm_reasont& this_reason = neg_binary_set.get_reason(node1, node2);
+    reasont& this_reason = neg_binary_set.get_reason(node1, node2);
     mm_trail.push_back(binary_trail(kind, node1, node2, false));
 
     if(axioms[kind] == NOT_EMPTY)
     {
         int existing_num = neg_binary_set.get_element_num();
-        int maximal_num = binary_may_sets[kind].get_elements().size();
+        int maximal_num = binary_may_sets[kind].elements.size();
         if(existing_num >= maximal_num)
         {
-            mm_reasont total_reason;
+            reasont total_reason;
             for(int n1 = 0; n1 < node_num(); n1++)
                 for(int n2 = 0; n2 < node_num(); n2++)
                     total_reason.push_source_unless_trivial(&neg_binary_set.get_reason(n1, n2));
@@ -1199,8 +1258,8 @@ bool Minisat::MemoryModelSolver::add_negedge(int node1, int node2, int kind, mm_
             auto& another_binary_may_set = binary_may_sets[another_kind];
             if(another_neg_binary_set.contains(node1, node2) || !another_binary_may_set.contains(node1, node2))
             {
-                mm_reasont& another_reason = another_neg_binary_set.get_reason(node1, node2);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_neg_binary_set.get_reason(node1, node2);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_negedge(node1, node2, next_kind, next_reason))
             }
         }
@@ -1282,8 +1341,8 @@ bool Minisat::MemoryModelSolver::add_negedge(int node1, int node2, int kind, mm_
             auto& another_binary_set = binary_sets[another_kind];
             if(another_binary_set.contains(node1, node2))
             {
-                mm_reasont& another_reason = another_binary_set.get_reason(node1, node2);
-                mm_reasont next_reason(&this_reason, &another_reason);
+                reasont& another_reason = another_binary_set.get_reason(node1, node2);
+                reasont next_reason(&this_reason, &another_reason);
                 RETURN_IF_TRUE(add_edge(node1, node2, next_kind, next_reason))
             }
         }
@@ -1299,14 +1358,116 @@ bool Minisat::MemoryModelSolver::add_negedge(int node1, int node2, int kind, mm_
     return false;
 }
 
-bool Minisat::MemoryModelSolver::add_dangerous_label(int node, int kind, mm_reasont& reason)
+bool MemoryModelSolver::add_dangerous_label(int node, int kind, reasont& reason)
 {
-    //todo
+    auto& unary_may_set = unary_may_sets[kind];
+    if(!unary_may_set.contains(node))
+        return false;
+
+    auto& dangerous_unary_set = dangerous_unary_sets[kind];
+    auto& unary_set = unary_sets[kind];
+
+    if(dangerous_unary_set.contains(node)) // if this already exists
+        return false;
+
+    if(MM_VERBOSITY >= 1)
+    {
+        std::cout << "adding dangerous label " << kind_id2str[kind] << " " << node << " (" << node_id2str[node] << ")\n";
+        auto full_reason = reason.get_full_reason();
+        if(!full_reason.empty())
+        {
+            std::cout << "\twith reason: \n\t";
+            for (auto l: full_reason)
+                std::cout << var(l) << "(" << sign(l) << ") ";
+            std::cout << "\n";
+        }
+    }
+
+    if(unary_set.contains(node))
+    {
+        conflict_clause = reason.get_full_reason();
+        auto positive_reason = unary_set.get_reason(node).get_full_reason();
+        append(conflict_clause, positive_reason);
+
+        if(MM_VERBOSITY >= 1)
+        {
+            std::cout << "\tbut label " << kind_id2str[kind] << " " << node << " (" << node_id2str[node] << ") is already there\n";
+            std::cout << "\twith reason: \n\t";
+            for (auto l: positive_reason)
+                std::cout << var(l) << "(" << sign(l) << ") ";
+            std::cout << "\n";
+            // std::cout << "current model is:\n";
+            // show_model();
+        }
+
+        return true;
+    }
+
+    dangerous_unary_set.set(node, reason);
+    reasont& this_reason = dangerous_unary_set.get_reason(node);
+    mm_dangerous_trail.push_back(unary_trail(kind, node));
+
+    auto& labels_to_lit_this_kind = labels_to_lit[kind];
+    auto it = labels_to_lit_this_kind.find(node);
+    if(it != labels_to_lit_this_kind.end())
+    {
+        auto prevented_lit = it->second;
+        if(prevented_lit != lit_Error && get_assignment(prevented_lit) == l_Undef)
+        {
+            literal_vector unit_lv;
+            for(auto l: reason.get_full_reason())
+                unit_lv.push_back(~l);
+            unit_lv.push_back(~prevented_lit);
+
+            if(MM_VERBOSITY >= 1)
+            {
+                std::cout << node_id2str[node] << "(" << node << ") is set to false\n";
+                std::cout << "related to lit " << var(prevented_lit) << "(" << sign(prevented_lit) << ") \n";
+            }
+
+            assign_literal(~prevented_lit, unit_lv);
+        }
+
+    }
+
+    for(auto& propagation: propagate_backward[kind])
+    {
+        auto& last_kind = propagation.from;
+        auto& last_unary_set = unary_sets[last_kind];
+        auto& link = propagation.link;
+        if(link.link_type == ALT)
+        {
+            RETURN_IF_TRUE(add_dangerous_label(node, last_kind, reason))
+        }
+        else if(link.link_type == AND)
+        {
+            auto& another_kind = link.another_kind;
+            if(last_unary_set.contains(node))
+            {
+                reasont& last_reason = last_unary_set.get_reason(node);
+                reasont next_reason(&last_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_label(node, another_kind, next_reason))
+            }
+        }
+        else if(link.link_type == SUB)
+        {
+            // todo
+        }
+        else
+        {
+            std::cout << "WARNING: link_type " << link.link_type << " should not be in label's backward propagation.\n";
+        }
+    }
+
     return false;
 }
 
-bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int kind, mm_reasont& reason)
+bool MemoryModelSolver::add_dangerous_edge(int node1, int node2, int kind, reasont& reason)
 {
+    auto& binary_may_set = binary_may_sets[kind];
+    if(!binary_may_set.contains(node1, node2))
+        return false;
+
     auto& dangerous_binary_set = dangerous_binary_sets[kind];
     auto& binary_set = binary_sets[kind];
 
@@ -1315,7 +1476,7 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
 
     if(MM_VERBOSITY >= 1)
     {
-        std::cout << "adding dangerous edge " << node_names[node1] << "(" << node1 << ") " << node_names[node2] << "(" << node2 << ") " << kind_id2str[kind] << "\n";
+        std::cout << "adding dangerous edge " << kind_id2str[kind] << " " << node1 << " " << node2 << " (" << node_id2str[node1] << ", " << node_id2str[node2] << ")\n";
         auto full_reason = reason.get_full_reason();
         if(!full_reason.empty())
         {
@@ -1334,7 +1495,11 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
 
         if(MM_VERBOSITY >= 1)
         {
-            std::cout << "but edge " << node_names[node1] << "(" << node1 << ") " << node_names[node2] << "(" << node2 << ") " << kind_id2str[kind] << " is already there\n";
+            std::cout << "\tbut edge " << kind_id2str[kind] << " " << node1 << " " << node2 << " (" << node_id2str[node1] << ", " << node_id2str[node2] << ") is already there\n";
+            std::cout << "\twith reason: \n\t";
+            for (auto l: positive_reason)
+                std::cout << var(l) << "(" << sign(l) << ") ";
+            std::cout << "\n";
             // std::cout << "current model is:\n";
             // show_model();
         }
@@ -1343,7 +1508,7 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
     }
 
     dangerous_binary_set.set(node1, node2, reason);
-    mm_reasont& this_reason = dangerous_binary_set.get_reason(node1, node2);
+    reasont& this_reason = dangerous_binary_set.get_reason(node1, node2);
     mm_dangerous_trail.push_back(binary_trail(kind, node1, node2));
 
     auto& edges_to_lit_this_kind = edges_to_lit[kind];
@@ -1360,7 +1525,7 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
 
             if(MM_VERBOSITY >= 1)
             {
-                std::cout << node_names[node1] << "(" << node1 << ") " << node_names[node2] << "(" << node2 << ") " << kind_id2str[kind] << " is set to false\n";
+                std::cout << node_id2str[node1] << "(" << node1 << ") " << node_id2str[node2] << "(" << node2 << ") " << kind_id2str[kind] << " is set to false\n";
                 std::cout << "related to lit " << var(prevented_lit) << "(" << sign(prevented_lit) << ") \n";
             }
 
@@ -1373,6 +1538,7 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
     {
         auto& last_kind = propagation.from;
         auto& last_binary_set = binary_sets[last_kind];
+        auto& last_unary_set = unary_sets[last_kind];
         auto& link = propagation.link;
         if(link.link_type == ALT)
         {
@@ -1390,8 +1556,8 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
                 auto& node1_outs = last_binary_set.get_outs(node1);
                 for(auto node3_id : node1_outs)
                 {
-                    mm_reasont& last_reason = last_binary_set.get_reason(node3_id, node2);
-                    mm_reasont next_reason(&last_reason, &this_reason);
+                    reasont& last_reason = last_binary_set.get_reason(node3_id, node2);
+                    reasont next_reason(&last_reason, &this_reason);
                     RETURN_IF_TRUE(add_dangerous_edge(node3_id, node2, another_kind, next_reason))
                 }
             }
@@ -1400,8 +1566,8 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
                 auto& node2_ins = last_binary_set.get_ins(node2);
                 for(auto node3_id : node2_ins)
                 {
-                    mm_reasont& last_reason = last_binary_set.get_reason(node1, node3_id);
-                    mm_reasont next_reason(&last_reason, &this_reason);
+                    reasont& last_reason = last_binary_set.get_reason(node1, node3_id);
+                    reasont next_reason(&last_reason, &this_reason);
                     RETURN_IF_TRUE(add_dangerous_edge(node1, node3_id, another_kind, next_reason))
                 }
             }
@@ -1411,8 +1577,8 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
             auto& another_kind = link.another_kind;
             if(last_binary_set.contains(node1, node2))
             {
-                mm_reasont& last_reason = last_binary_set.get_reason(node1, node2);
-                mm_reasont next_reason(&last_reason, &this_reason);
+                reasont& last_reason = last_binary_set.get_reason(node1, node2);
+                reasont next_reason(&last_reason, &this_reason);
                 RETURN_IF_TRUE(add_dangerous_edge(node1, node2, another_kind, next_reason))
             }
         }
@@ -1420,13 +1586,46 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
         {
             // todo
         }
+        else if(link.link_type == PLUS)
+        {
+            RETURN_IF_TRUE(add_dangerous_edge(node1, node2, last_kind, reason))
+
+            auto& node1_outs = last_binary_set.get_outs(node1);
+            for(auto node3_id : node1_outs)
+            {
+                reasont& last_reason = last_binary_set.get_reason(node3_id, node2);
+                reasont next_reason(&last_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_edge(node3_id, node2, kind, next_reason))
+            }
+
+            auto& node2_ins = last_binary_set.get_ins(node2);
+            for(auto node3_id : node2_ins)
+            {
+                reasont& last_reason = last_binary_set.get_reason(node1, node3_id);
+                reasont next_reason(&last_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_edge(node1, node3_id, kind, next_reason))
+            }
+        }
         else if(link.link_type == PROD)
         {
-            // todo
+            auto& another_kind = link.another_kind;
+            if(link.link_position == LEFT && last_unary_set.contains(node1))
+            {
+                reasont& last_reason = last_unary_set.get_reason(node1);
+                reasont next_reason(&last_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_label(node2, another_kind, next_reason));
+            }
+            if(link.link_position == RIGHT && last_unary_set.contains(node2))
+            {
+                reasont& last_reason = last_unary_set.get_reason(node2);
+                reasont next_reason(&last_reason, &this_reason);
+                RETURN_IF_TRUE(add_dangerous_label(node1, another_kind, next_reason));
+            }
         }
         else if(link.link_type == BRACKET)
         {
-            // todo
+            if(node1 == node2)
+                RETURN_IF_TRUE(add_dangerous_label(node1, last_kind, reason));
         }
         else
         {
@@ -1437,14 +1636,14 @@ bool Minisat::MemoryModelSolver::add_dangerous_edge(int node1, int node2, int ki
     return false;
 }
 
-void Minisat::MemoryModelSolver::push_scope()
+void MemoryModelSolver::push_scope()
 {
     mm_trail_lim.push_back(mm_trail.size());
     mm_dangerous_trail_lim.push_back(mm_dangerous_trail.size());
     mm_neg_seq_trail_lim.push_back(mm_neg_seq_trail.size());
 }
 
-void Minisat::MemoryModelSolver::pop_scope(int new_level)
+void MemoryModelSolver::pop_scope(int new_level)
 {
     for (int c = mm_trail.size() - 1; c >= mm_trail_lim[new_level]; c--)
     {
@@ -1490,7 +1689,7 @@ void Minisat::MemoryModelSolver::pop_scope(int new_level)
     mm_neg_seq_trail_lim.resize(new_level);
 }
 
-bool Minisat::MemoryModelSolver::use_available_info(bool is_first)
+bool MemoryModelSolver::use_available_info(bool is_first)
 {
     if(is_first)
     {
@@ -1498,7 +1697,7 @@ bool Minisat::MemoryModelSolver::use_available_info(bool is_first)
             if(axioms[kind] == rel_axiomt::NOT_EMPTY)
             {
                 int arity = kind_arities[kind];
-                if((arity == 1 && unary_may_sets[kind].get_elements().empty()) || (arity == 2 && binary_may_sets[kind].get_elements().empty()))
+                if((arity == 1 && unary_may_sets[kind].elements.empty()) || (arity == 2 && binary_may_sets[kind].elements.empty()))
                 {
                     std::cout << "A not-empty relation's may set is empty! Never consistent!\n";
                     conflict_clause = literal_vector();
@@ -1512,17 +1711,17 @@ bool Minisat::MemoryModelSolver::use_available_info(bool is_first)
             {
                 for(int node1 = 0; node1 < node_num(); node1++)
                     for(int node2 = 0; node2 < node_num(); node2++)
-                        RETURN_IF_TRUE(add_dangerous_edge(node1, node2, kind, empty_reason))
+                        RETURN_IF_TRUE(add_dangerous_edge(node1, node2, kind, mm_empty_reason))
             }
             if(kind_arities[kind] == 1 && axioms[kind] == rel_axiomt::EMPTY)
             {
                 for(int node = 0; node < node_num(); node++)
-                    RETURN_IF_TRUE(add_dangerous_label(node, kind, empty_reason))
+                    RETURN_IF_TRUE(add_dangerous_label(node, kind, mm_empty_reason))
             }
             if(axioms[kind] == rel_axiomt::IRREFLEXIVE)
             {
                 for(int node = 0; node < node_num(); node++)
-                    RETURN_IF_TRUE(add_dangerous_edge(node, node, kind, empty_reason))
+                    RETURN_IF_TRUE(add_dangerous_edge(node, node, kind, mm_empty_reason))
             }
         }
     }
@@ -1784,13 +1983,13 @@ std::string MemoryModelSolver::pretty_lit(Minisat::Lit l)
     if(!correspond_label.empty())
     {
         auto& label = correspond_label[0];
-        return "(" + kind_id2str[label.kind] + " " + node_names[label.node] + ")";
+        return "(" + kind_id2str[label.kind] + " " + node_id2str[label.node] + ")";
     }
     auto& correspond_edge = get_correspond_edge(l);
     if(!correspond_edge.empty())
     {
         auto& edge = correspond_edge[0];
-        return "(" + kind_id2str[edge.kind] + " " + node_names[edge.node1] + " " + node_names[edge.node2] + ")";
+        return "(" + kind_id2str[edge.kind] + " " + node_id2str[edge.node1] + " " + node_id2str[edge.node2] + ")";
     }
     return "unknown";
 }
