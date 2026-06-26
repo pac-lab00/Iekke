@@ -23,7 +23,7 @@ Note: Higher versions of Bison may generate *.tab.h/*.tab.cpp that triggers warn
 ## Usage
 
 ```
-iekke_exe <input file> <unwind options> <specifications> --rounds <num>
+iekke_exe <input file> <unwind options> <specifications> --rounds <num> --minisat
 ```
 
 ``<specifications>`` includes:
