@@ -16,6 +16,44 @@
 #include <util/arith_tools.h>
 
 
+static void align_pointer_equalities(exprt &e)
+{
+  for(auto &op : e.operands())
+    align_pointer_equalities(op);
+
+  if(e.id() == ID_equal || e.id() == ID_notequal)
+  {
+    auto &binary = to_binary_expr(e);
+    if(
+      binary.op0().type() != binary.op1().type() &&
+      binary.op0().type().id() == ID_pointer &&
+      binary.op1().type().id() == ID_pointer)
+    {
+      binary.op1() =
+        typecast_exprt::conditional_cast(binary.op1(), binary.op0().type());
+    }
+  }
+  else if(e.id() == ID_if)
+  {
+
+    auto &if_e = to_if_expr(e);
+    if(if_e.true_case().type() != if_e.false_case().type())
+    {
+      if_e.false_case() = typecast_exprt::conditional_cast(
+        if_e.false_case(), if_e.true_case().type());
+    }
+    if(if_e.type() != if_e.true_case().type())
+      if_e.type() = if_e.true_case().type();
+  }
+  else if(e.id() == ID_with)
+  {
+
+    auto &with_e = to_with_expr(e);
+    if(with_e.type() != with_e.old().type())
+      with_e.type() = with_e.old().type();
+  }
+}
+
 void lazy_c_seqt::operator()(
   symex_target_equationt &equation,
   message_handlert &message_handler)
@@ -54,6 +92,11 @@ void lazy_c_seqt::operator()(
   else
     handling_guards(equation/*, message_handler*/);
 
+  for(auto &step : equation.SSA_steps)
+  {
+    align_pointer_equalities(step.cond_expr);
+    align_pointer_equalities(step.guard);
+  }
 }
 
 void lazy_c_seqt::create_write_constraints(
@@ -100,7 +143,10 @@ void lazy_c_seqt::create_write_constraints(
           create_exec_symbol(write.label, write.num, write.thread, round);
 
         equal_exprt constraint{
-          lazy_variable_exprt, if_exprt{exec, write.s_it->ssa_lhs, previous}};
+          lazy_variable_exprt,
+          if_exprt{exec, write.s_it->ssa_lhs,
+                   typecast_exprt::conditional_cast(
+                     previous, write.s_it->ssa_lhs.type())}};
 
         //log.warning() << format(constraint) << messaget::eom;
         equation.constraint(constraint, "write constraint", write.s_it->source);
@@ -152,7 +198,10 @@ void lazy_c_seqt::create_read_constraints(
           previous_shared(global_variable, read.label, read.num, read.thread, round);
         if(previous.has_value())
         {
-          temp_constraint = if_exprt{exec, previous.value(), temp_constraint};
+          temp_constraint = if_exprt{exec,
+            typecast_exprt::conditional_cast(
+              previous.value(), read.s_it->ssa_lhs.type()),
+            temp_constraint};
         }
         else {
           temp_constraint = if_exprt{exec, read.s_it->ssa_lhs, temp_constraint};
