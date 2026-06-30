@@ -416,10 +416,6 @@ void postprocess_equation(
 }
 
 #include <solvers/sat/satcheck_minisat2.h>
-#include <solvers/sat/satcheck_sms.h>
-#ifdef HAVE_SMS_Z3
-#include <solvers/sat/satcheck_sms_z3.h>
-#endif
 #include <solvers/prop/prop_conv_solver.h>
 
 std::chrono::duration<double> prepare_property_decider(
@@ -440,53 +436,8 @@ std::chrono::duration<double> prepare_property_decider(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
 
 
-  {
-    auto &_prop_for_sms = property_decider.get_solver()->prop();
-    auto handle_sms = [&](auto *sms) {
-      std::size_t pre_redirect_var_count = sms->no_variables();
-
-      std::cout << "SMS: converting canonical constraints into slave\n";
-      sms->redirect_to_slave = true;
-      equation.convert_canonical_constraints(
-        property_decider.get_decision_procedure());
-      sms->redirect_to_slave = false;
-
-      bvt shared_vars;
-      if(auto *dp = dynamic_cast<prop_conv_solvert*>(
-           &property_decider.get_decision_procedure()))
-      {
-        for(const auto &sym : dp->get_symbols())
-        {
-          const literalt &lit = sym.second;
-          if(lit.is_constant())
-            continue;
-          if(lit.var_no() >= pre_redirect_var_count)
-            continue;
-          shared_vars.push_back(lit);
-        }
-      }
-
-      std::cout << "SMS: attaching slave with "
-                << shared_vars.size() << " shared variables\n";
-      sms->attach_slave(shared_vars);
-    };
-
-    if(auto *sms = dynamic_cast<sms_solvert*>(&_prop_for_sms))
-    {
-      handle_sms(sms);
-    }
-#ifdef HAVE_SMS_Z3
-    else if(auto *smsz = dynamic_cast<sms_z3_solvert*>(&_prop_for_sms))
-    {
-      handle_sms(smsz);
-    }
-#endif
-    else
-    {
-      equation.convert_canonical_constraints(
-        property_decider.get_decision_procedure());
-    }
-  }
+  equation.convert_canonical_constraints(
+    property_decider.get_decision_procedure());
 
   property_decider.update_properties_goals_from_symex_target_equation(
     properties);

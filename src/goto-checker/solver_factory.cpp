@@ -214,10 +214,6 @@ make_satcheck_prop(message_handlert &message_handler, const optionst &options)
 }
 
 #include "solvers/sat/satcheck_minisat2.h"
-#include "solvers/sat/satcheck_sms.h"
-#ifdef HAVE_SMS_Z3
-#include "solvers/sat/satcheck_sms_z3.h"
-#endif
 
 static std::unique_ptr<propt>
 get_sat_solver(message_handlert &message_handler, const optionst &options)
@@ -268,18 +264,6 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
     solver->set_prop(make_satcheck_prop<memory_model_solvert>(message_handler, options));
     std::cout << "Deagle's memory model solver is set!!!!!!\n";
   }
-  else if(options.get_bool_option("sms"))
-  {
-    solver->set_prop(make_satcheck_prop<sms_solvert>(message_handler, options));
-    std::cout << "ModSAT SMS solver is set!!!!!!\n";
-  }
-#ifdef HAVE_SMS_Z3
-  else if(options.get_bool_option("specsms"))
-  {
-    solver->set_prop(make_satcheck_prop<sms_z3_solvert>(message_handler, options));
-    std::cout << "Z3 SMS (specsms) solver is set!!!!!!\n";
-  }
-#endif
   else if(options.get_bool_option("deagle"))
   {
     solver->set_prop(make_satcheck_prop<deagle_solvert>(message_handler, options));
@@ -643,12 +627,6 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
   }
 
   // __SZH_ADD_BEGIN__ : default
-  if(cmdline.isset("sms"))
-    options.set_option("sms", true), solver_set = true;
-
-  if(cmdline.isset("specsms"))
-    options.set_option("specsms", true), solver_set = true;
-
   if(cmdline.isset("deagle") || !solver_set)
     options.set_option("deagle", true);
 

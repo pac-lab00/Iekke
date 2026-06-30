@@ -22,24 +22,6 @@ ifneq ($(MINISAT2),)
   CLEANFILES += $(MINISAT2_LIB) $(patsubst %$(OBJEXT), %$(DEPEXT), $(MINISAT2_LIB))
 endif
 
-MODSAT ?= ../../modsat
-ifneq ($(wildcard $(MODSAT)/core/Solver.cc),)
-  MODSAT_SRC=sat/satcheck_sms.cpp
-  MODSAT_INCLUDE=-I $(MODSAT)
-  MODSAT_LIB=$(MODSAT)/core/Solver$(OBJEXT) $(MODSAT)/core/Config$(OBJEXT)
-  CP_CXXFLAGS += -DHAVE_MODSAT
-  CLEANFILES += $(MODSAT_LIB) $(patsubst %$(OBJEXT), %$(DEPEXT), $(MODSAT_LIB))
-endif
-
-# Z3 SMS fork backend (--specsms flag)
-Z3 ?= ../../z3
-Z3_BUILD ?= $(Z3)/build
-ifneq ($(wildcard $(Z3)/src/sat/sms/sms_solver.h),)
-  SMS_Z3_SRC=sat/satcheck_sms_z3.cpp
-  SMS_Z3_INCLUDE=-I $(Z3)/src
-  SMS_Z3_LIB=-L $(Z3_BUILD) -lz3 -Wl,-rpath,$(abspath $(Z3_BUILD))
-  CP_CXXFLAGS += -DHAVE_SMS_Z3
-endif
 
 ifneq ($(IPASIR),)
   IPASIR_SRC=sat/satcheck_ipasir.cpp
@@ -93,8 +75,6 @@ SRC = $(BOOLEFORCE_SRC) \
       $(GLUCOSE_SRC) \
       $(LINGELING_SRC) \
       $(MINISAT2_SRC) \
-      $(MODSAT_SRC) \
-      $(SMS_Z3_SRC) \
       $(IPASIR_SRC) \
       $(MINISAT_SRC) \
       $(PICOSAT_SRC) \
@@ -275,33 +255,8 @@ $(GLUCOSE)/core/Solver$(OBJEXT): $(GLUCOSE)/core/Solver.cc
 endif
 endif
 
-# satcheck_sms.cpp e i sorgenti di modsat vengono compilati con
-# -DMinisat=ModSat per spostare le loro definizioni dal namespace
-# Minisat (usato da minisat-2.2.1) a un namespace ModSat separato.
-# Questo evita i conflitti di multiple definition a link time.
-# -fpermissive e' richiesto da friend decl con default argument.
-MODSAT_CXXFLAGS = -DMinisat=ModSat -fpermissive
-
-sat/satcheck_sms$(OBJEXT): sat/satcheck_sms.cpp
-	$(CXX) $(CP_CXXFLAGS) $(INCLUDES) $(MODSAT_INCLUDE) $(MODSAT_CXXFLAGS) -c sat/satcheck_sms.cpp -o sat/satcheck_sms$(OBJEXT)
-
-# Build rules per gli oggetti di modsat
-$(MODSAT)/core/Solver$(OBJEXT): $(MODSAT)/core/Solver.cc
-	$(CXX) $(CP_CXXFLAGS) -I $(MODSAT) $(MODSAT_CXXFLAGS) -c $< -o $@
-$(MODSAT)/core/Config$(OBJEXT): $(MODSAT)/core/Config.cpp
-	$(CXX) $(CP_CXXFLAGS) -I $(MODSAT) $(MODSAT_CXXFLAGS) -c $< -o $@
-
-# Z3 SMS adapter: -I z3/src must precede CBMC -I .. so util/symbol.h
-# resolves to z3 (class symbol) not CBMC (class symbolt). Use -isystem
-# for CBMC paths to give -I (z3) higher precedence.
-SMS_Z3_CXXFLAGS = -fpermissive -std=c++17 -MMD -MP -DHAVE_SMS_Z3 -DHAVE_MINISAT2 -DHAVE_MODSAT -D_MP_GMP -include cstdint -O2 -Wno-pedantic -Wno-deprecated-declarations
-sat/satcheck_sms_z3$(OBJEXT): sat/satcheck_sms_z3.cpp
-	$(CXX) -I $(Z3)/src -isystem .. -isystem ../../minisat-2.2.1 -isystem ../../modsat $(SMS_Z3_CXXFLAGS) -c sat/satcheck_sms_z3.cpp -o sat/satcheck_sms_z3$(OBJEXT)
-
 INCLUDES += -I .. \
   $(CHAFF_INCLUDE) $(BOOLEFORCE_INCLUDE) $(MINISAT_INCLUDE) $(MINISAT2_INCLUDE) \
-  $(MODSAT_INCLUDE) \
-  $(SMS_Z3_INCLUDE) \
   $(IPASIR_INCLUDE) \
   $(SQUOLEM2_INC) $(CUDD_INCLUDE) $(GLUCOSE_INCLUDE) \
 	$(PICOSAT_INCLUDE) $(LINGELING_INCLUDE) $(CADICAL_INCLUDE)
@@ -320,11 +275,8 @@ endif
 endif
 
 SOLVER_LIB = $(CHAFF_LIB) $(BOOLEFORCE_LIB) $(MINISAT_LIB) \
-        $(MINISAT2_LIB) $(MODSAT_LIB) $(SQUOLEM2_LIB) $(CUDD_LIB) \
+        $(MINISAT2_LIB) $(SQUOLEM2_LIB) $(CUDD_LIB) \
         $(PICOSAT_LIB) $(LINGELING_LIB) $(GLUCOSE_LIB) $(CADICAL_LIB)
-
-# z3 SMS link flags go through LIBS (linker-only, not file deps)
-LIBS += $(SMS_Z3_LIB)
 
 SOLVER_OBJS = $(filter %$(OBJEXT), $(SOLVER_LIB))
 ifneq ($(SOLVER_OBJS),)
