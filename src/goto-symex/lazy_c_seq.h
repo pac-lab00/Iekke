@@ -253,9 +253,11 @@ private:
 
   std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
 
-  symbol_exprt get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
+  exprt get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
 
   std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable, bool strict= false);
+
+
 
   void create_lazy_variable_read();
   void create_active_thread_statements(
