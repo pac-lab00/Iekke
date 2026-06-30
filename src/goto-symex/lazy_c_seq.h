@@ -165,7 +165,7 @@ private:
     message_handlert &message_handler*/);
 
   void collect_reads_and_writes(
-    symex_target_equationt::SSA_stepst &ssa_steps/*,
+    const symex_target_equationt::SSA_stepst &ssa_steps/*,
     message_handlert &message_handler*/);
 
   void annotate_round_robin_trace_event(
