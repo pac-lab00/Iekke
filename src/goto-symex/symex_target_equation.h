@@ -251,6 +251,13 @@ public:
   /// \param decision_procedure: A handle to a decision procedure interface
   void convert_constraints(decision_proceduret &decision_procedure);
 
+  /// Converts only the canonical constraints (atomic_block_canonical, abr,
+  /// abw, lw/winr canonical from lazy_c_seq) into the given decision
+  /// procedure. Used to route these
+  /// constraints to a separate slave solver.
+  /// \param decision_procedure: the slave solver destination
+  void convert_canonical_constraints(decision_proceduret &decision_procedure);
+
   /// Converts goto instructions: convert the expression representing the
   /// condition of this goto.
   /// \param decision_procedure: A handle to a decision procedure interface

@@ -452,6 +452,11 @@ std::chrono::duration<double> prepare_property_decider(
 
   convert_symex_target_equation(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
+
+
+  equation.convert_canonical_constraints(
+    property_decider.get_decision_procedure());
+
   property_decider.update_properties_goals_from_symex_target_equation(
     properties);
   property_decider.convert_goals();

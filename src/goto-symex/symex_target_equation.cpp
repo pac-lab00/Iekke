@@ -485,7 +485,40 @@ void symex_target_equationt::convert_constraints(
   std::size_t step_index = 0;
   for(auto &step : SSA_steps)
   {
-    if(step.is_constraint() && !step.ignore && !step.converted)
+    if(step.is_constraint() && !step.ignore && !step.converted
+       && step.comment != "atomic_block_canonical"
+       && step.comment != "abr"
+       && step.comment != "abw"
+       && step.comment != "lw canonical"
+       && step.comment != "winr canonical")
+    {
+      log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
+        step.output(mstream);
+        mstream << messaget::eom;
+      });
+
+      decision_procedure.set_to_true(step.cond_expr);
+      step.converted = true;
+
+      with_solver_hardness(
+        decision_procedure, hardness_register_ssa(step_index, step));
+    }
+    ++step_index;
+  }
+}
+
+void symex_target_equationt::convert_canonical_constraints(
+  decision_proceduret &decision_procedure)
+{
+  std::size_t step_index = 0;
+  for(auto &step : SSA_steps)
+  {
+    if(step.is_constraint() && !step.ignore && !step.converted
+       && (step.comment == "atomic_block_canonical"
+           || step.comment == "abr"
+           || step.comment == "abw"
+           || step.comment == "lw canonical"
+           || step.comment == "winr canonical"))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);

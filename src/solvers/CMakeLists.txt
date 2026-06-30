@@ -84,6 +84,29 @@ if("${sat_impl}" STREQUAL "minisat2")
     target_sources(solvers PRIVATE ${minisat2_source})
 
     target_link_libraries(solvers minisat2-condensed)
+
+    set(MODSAT_DIR ${CBMC_SOURCE_DIR}/../modsat)
+    if(EXISTS ${MODSAT_DIR}/core/Solver.cc)
+        add_library(modsat STATIC
+            ${MODSAT_DIR}/core/Solver.cc
+            ${MODSAT_DIR}/core/Config.cpp
+            ${MODSAT_DIR}/utils/Options.cc
+            ${MODSAT_DIR}/utils/System.cc
+        )
+        target_include_directories(modsat PUBLIC ${MODSAT_DIR})
+        target_compile_definitions(modsat PUBLIC
+            __STDC_FORMAT_MACROS __STDC_LIMIT_MACROS
+        )
+        target_compile_options(modsat PRIVATE -fpermissive)
+        target_sources(solvers PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/sat/satcheck_sms.cpp
+        )
+        set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/sat/satcheck_sms.cpp
+            PROPERTIES COMPILE_FLAGS "-fpermissive"
+        )
+        target_link_libraries(solvers modsat)
+    endif()
 elseif("${sat_impl}" STREQUAL "glucose")
     message(STATUS "Building solvers with glucose")
 

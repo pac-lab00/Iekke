@@ -22,6 +22,7 @@ ifneq ($(MINISAT2),)
   CLEANFILES += $(MINISAT2_LIB) $(patsubst %$(OBJEXT), %$(DEPEXT), $(MINISAT2_LIB))
 endif
 
+
 ifneq ($(IPASIR),)
   IPASIR_SRC=sat/satcheck_ipasir.cpp
   IPASIR_INCLUDE=-I $(IPASIR)
