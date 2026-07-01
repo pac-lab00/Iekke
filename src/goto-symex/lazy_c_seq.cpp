@@ -1187,8 +1187,14 @@ void lazy_c_seqt::collect_reads_and_writes(
       else
       {
         trace_position first_position{true, label, event_num, thread, 0};
+        // Local initialisation steps before the first shared event only serve to
+        // position the round-robin trace; they should not pollute the cex.
         for(auto pending_step : pending)
+        {
+          if(pending_step->is_assignment())
+            pending_step->hidden = true;
           annotate_with_position(*pending_step, first_position);
+        }
         event_order = first_position.next_order;
       }
       pending.clear();
@@ -1444,6 +1450,8 @@ void lazy_c_seqt::annotate_round_robin_trace_event(
   step.round_robin_num = num;
   step.round_robin_thread = thread;
   step.round_robin_trace_order = trace_order;
+  if(step.is_decl())
+    step.hidden = true;
   step.round_robin_exec_symbols.clear();
   step.round_robin_exec_symbols.reserve(rounds);
 
