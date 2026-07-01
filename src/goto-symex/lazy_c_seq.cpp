@@ -1703,10 +1703,6 @@ void lazy_c_seqt::create_atomic_canonical(
       const exprt cs_1 = create_enabled_symbol(b.label, b.thread, round);
       exprt cs = equal_exprt(create_cs_symbol(b.thread, round-1), from_integer(b.label, unsignedbv_typet(n_bit[b.thread])));
       exprt fire_cond = and_exprt(cs_1, cs);
-      if(round >= 2)
-        fire_cond = and_exprt(fire_cond,
-          equal_exprt(create_cs_symbol(b.thread, round-2),
-                      from_integer(b.label, unsignedbv_typet(n_bit[b.thread]))));
       exprt abr = b.reads.empty()
         ? exprt(false_exprt{})
         : exprt(create_ABR(b.reads, round, b.label, b.thread, equation/*,message_handlert &message_handler*/));
