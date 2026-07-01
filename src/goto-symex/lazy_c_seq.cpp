@@ -1414,7 +1414,11 @@ void lazy_c_seqt::collect_reads_and_writes(
     }
   }
   for(auto global_variable : global_variables) {
-    this->bit_writes[global_variable]= 32 - __builtin_clz(this->writes.count(global_variable)*rounds);
+    const unsigned n_ids =
+      (this->writes.count(global_variable)
+         ? this->writes.at(global_variable).size() * rounds
+         : 0) + 1;
+    this->bit_writes[global_variable] = 32 - __builtin_clz(n_ids);
   }
 
   for(auto &thread_and_pending : pending_trace_steps)
@@ -1699,11 +1703,6 @@ void lazy_c_seqt::create_atomic_canonical(
       const exprt cs_1 = create_enabled_symbol(b.label, b.thread, round);
       exprt cs = equal_exprt(create_cs_symbol(b.thread, round-1), from_integer(b.label, unsignedbv_typet(n_bit[b.thread])));
       exprt fire_cond = and_exprt(cs_1, cs);
-      // Precondizione "delay reale": il blocco l deve essere stato pendente entrando
-      // nel round r-1, cioe' cs_t(r-2)==l. Senza, il test scatta anche su slot
-      // infeasible (blocco pendente solo da r) dove la LW globale collassa e prune-rebbe
-      // il witness (missed bug). Il paper (Thm 6.4 =>) genera il test solo per i delay;
-      // questo guard ne e' l'encoding. round==1 e' gia' vacuo (cs_t(0)=0 != l).
       if(round >= 2)
         fire_cond = and_exprt(fire_cond,
           equal_exprt(create_cs_symbol(b.thread, round-2),
