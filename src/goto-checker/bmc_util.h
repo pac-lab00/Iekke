@@ -179,6 +179,7 @@ void run_property_decider(
   "(show-points-to-sets)" \
   "(slice-formula)" \
   "(rounds):" \
+  "(por)" \
   "(unwinding-assertions)" \
   "(no-unwinding-assertions)" \
   "(mm-strict-guard)" \
@@ -224,6 +225,8 @@ void run_property_decider(
   "                              sensitivity size for arrays to 0\n" \
   " --rounds {unr}               activate Round Robin concurrency encoding with \n" \
   "                              {unr} rounds\n"   \
+  " --por                        activate Partial Order Reduction when --round \n" \
+  "                              is given\n"   \
   HELP_UNWINDSET \
   " --incremental-loop L         check properties after each unwinding\n" \
   "                              of loop L\n" \
