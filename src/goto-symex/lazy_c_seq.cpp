@@ -67,21 +67,25 @@ void lazy_c_seqt::operator()(
 
   collect_reads_and_writes(equation.SSA_steps/*, message_handler*/);
 
-  build_atomic_blocks();
+  if(por)
+    build_atomic_blocks();
 
   create_write_constraints(equation/*, message_handler*/);
 
   create_read_constraints(equation/*, message_handler*/);
 
-  create_lazy_variable_read();
+  if(por)
+    create_lazy_variable_read();
 
   create_cs_constraint(equation/*, message_handler*/);
 
-  create_lw_tot_symbol(equation/*, message_handler*/);
+  if(por) {
+    create_lw_tot_symbol(equation/*, message_handler*/);
 
-  create_winr_tot_symbol(equation/*, message_handler*/);
+    create_winr_tot_symbol(equation/*, message_handler*/);
 
-  create_atomic_canonical(equation/*, message_handler*/);
+    create_atomic_canonical(equation/*, message_handler*/);
+  }
 
   handling_atomic_sections(equation/*, message_handler*/);
 

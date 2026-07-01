@@ -12,8 +12,8 @@
 class lazy_c_seqt
 {
 public:
-  explicit lazy_c_seqt(const namespacet &ns, const std::size_t rounds, const bool datarace)
-    : ns(ns), rounds(rounds), datarace(datarace)
+  explicit lazy_c_seqt(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por)
+    : ns(ns), rounds(rounds), datarace(datarace), por(por)
   {
   }
 
@@ -23,6 +23,7 @@ private:
   const namespacet &ns;
   const std::size_t rounds;
   const bool datarace;
+  const bool por;
 
   struct shared_event
   {

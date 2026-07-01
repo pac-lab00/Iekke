@@ -110,6 +110,7 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   options.set_option("show-goto-symex-steps", false);
   options.set_option("show-points-to-sets", false);
   options.set_option("show-array-constraints", false);
+  options.set_option("por", false);
 
   // Other default
   options.set_option("arrays-uf", "auto");
@@ -138,6 +139,12 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
                      "verification "
                      "results"
                   << messaget::eom;
+
+    if(cmdline.isset("por")) {
+      options.set_option("por", true);
+      log.warning() << "Enabling Partial Order Reduction"
+                  << messaget::eom;
+    }
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))
