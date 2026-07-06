@@ -240,7 +240,7 @@ void goto_symext::symex_assume_l2(statet &state, const exprt &cond)
   if(has_subexpr(rewritten_cond, ID_exists))
     rewrite_quantifiers(rewritten_cond, state);
 
-  if(state.threads.size()==1)
+  //if(state.threads.size()==1)
   {
     exprt tmp = state.guard.guard_expr(rewritten_cond);
     target.assumption(state.guard.as_expr(), tmp, state.source);
@@ -251,8 +251,8 @@ void goto_symext::symex_assume_l2(statet &state, const exprt &cond)
   // T0                     T1
   // x=0;                   assume(x==1);
   // assert(x!=42);         x=42;
-  else
-    state.guard.add(rewritten_cond);
+  /*else
+    state.guard.add(rewritten_cond);*/
 
   if(state.atomic_section_id!=0 &&
      state.guard.is_false())
