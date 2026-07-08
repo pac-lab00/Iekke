@@ -2098,28 +2098,9 @@ symbol_exprt lazy_c_seqt::create_OBS_symbol(irep_idt variable, const lazy_variab
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
 
-  // ObsPos_x(p) letterale (paper 5.5): esiste read di x fuori dal blocco
-  // di p, eseguita, con LW == id(p)
-  exprt::operandst disjuncts;
-  if(reads.count(variable) != 0)
-  {
-    const auto wk = std::make_tuple(w.round, w.thread, w.label, w.num);
-    for(std::size_t r = 1; r <= rounds; ++r)
-    {
-      for(const auto &rd : reads.at(variable))
-      {
-        if(rd.thread == w.thread && rd.label == w.label)
-          continue;
-        if(std::make_tuple(r, rd.thread, rd.label, rd.num) <= wk)
-          continue;
-        exprt exec_q = create_exec_symbol_fast(rd.label, rd.num, rd.thread, r);
-        exprt lw_q = create_LW_symbol(variable, rd.thread, rd.label, rd.num, r, equation);
-        disjuncts.push_back(
-          and_exprt{exec_q, equal_exprt{lw_q, from_integer(w.id, type)}});
-      }
-    }
-  }
-  exprt result = disjunction(disjuncts);
+  exprt winr_anchor = create_WINR_symbol(
+    variable, w.thread, w.label + 1, 0, w.round, equation);
+  exprt result = equal_exprt{winr_anchor, from_integer(w.id, type)};
 
   irep_idt obs_id = "OBS_T" + std::to_string(w.thread) + "_L" + std::to_string(w.label) +
     "_N" + std::to_string(w.num) + "_R" + std::to_string(w.round) + "_V" + id2string(variable);
