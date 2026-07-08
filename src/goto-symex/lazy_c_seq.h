@@ -51,22 +51,6 @@ private:
     unsigned thread;
     unsigned id = 0;
   };
-  struct lw_variable
-  {
-    std::size_t round;
-    unsigned label;
-    unsigned num;
-    unsigned thread;
-    symbol_exprt exptr_id;
-  };
-  struct winr_variable
-  {
-    std::size_t round;
-    unsigned label;
-    unsigned num;
-    unsigned thread;
-    symbol_exprt exptr_id;
-  };
   struct active_thread
   {
     unsigned thread;
@@ -133,17 +117,19 @@ private:
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;
   std::unordered_map<irep_idt, unsigned> bit_reads;
-  std::unordered_map<irep_idt, std::vector<lw_variable>> lw_variables;
-  std::unordered_map<irep_idt, std::vector<winr_variable>> winr_variables;
-  std::unordered_map<irep_idt, std::vector<lw_variable>> low_variables;
-  std::unordered_map<irep_idt, std::vector<lw_variable>> obs_variables;
-  std::unordered_map<irep_idt, std::vector<winr_variable>> nrp_variables;
+  // memo delle catene: chiave = posizione (round, thread, label, num) impaccata
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> lw_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> winr_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> low_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> obs_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> nrp_variables;
   std::vector<shared_event> blocking_events;
   std::vector<shared_event> shared_events;
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
   std::unordered_map<irep_idt, std::vector<lazy_variable_read>> lazy_variables_read;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
   std::vector<exec> exec_vector;
+  std::unordered_map<uint64_t, symbol_exprt> exec_map;
   std::vector<atomic_block_round> atomic_block_rounds;
   std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
@@ -227,6 +213,9 @@ private:
 
   symbol_exprt
   create_exec_symbol(unsigned label, unsigned num, unsigned thread, std::size_t round);
+
+  symbol_exprt
+  create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, std::size_t round);
 
   symbol_exprt
   create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
