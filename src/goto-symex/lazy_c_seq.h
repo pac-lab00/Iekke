@@ -49,7 +49,7 @@ private:
     unsigned label;
     unsigned num;
     unsigned thread;
-
+    unsigned id = 0;
   };
   struct lw_variable
   {
@@ -132,8 +132,12 @@ private:
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;
+  std::unordered_map<irep_idt, unsigned> bit_reads;
   std::unordered_map<irep_idt, std::vector<lw_variable>> lw_variables;
   std::unordered_map<irep_idt, std::vector<winr_variable>> winr_variables;
+  std::unordered_map<irep_idt, std::vector<lw_variable>> low_variables;
+  std::unordered_map<irep_idt, std::vector<lw_variable>> obs_variables;
+  std::unordered_map<irep_idt, std::vector<winr_variable>> nrp_variables;
   std::vector<shared_event> blocking_events;
   std::vector<shared_event> shared_events;
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
@@ -248,6 +252,10 @@ private:
 
   void create_winr_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
+  void create_low_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  void create_nrp_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
   void create_atomic_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
   symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
@@ -260,9 +268,20 @@ private:
   symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,  symex_target_equationt &equation
     /*,message_handlert &message_handler*/);
 
-  std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
+  symbol_exprt create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+    symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
-  exprt get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
+  symbol_exprt create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  symbol_exprt create_OBS_symbol(irep_idt variable, const lazy_variable &w,
+    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  exprt boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num);
+
+  void enumerate_accesses();
+
+  std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
 
   std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable, bool strict= false);
 
