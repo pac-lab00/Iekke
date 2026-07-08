@@ -94,9 +94,10 @@ void lazy_c_seqt::operator()(
 
     create_winr_tot_symbol(equation/*, message_handler*/);
 
-    create_nrp_tot_symbol(equation/*, message_handler*/);
-
-    create_low_tot_symbol(equation/*, message_handler*/);
+    // NRP/LOW on-demand: le catene si materializzano (memoizzate) solo dalle
+    // ancore usate in create_ABW; niente pre-creazione totale.
+    // create_nrp_tot_symbol(equation/*, message_handler*/);
+    // create_low_tot_symbol(equation/*, message_handler*/);
 
     create_atomic_canonical(equation/*, message_handler*/);
   }
