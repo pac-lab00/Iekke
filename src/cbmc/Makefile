@@ -56,9 +56,9 @@ LIBS =
 include ../config.inc
 include ../common
 
-CLEANFILES = bmc_tool_exe$(EXEEXT)
+CLEANFILES = lazy_po_exe$(EXEEXT)
 
-all: bmc_tool_exe$(EXEEXT)
+all: lazy_po_exe$(EXEEXT)
 
 ifneq ($(wildcard ../bv_refinement/Makefile),)
   OBJ += ../bv_refinement/bv_refinement$(LIBEXT)
@@ -72,10 +72,10 @@ endif
 
 ###############################################################################
 
-bmc_tool_exe$(EXEEXT): $(OBJ)
+lazy_po_exe$(EXEEXT): $(OBJ)
 	$(LINKBIN)
 
 .PHONY: cbmc-mac-signed
 
-cbmc-mac-signed: bmc_tool_exe$(EXEEXT)
-	strip bmc_tool_exe$(EXEEXT) ; codesign -v -s $(OSX_IDENTITY) bmc_tool_exe$(EXEEXT)
+cbmc-mac-signed: lazy_po_exe$(EXEEXT)
+	strip lazy_po_exe$(EXEEXT) ; codesign -v -s $(OSX_IDENTITY) lazy_po_exe$(EXEEXT)

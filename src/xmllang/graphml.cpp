@@ -512,7 +512,7 @@ bool write_graphml(const graphmlt &src, std::ostream &os, std::string filename, 
   {
     xmlt &data=graph.new_element("data");
     data.set_attribute("key", "producer");
-    data.data="bmc_tool 1.0";
+    data.data="lazy_po 1.0";
   }
 
   // <data key="specification">CHECK( init(main()), LTL(G ! call(__VERIFIER_error())) )</data>

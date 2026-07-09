@@ -905,7 +905,7 @@ void cbmc_parse_optionst::help()
   // clang-format off
 
   // __SZH_ADD_BEGIN__
-  std::cout << "\n" << banner_string("bmc_tool", "1.0") << '\n'
+  std::cout << "\n" << banner_string("lazy_po", "1.0") << '\n'
             << align_center_with_border("xxxx xxxxxx") << '\n'
             << align_center_with_border("xxxx") << '\n'
             << align_center_with_border("xxxxxxxxxx@xxxxxx.xxx") << '\n';

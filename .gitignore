@@ -1,4 +1,4 @@
 *.d
 *.o
 *.new
-bmc_tool_exe
+lazy_po_exe

@@ -1,7 +1,7 @@
-# bmc_tool V1.0
+# lazy_po V1.0
 
 ## Introduction
-bmc_tool is SAT-based concurrent program verification tool. It is built on top of Deagle (front-end). The basic idea of bmc_tool is to simulate sequentialization using partial order constraints, establishing a number of rounds.
+lazy_po is SAT-based concurrent program verification tool. It is built on top of Deagle (front-end). The basic idea of lazy_po is to simulate sequentialization using partial order constraints, establishing a number of rounds.
 
 ## Installation
 ### Dependencies
@@ -15,14 +15,14 @@ Simply run
 ```
 cd src && make
 ```
-This generates executable binary **bmc_tool_exe** in directory src/cbmc.
+This generates executable binary **lazy_po_exe** in directory src/cbmc.
 
 Note: Higher versions of Bison may generate *.tab.h/*.tab.cpp that triggers warnings. On such occasions, please try removing -Werror from CXXFLAGS in src/config.inc.
 
 ## Usage
 
 ```
-bmc_tool_exe <input file> <unwind options> <specifications> --rounds <num> --minisat
+lazy_po_exe <input file> <unwind options> <specifications> --rounds <num> --minisat
 ```
 
 ``<specifications>`` includes:
