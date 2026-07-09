@@ -1518,7 +1518,7 @@ lazy_pot::create_exec_symbol(unsigned label, unsigned num, unsigned thread, size
 }
 
 symbol_exprt
-lazy_c_seqt::create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, size_t round)
+lazy_pot::create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, size_t round)
 {
   // memo O(1) sopra create_exec_symbol: stessa semantica, stessi simboli,
   // usata dai loop della parte canonica
@@ -1718,7 +1718,7 @@ void lazy_pot::create_lw_tot_symbol(
   }
 }
 
-void lazy_c_seqt::create_nrp_tot_symbol(
+void lazy_pot::create_nrp_tot_symbol(
   symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   for(auto global_variable : global_variables)
@@ -1741,7 +1741,7 @@ void lazy_c_seqt::create_nrp_tot_symbol(
   }
 }
 
-void lazy_c_seqt::create_low_tot_symbol(
+void lazy_pot::create_low_tot_symbol(
   symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   for(auto global_variable : global_variables)
@@ -2026,7 +2026,7 @@ symbol_exprt lazy_pot::create_WINR_symbol(irep_idt variable, unsigned thread, un
               if_exprt{exec, lw, inner_winr_expr});
 }
 
-symbol_exprt lazy_c_seqt::create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round, symex_target_equationt &equation)
+symbol_exprt lazy_pot::create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round, symex_target_equationt &equation)
 {
   const unsignedbv_typet type(bit_reads[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
@@ -2086,7 +2086,7 @@ symbol_exprt lazy_c_seqt::create_NRP_symbol(irep_idt variable, unsigned thread, 
               if_exprt{exec, from_integer(next.id, type), inner_nrp_expr});
 }
 
-symbol_exprt lazy_c_seqt::create_OBS_symbol(irep_idt variable, const lazy_variable &w, symex_target_equationt &equation)
+symbol_exprt lazy_pot::create_OBS_symbol(irep_idt variable, const lazy_variable &w, symex_target_equationt &equation)
 {
   auto &memo = obs_variables[variable];
   const uint64_t key = chain_key(w.round, w.thread, w.label, w.num);
@@ -2111,7 +2111,7 @@ symbol_exprt lazy_c_seqt::create_OBS_symbol(irep_idt variable, const lazy_variab
   return sym;
 }
 
-symbol_exprt lazy_c_seqt::create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+symbol_exprt lazy_pot::create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
   symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   const unsignedbv_typet type(bit_writes[variable]);
@@ -2165,7 +2165,7 @@ symbol_exprt lazy_c_seqt::create_LOW_symbol(irep_idt variable, unsigned thread, 
     if_exprt{and_exprt{exec, obs}, from_integer(prev.id, type), inner_low_expr});
 }
 
-exprt lazy_c_seqt::boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num)
+exprt lazy_pot::boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   unsigned best = static_cast<unsigned>((1ULL << bit_writes[variable]) - 1);
@@ -2196,7 +2196,7 @@ exprt lazy_c_seqt::boundary_id(irep_idt variable, std::size_t round, unsigned th
   }
   return from_integer(best, type);
 }
-std::optional<lazy_c_seqt::lazy_variable> lazy_c_seqt::get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable)
+std::optional<lazy_pot::lazy_variable> lazy_pot::get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable)
 {
   const auto v_it = lazy_variables.find(variable);
   if(v_it == lazy_variables.end() || v_it->second.empty())
@@ -2232,7 +2232,7 @@ void lazy_pot::create_lazy_variable_read() {
   }
 }
 
-void lazy_c_seqt::enumerate_accesses()
+void lazy_pot::enumerate_accesses()
 {
   for(auto global_variable : global_variables)
   {
