@@ -88,7 +88,7 @@ void lazy_pot::operator()(
     create_atomic_canonical(equation/*, message_handler*/);
   }
 
-  handling_atomic_sections(equation/*, message_handler*/);
+  //handling_atomic_sections(equation/*, message_handler*/);
 
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
@@ -642,10 +642,15 @@ void lazy_pot::handling_active_threads(
       thread_ends[thread_current] = true;
       exprt prev_guard = prev->guard;
 
+      unsigned int atomic_section_id = prev->atomic_section_id;
+
+      if(prev->is_atomic_begin())
+        atomic_section_id = 1;
+
       create_active_thread_statements(
         prev->source,
         prev_guard,
-        prev->atomic_section_id,
+        atomic_section_id,
         thread_current,
         temp_equation,
         //message_handler,
@@ -670,7 +675,7 @@ void lazy_pot::handling_active_threads(
       create_active_thread_statements(
         s_it->source,
         guard,
-        s_it->atomic_section_id,
+        1,
         thread_created,
         temp_equation,
         //message_handler,
@@ -709,10 +714,15 @@ void lazy_pot::handling_active_threads(
       exprt prev_guard = true_exprt{};
       unsigned thread = thread_end.first;
 
+      unsigned int atomic_section_id = prev->atomic_section_id;
+
+      if(prev->is_atomic_begin())
+        atomic_section_id = 1;
+
       create_active_thread_statements(
         prev->source,
         prev_guard,
-        prev->atomic_section_id,
+        atomic_section_id,
         thread,
         temp_equation,
         //message_handler,
@@ -1227,7 +1237,7 @@ void lazy_pot::collect_reads_and_writes(
 
     if(s_it->is_assert() || s_it->is_assume())
     {
-      if (labels[s_it->source.thread_nr] == 0  || s_it->atomic_section_id == 0 || (s_it->atomic_section_id != 0 && !prev->is_atomic_begin() && prev->guard != s_it->guard))
+      if (labels[s_it->source.thread_nr] == 0  || s_it->atomic_section_id == 0)
       {
         labels[s_it->source.thread_nr]++;
         num = 0;
@@ -1286,9 +1296,9 @@ void lazy_pot::collect_reads_and_writes(
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
-        if (labels[s_it->source.thread_nr] == 0 || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location()) ||
-          (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard) ||
-          (s_it->atomic_section_id != 0 && prev->guard != s_it->guard))
+        if (labels[s_it->source.thread_nr] == 0
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location())
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard))
         {
           labels[s_it->source.thread_nr]++;
           num = 0;
@@ -1352,9 +1362,9 @@ void lazy_pot::collect_reads_and_writes(
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
-        if (labels[s_it->source.thread_nr] == 0 || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location()) ||
-          (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard) ||
-          (s_it->atomic_section_id != 0 && prev->guard != s_it->guard))
+        if (labels[s_it->source.thread_nr] == 0
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location())
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard))
         {
           labels[s_it->source.thread_nr]++;
           num = 0;
