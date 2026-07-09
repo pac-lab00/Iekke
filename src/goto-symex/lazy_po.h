@@ -49,23 +49,7 @@ private:
     unsigned label;
     unsigned num;
     unsigned thread;
-
-  };
-  struct lw_variable
-  {
-    std::size_t round;
-    unsigned label;
-    unsigned num;
-    unsigned thread;
-    symbol_exprt exptr_id;
-  };
-  struct winr_variable
-  {
-    std::size_t round;
-    unsigned label;
-    unsigned num;
-    unsigned thread;
-    symbol_exprt exptr_id;
+    unsigned id = 0;
   };
   struct active_thread
   {
@@ -132,14 +116,20 @@ private:
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;
-  std::unordered_map<irep_idt, std::vector<lw_variable>> lw_variables;
-  std::unordered_map<irep_idt, std::vector<winr_variable>> winr_variables;
+  std::unordered_map<irep_idt, unsigned> bit_reads;
+  // memo delle catene: chiave = posizione (round, thread, label, num) impaccata
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> lw_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> winr_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> low_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> obs_variables;
+  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> nrp_variables;
   std::vector<shared_event> blocking_events;
   std::vector<shared_event> shared_events;
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
   std::unordered_map<irep_idt, std::vector<lazy_variable_read>> lazy_variables_read;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
   std::vector<exec> exec_vector;
+  std::unordered_map<uint64_t, symbol_exprt> exec_map;
   std::vector<atomic_block_round> atomic_block_rounds;
   std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
@@ -225,6 +215,9 @@ private:
   create_exec_symbol(unsigned label, unsigned num, unsigned thread, std::size_t round);
 
   symbol_exprt
+  create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, std::size_t round);
+
+  symbol_exprt
   create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
 
   symbol_exprt
@@ -248,6 +241,10 @@ private:
 
   void create_winr_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
+  void create_low_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  void create_nrp_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
   void create_atomic_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
   symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
@@ -260,9 +257,20 @@ private:
   symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,  symex_target_equationt &equation
     /*,message_handlert &message_handler*/);
 
-  std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
+  symbol_exprt create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+    symex_target_equationt &equation/*,message_handlert &message_handler*/);
 
-  exprt get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable);
+  symbol_exprt create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  symbol_exprt create_OBS_symbol(irep_idt variable, const lazy_variable &w,
+    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+
+  exprt boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num);
+
+  void enumerate_accesses();
+
+  std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
 
   std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable, bool strict= false);
 
