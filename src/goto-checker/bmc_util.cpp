@@ -19,7 +19,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <goto-programs/xml_goto_trace.h>
 
 #include <goto-symex/build_goto_trace.h>
-#include <goto-symex/lazy_c_seq.h>
+#include <goto-symex/lazy_po.h>
 #include <goto-symex/memory_model_pso.h>
 #include <goto-symex/memory_model_general.h>
 #include <goto-symex/slice.h>
@@ -377,7 +377,7 @@ void postprocess_equation(
   {
     if(options.get_unsigned_int_option("rounds") > 0)
     {
-      lazy_c_seqt(ns, options.get_unsigned_int_option("rounds"), options.get_bool_option("datarace"), options.get_bool_option("por"))(
+      lazy_pot(ns, options.get_unsigned_int_option("rounds"), options.get_bool_option("datarace"), options.get_bool_option("por"))(
         equation, ui_message_handler);
     }
     else

@@ -1,18 +1,18 @@
 /// \file
 /// LazyCSeq context-bounded concurrency SSA transformation
 
-#ifndef CPROVER_GOTO_SYMEX_LAZY_C_SEQ_H
-#define CPROVER_GOTO_SYMEX_LAZY_C_SEQ_H
+#ifndef CPROVER_GOTO_SYMEX_lazy_po_H
+#define CPROVER_GOTO_SYMEX_lazy_po_H
 
 #include "symex_target_equation.h"
 
 #include <optional>
 #include <vector>
 
-class lazy_c_seqt
+class lazy_pot
 {
 public:
-  explicit lazy_c_seqt(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por)
     : ns(ns), rounds(rounds), datarace(datarace), por(por)
   {
   }
@@ -279,4 +279,4 @@ private:
     const exprt &value);
 };
 
-#endif //CPROVER_GOTO_SYMEX_LAZY_C_SEQ_H
+#endif //CPROVER_GOTO_SYMEX_lazy_po_H

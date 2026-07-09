@@ -1,4 +1,4 @@
-终端机在文法中未使用
+Terminals unused in grammar
 
     "free"
     "declare"
@@ -11,10 +11,10 @@
     ","
 
 
-状态 52冲突：4 项偏移/归约
+State 52 conflicts: 4 shift/reduce
 
 
-语法
+Grammar
 
     0 $accept: main YYEOF
 
@@ -57,7 +57,7 @@
    33    | "fencerel" rel
 
 
-终结语词，附有它们出现处的规则
+Terminals, with rules where they appear
 
     YYEOF (0) 0
     error (256)
@@ -101,7 +101,7 @@
     QPATH <std::string> (295) 3 4
 
 
-非终结语词，附有它们出现处的规则
+Nonterminals, with rules where they appear
 
     $accept (41)
         on left: 0
@@ -122,200 +122,200 @@
         on right: 8
 
 
-状态 0
+State 0
 
     0 $accept: . main YYEOF
 
-    $default  使用规则 1 以归约 (main)
+    $default  reduce using rule 1 (main)
 
-    main  转到状态 1
+    main  go to state 1
 
 
-状态 1
+State 1
 
     0 $accept: main . YYEOF
     2 main: main . decl
 
-    YYEOF          偏移，并进入状态 2
-    "acyclic"      偏移，并进入状态 3
-    "irreflexive"  偏移，并进入状态 4
-    "empty"        偏移，并进入状态 5
-    "flag"         偏移，并进入状态 6
-    "include"      偏移，并进入状态 7
-    "let"          偏移，并进入状态 8
-    QPATH          偏移，并进入状态 9
+    YYEOF          shift, and go to state 2
+    "acyclic"      shift, and go to state 3
+    "irreflexive"  shift, and go to state 4
+    "empty"        shift, and go to state 5
+    "flag"         shift, and go to state 6
+    "include"      shift, and go to state 7
+    "let"          shift, and go to state 8
+    QPATH          shift, and go to state 9
 
-    decl        转到状态 10
-    constraint  转到状态 11
+    decl        go to state 10
+    constraint  go to state 11
 
 
-状态 2
+State 2
 
     0 $accept: main YYEOF .
 
-    $default  接受
+    $default  accept
 
 
-状态 3
+State 3
 
    12 constraint: "acyclic" . rel
    15           | "acyclic" . rel "as" ID
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 18
+    qualified_ID  go to state 17
+    rel           go to state 18
 
 
-状态 4
+State 4
 
    13 constraint: "irreflexive" . rel
    16           | "irreflexive" . rel "as" ID
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 19
+    qualified_ID  go to state 17
+    rel           go to state 19
 
 
-状态 5
+State 5
 
    11 constraint: "empty" . rel
    14           | "empty" . rel "as" ID
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 20
+    qualified_ID  go to state 17
+    rel           go to state 20
 
 
-状态 6
+State 6
 
    17 constraint: "flag" . "~empty" rel
    18           | "flag" . "~empty" rel "as" ID
 
-    "~empty"  偏移，并进入状态 21
+    "~empty"  shift, and go to state 21
 
 
-状态 7
+State 7
 
     3 decl: "include" . QPATH
 
-    QPATH  偏移，并进入状态 22
+    QPATH  shift, and go to state 22
 
 
-状态 8
+State 8
 
     5 decl: "let" . ID "=" rel
     6     | "let" . "rec" ID "=" rel
     7     | "let" . ID "=" "0"
 
-    "rec"  偏移，并进入状态 23
-    ID     偏移，并进入状态 24
+    "rec"  shift, and go to state 23
+    ID     shift, and go to state 24
 
 
-状态 9
+State 9
 
     4 decl: QPATH .
 
-    $default  使用规则 4 以归约 (decl)
+    $default  reduce using rule 4 (decl)
 
 
-状态 10
+State 10
 
     2 main: main decl .
 
-    $default  使用规则 2 以归约 (main)
+    $default  reduce using rule 2 (main)
 
 
-状态 11
+State 11
 
     8 decl: constraint .
 
-    $default  使用规则 8 以归约 (decl)
+    $default  reduce using rule 8 (decl)
 
 
-状态 12
+State 12
 
    19 rel: "id" .
 
-    $default  使用规则 19 以归约 (rel)
+    $default  reduce using rule 19 (rel)
 
 
-状态 13
+State 13
 
    21 rel: "(" . rel ")"
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 25
+    qualified_ID  go to state 17
+    rel           go to state 25
 
 
-状态 14
+State 14
 
    22 rel: "[" . rel "]"
    23    | "[" . "]"
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "]"         偏移，并进入状态 26
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "]"         shift, and go to state 26
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 27
+    qualified_ID  go to state 17
+    rel           go to state 27
 
 
-状态 15
+State 15
 
    33 rel: "fencerel" . rel
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 28
+    qualified_ID  go to state 17
+    rel           go to state 28
 
 
-状态 16
+State 16
 
     9 qualified_ID: ID .
    10             | ID . "::" ID
 
-    "::"  偏移，并进入状态 29
+    "::"  shift, and go to state 29
 
-    $default  使用规则 9 以归约 (qualified_ID)
+    $default  reduce using rule 9 (qualified_ID)
 
 
-状态 17
+State 17
 
    20 rel: qualified_ID .
 
-    $default  使用规则 20 以归约 (rel)
+    $default  reduce using rule 20 (rel)
 
 
-状态 18
+State 18
 
    12 constraint: "acyclic" rel .
    15           | "acyclic" rel . "as" ID
@@ -329,20 +329,20 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    "as"  偏移，并进入状态 30
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    "as"  shift, and go to state 30
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 12 以归约 (constraint)
+    $default  reduce using rule 12 (constraint)
 
 
-状态 19
+State 19
 
    13 constraint: "irreflexive" rel .
    16           | "irreflexive" rel . "as" ID
@@ -356,20 +356,20 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    "as"  偏移，并进入状态 39
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    "as"  shift, and go to state 39
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 13 以归约 (constraint)
+    $default  reduce using rule 13 (constraint)
 
 
-状态 20
+State 20
 
    11 constraint: "empty" rel .
    14           | "empty" rel . "as" ID
@@ -383,57 +383,57 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    "as"  偏移，并进入状态 40
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    "as"  shift, and go to state 40
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 11 以归约 (constraint)
+    $default  reduce using rule 11 (constraint)
 
 
-状态 21
+State 21
 
    17 constraint: "flag" "~empty" . rel
    18           | "flag" "~empty" . rel "as" ID
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 41
+    qualified_ID  go to state 17
+    rel           go to state 41
 
 
-状态 22
+State 22
 
     3 decl: "include" QPATH .
 
-    $default  使用规则 3 以归约 (decl)
+    $default  reduce using rule 3 (decl)
 
 
-状态 23
+State 23
 
     6 decl: "let" "rec" . ID "=" rel
 
-    ID  偏移，并进入状态 42
+    ID  shift, and go to state 42
 
 
-状态 24
+State 24
 
     5 decl: "let" ID . "=" rel
     7     | "let" ID . "=" "0"
 
-    "="  偏移，并进入状态 43
+    "="  shift, and go to state 43
 
 
-状态 25
+State 25
 
    21 rel: "(" rel . ")"
    24    | rel . "|" rel
@@ -446,25 +446,25 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    ")"   偏移，并进入状态 44
-    "^"   偏移，并进入状态 38
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    ")"   shift, and go to state 44
+    "^"   shift, and go to state 38
 
 
-状态 26
+State 26
 
    23 rel: "[" "]" .
 
-    $default  使用规则 23 以归约 (rel)
+    $default  reduce using rule 23 (rel)
 
 
-状态 27
+State 27
 
    22 rel: "[" rel . "]"
    24    | rel . "|" rel
@@ -477,18 +477,18 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "]"   偏移，并进入状态 45
-    "^"   偏移，并进入状态 38
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "]"   shift, and go to state 45
+    "^"   shift, and go to state 38
 
 
-状态 28
+State 28
 
    24 rel: rel . "|" rel
    25    | rel . ";" rel
@@ -501,132 +501,132 @@
    32    | rel . "^" "-1"
    33    | "fencerel" rel .
 
-    $default  使用规则 33 以归约 (rel)
+    $default  reduce using rule 33 (rel)
 
 
-状态 29
+State 29
 
    10 qualified_ID: ID "::" . ID
 
-    ID  偏移，并进入状态 46
+    ID  shift, and go to state 46
 
 
-状态 30
+State 30
 
    15 constraint: "acyclic" rel "as" . ID
 
-    ID  偏移，并进入状态 47
+    ID  shift, and go to state 47
 
 
-状态 31
+State 31
 
    25 rel: rel ";" . rel
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 48
+    qualified_ID  go to state 17
+    rel           go to state 48
 
 
-状态 32
+State 32
 
    26 rel: rel "&" . rel
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 49
+    qualified_ID  go to state 17
+    rel           go to state 49
 
 
-状态 33
+State 33
 
    24 rel: rel "|" . rel
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 50
+    qualified_ID  go to state 17
+    rel           go to state 50
 
 
-状态 34
+State 34
 
    27 rel: rel "\\" . rel
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 51
+    qualified_ID  go to state 17
+    rel           go to state 51
 
 
-状态 35
+State 35
 
    29 rel: rel "+" .
 
-    $default  使用规则 29 以归约 (rel)
+    $default  reduce using rule 29 (rel)
 
 
-状态 36
+State 36
 
    28 rel: rel "*" . rel
    30    | rel "*" .
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    $default  使用规则 30 以归约 (rel)
+    $default  reduce using rule 30 (rel)
 
-    qualified_ID  转到状态 17
-    rel           转到状态 52
+    qualified_ID  go to state 17
+    rel           go to state 52
 
 
-状态 37
+State 37
 
    31 rel: rel "?" .
 
-    $default  使用规则 31 以归约 (rel)
+    $default  reduce using rule 31 (rel)
 
 
-状态 38
+State 38
 
    32 rel: rel "^" . "-1"
 
-    "-1"  偏移，并进入状态 53
+    "-1"  shift, and go to state 53
 
 
-状态 39
+State 39
 
    16 constraint: "irreflexive" rel "as" . ID
 
-    ID  偏移，并进入状态 54
+    ID  shift, and go to state 54
 
 
-状态 40
+State 40
 
    14 constraint: "empty" rel "as" . ID
 
-    ID  偏移，并进入状态 55
+    ID  shift, and go to state 55
 
 
-状态 41
+State 41
 
    17 constraint: "flag" "~empty" rel .
    18           | "flag" "~empty" rel . "as" ID
@@ -640,71 +640,71 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    "as"  偏移，并进入状态 56
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    "as"  shift, and go to state 56
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 17 以归约 (constraint)
+    $default  reduce using rule 17 (constraint)
 
 
-状态 42
+State 42
 
     6 decl: "let" "rec" ID . "=" rel
 
-    "="  偏移，并进入状态 57
+    "="  shift, and go to state 57
 
 
-状态 43
+State 43
 
     5 decl: "let" ID "=" . rel
     7     | "let" ID "=" . "0"
 
-    "id"        偏移，并进入状态 12
-    "0"         偏移，并进入状态 58
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "0"         shift, and go to state 58
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 59
+    qualified_ID  go to state 17
+    rel           go to state 59
 
 
-状态 44
+State 44
 
    21 rel: "(" rel ")" .
 
-    $default  使用规则 21 以归约 (rel)
+    $default  reduce using rule 21 (rel)
 
 
-状态 45
+State 45
 
    22 rel: "[" rel "]" .
 
-    $default  使用规则 22 以归约 (rel)
+    $default  reduce using rule 22 (rel)
 
 
-状态 46
+State 46
 
    10 qualified_ID: ID "::" ID .
 
-    $default  使用规则 10 以归约 (qualified_ID)
+    $default  reduce using rule 10 (qualified_ID)
 
 
-状态 47
+State 47
 
    15 constraint: "acyclic" rel "as" ID .
 
-    $default  使用规则 15 以归约 (constraint)
+    $default  reduce using rule 15 (constraint)
 
 
-状态 48
+State 48
 
    24 rel: rel . "|" rel
    25    | rel . ";" rel
@@ -717,15 +717,15 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    "+"  偏移，并进入状态 35
-    "*"  偏移，并进入状态 36
-    "?"  偏移，并进入状态 37
-    "^"  偏移，并进入状态 38
+    "+"  shift, and go to state 35
+    "*"  shift, and go to state 36
+    "?"  shift, and go to state 37
+    "^"  shift, and go to state 38
 
-    $default  使用规则 25 以归约 (rel)
+    $default  reduce using rule 25 (rel)
 
 
-状态 49
+State 49
 
    24 rel: rel . "|" rel
    25    | rel . ";" rel
@@ -738,16 +738,16 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"  偏移，并进入状态 31
-    "+"  偏移，并进入状态 35
-    "*"  偏移，并进入状态 36
-    "?"  偏移，并进入状态 37
-    "^"  偏移，并进入状态 38
+    ";"  shift, and go to state 31
+    "+"  shift, and go to state 35
+    "*"  shift, and go to state 36
+    "?"  shift, and go to state 37
+    "^"  shift, and go to state 38
 
-    $default  使用规则 26 以归约 (rel)
+    $default  reduce using rule 26 (rel)
 
 
-状态 50
+State 50
 
    24 rel: rel . "|" rel
    24    | rel "|" rel .
@@ -760,18 +760,18 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 24 以归约 (rel)
+    $default  reduce using rule 24 (rel)
 
 
-状态 51
+State 51
 
    24 rel: rel . "|" rel
    25    | rel . ";" rel
@@ -784,16 +784,16 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"  偏移，并进入状态 31
-    "+"  偏移，并进入状态 35
-    "*"  偏移，并进入状态 36
-    "?"  偏移，并进入状态 37
-    "^"  偏移，并进入状态 38
+    ";"  shift, and go to state 31
+    "+"  shift, and go to state 35
+    "*"  shift, and go to state 36
+    "?"  shift, and go to state 37
+    "^"  shift, and go to state 38
 
-    $default  使用规则 27 以归约 (rel)
+    $default  reduce using rule 27 (rel)
 
 
-状态 52
+State 52
 
    24 rel: rel . "|" rel
    25    | rel . ";" rel
@@ -806,68 +806,68 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    "+"  偏移，并进入状态 35
-    "*"  偏移，并进入状态 36
-    "?"  偏移，并进入状态 37
-    "^"  偏移，并进入状态 38
+    "+"  shift, and go to state 35
+    "*"  shift, and go to state 36
+    "?"  shift, and go to state 37
+    "^"  shift, and go to state 38
 
-    "+"       [使用规则 28 以归约 (rel)]
-    "*"       [使用规则 28 以归约 (rel)]
-    "?"       [使用规则 28 以归约 (rel)]
-    "^"       [使用规则 28 以归约 (rel)]
-    $default  使用规则 28 以归约 (rel)
+    "+"       [reduce using rule 28 (rel)]
+    "*"       [reduce using rule 28 (rel)]
+    "?"       [reduce using rule 28 (rel)]
+    "^"       [reduce using rule 28 (rel)]
+    $default  reduce using rule 28 (rel)
 
 
-状态 53
+State 53
 
    32 rel: rel "^" "-1" .
 
-    $default  使用规则 32 以归约 (rel)
+    $default  reduce using rule 32 (rel)
 
 
-状态 54
+State 54
 
    16 constraint: "irreflexive" rel "as" ID .
 
-    $default  使用规则 16 以归约 (constraint)
+    $default  reduce using rule 16 (constraint)
 
 
-状态 55
+State 55
 
    14 constraint: "empty" rel "as" ID .
 
-    $default  使用规则 14 以归约 (constraint)
+    $default  reduce using rule 14 (constraint)
 
 
-状态 56
+State 56
 
    18 constraint: "flag" "~empty" rel "as" . ID
 
-    ID  偏移，并进入状态 60
+    ID  shift, and go to state 60
 
 
-状态 57
+State 57
 
     6 decl: "let" "rec" ID "=" . rel
 
-    "id"        偏移，并进入状态 12
-    "("         偏移，并进入状态 13
-    "["         偏移，并进入状态 14
-    "fencerel"  偏移，并进入状态 15
-    ID          偏移，并进入状态 16
+    "id"        shift, and go to state 12
+    "("         shift, and go to state 13
+    "["         shift, and go to state 14
+    "fencerel"  shift, and go to state 15
+    ID          shift, and go to state 16
 
-    qualified_ID  转到状态 17
-    rel           转到状态 61
+    qualified_ID  go to state 17
+    rel           go to state 61
 
 
-状态 58
+State 58
 
     7 decl: "let" ID "=" "0" .
 
-    $default  使用规则 7 以归约 (decl)
+    $default  reduce using rule 7 (decl)
 
 
-状态 59
+State 59
 
     5 decl: "let" ID "=" rel .
    24 rel: rel . "|" rel
@@ -880,26 +880,26 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 5 以归约 (decl)
+    $default  reduce using rule 5 (decl)
 
 
-状态 60
+State 60
 
    18 constraint: "flag" "~empty" rel "as" ID .
 
-    $default  使用规则 18 以归约 (constraint)
+    $default  reduce using rule 18 (constraint)
 
 
-状态 61
+State 61
 
     6 decl: "let" "rec" ID "=" rel .
    24 rel: rel . "|" rel
@@ -912,13 +912,13 @@
    31    | rel . "?"
    32    | rel . "^" "-1"
 
-    ";"   偏移，并进入状态 31
-    "&"   偏移，并进入状态 32
-    "|"   偏移，并进入状态 33
-    "\\"  偏移，并进入状态 34
-    "+"   偏移，并进入状态 35
-    "*"   偏移，并进入状态 36
-    "?"   偏移，并进入状态 37
-    "^"   偏移，并进入状态 38
+    ";"   shift, and go to state 31
+    "&"   shift, and go to state 32
+    "|"   shift, and go to state 33
+    "\\"  shift, and go to state 34
+    "+"   shift, and go to state 35
+    "*"   shift, and go to state 36
+    "?"   shift, and go to state 37
+    "^"   shift, and go to state 38
 
-    $default  使用规则 6 以归约 (decl)
+    $default  reduce using rule 6 (decl)

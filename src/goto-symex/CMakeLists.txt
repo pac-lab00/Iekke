@@ -1,7 +1,7 @@
 file(GLOB_RECURSE sources "*.cpp" "*.h")
 add_library(goto-symex ${sources}
-    lazy_c_seq.h
-    lazy_c_seq.cpp)
+    lazy_po.h
+    lazy_po.cpp)
 
 generic_includes(goto-symex)
 
