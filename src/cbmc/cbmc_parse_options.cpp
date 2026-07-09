@@ -906,9 +906,10 @@ void cbmc_parse_optionst::help()
 
   // __SZH_ADD_BEGIN__
   std::cout << "\n" << banner_string("Iekke", "1.0") << '\n'
-            << align_center_with_border("Paolo Di Biase") << '\n'
-            << align_center_with_border("Unimol") << '\n'
-            << align_center_with_border("paolodibiase1@gmail.com") << '\n';
+  << align_center_with_border("Copyright (C) 2025-2026") << '\n'
+            << align_center_with_border("Di Biase Paolo, Bernd Fischer, Salvatore La Torre, Peter Schrammel, Gennaro Parlato") << '\n'
+            << align_center_with_border("GSSI, Stellenbosch University, University of Salerno, Diffblue Ltd, University of Molise") << '\n'
+            << align_center_with_border("paolo.dibiase@gssi.it") << '\n';
   
   std::cout << "which contains:\n";
 
