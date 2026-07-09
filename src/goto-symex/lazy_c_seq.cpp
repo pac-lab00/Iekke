@@ -59,7 +59,7 @@ void lazy_c_seqt::operator()(
   message_handlert &message_handler)
 {
   messaget log{message_handler};
-  log.statistics() << "Adding Iekke constraints with " << rounds << " rounds"
+  log.statistics() << "Adding bmc_tool constraints with " << rounds << " rounds"
                    << messaget::eom;
 
   //check_shared_event(equation, message_handler);

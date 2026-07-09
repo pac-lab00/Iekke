@@ -1,8 +1,7 @@
-# Iekke V1.0
+# bmc_tool V1.0
 
 ## Introduction
-Iekke is SAT-based concurrent program verification tool. It is built on top of Deagle (front-end) and MiniSAT-2.2.1 (back-end). The basic idea of Iekke is to simulate sequentialization using partial order constraints, establishing a number of rounds.
-The source code of Iekke is available on https://github.com/pac-lab00/Iekke.
+bmc_tool is SAT-based concurrent program verification tool. It is built on top of Deagle (front-end). The basic idea of bmc_tool is to simulate sequentialization using partial order constraints, establishing a number of rounds.
 
 ## Installation
 ### Dependencies
@@ -16,14 +15,14 @@ Simply run
 ```
 cd src && make
 ```
-This generates executable binary **iekke_exe** in directory src/cbmc.
+This generates executable binary **bmc_tool_exe** in directory src/cbmc.
 
 Note: Higher versions of Bison may generate *.tab.h/*.tab.cpp that triggers warnings. On such occasions, please try removing -Werror from CXXFLAGS in src/config.inc.
 
 ## Usage
 
 ```
-iekke_exe <input file> <unwind options> <specifications> --rounds <num> --minisat
+bmc_tool_exe <input file> <unwind options> <specifications> --rounds <num> --minisat
 ```
 
 ``<specifications>`` includes:
