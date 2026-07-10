@@ -1,7 +1,7 @@
 /// \file
 /// LazyCSeq context-bounded concurrency SSA transformation
 
-#include "lazy_c_seq.h"
+#include "lazy_po.h"
 #include <algorithm>
 #include <thread>
 #include <util/cprover_prefix.h>
@@ -10,11 +10,18 @@
 #include <util/pointer_expr.h>
 #include <util/c_types.h>
 #include <util/prefix.h>
+#include <util/expr_util.h>
 #include <util/simplify_expr.h>
 #include <util/source_location.h>
 
 #include <util/arith_tools.h>
 
+
+static uint64_t chain_key(std::size_t round, unsigned thread, unsigned label, unsigned num)
+{
+  return (uint64_t(round) << 52) | (uint64_t(thread) << 40) |
+         (uint64_t(label) << 20) | uint64_t(num);
+}
 
 static void align_pointer_equalities(exprt &e)
 {
@@ -54,7 +61,7 @@ static void align_pointer_equalities(exprt &e)
   }
 }
 
-void lazy_c_seqt::operator()(
+void lazy_pot::operator()(
   symex_target_equationt &equation,
   message_handlert &message_handler)
 {
@@ -81,14 +88,21 @@ void lazy_c_seqt::operator()(
   create_cs_constraint(equation/*, message_handler*/);
 
   if(por) {
+    enumerate_accesses();
+
     create_lw_tot_symbol(equation/*, message_handler*/);
 
     create_winr_tot_symbol(equation/*, message_handler*/);
 
+    // NRP/LOW on-demand: le catene si materializzano (memoizzate) solo dalle
+    // ancore usate in create_ABW; niente pre-creazione totale.
+    // create_nrp_tot_symbol(equation/*, message_handler*/);
+    // create_low_tot_symbol(equation/*, message_handler*/);
+
     create_atomic_canonical(equation/*, message_handler*/);
   }
 
-  handling_atomic_sections(equation/*, message_handler*/);
+  //handling_atomic_sections(equation/*, message_handler*/);
 
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
@@ -104,7 +118,7 @@ void lazy_c_seqt::operator()(
   }
 }
 
-void lazy_c_seqt::create_write_constraints(
+void lazy_pot::create_write_constraints(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/)
 {
@@ -177,7 +191,7 @@ void lazy_c_seqt::create_write_constraints(
   }
 }
 
-void lazy_c_seqt::create_read_constraints(
+void lazy_pot::create_read_constraints(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/)
 {
@@ -219,7 +233,7 @@ void lazy_c_seqt::create_read_constraints(
   }
 }
 
-std::optional<symbol_exprt> lazy_c_seqt::previous_shared(
+std::optional<symbol_exprt> lazy_pot::previous_shared(
   irep_idt variable,
   unsigned label,
   unsigned num,
@@ -262,7 +276,7 @@ std::optional<symbol_exprt> lazy_c_seqt::previous_shared(
   return previous;
 }
 
-void lazy_c_seqt::check_shared_event(
+void lazy_pot::check_shared_event(
     symex_target_equationt &equation/*,
     message_handlert &message_handler*/)
 {
@@ -318,7 +332,7 @@ void lazy_c_seqt::check_shared_event(
   equation = temp_equation;
 }
 
-void lazy_c_seqt::create_cs_constraint(
+void lazy_pot::create_cs_constraint(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/)
 {
@@ -453,7 +467,7 @@ void lazy_c_seqt::create_cs_constraint(
   }
 }
 
-void lazy_c_seqt::handling_atomic_sections(
+void lazy_pot::handling_atomic_sections(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/)
 {
@@ -495,7 +509,7 @@ void lazy_c_seqt::handling_atomic_sections(
   }
 }
 
-void lazy_c_seqt::handling_guards(
+void lazy_pot::handling_guards(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/)
 {
@@ -568,7 +582,7 @@ void lazy_c_seqt::handling_guards(
   equation = temp_equation;
 }
 
-void lazy_c_seqt::handling_active_threads(
+void lazy_pot::handling_active_threads(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/)
 {
@@ -642,10 +656,15 @@ void lazy_c_seqt::handling_active_threads(
       thread_ends[thread_current] = true;
       exprt prev_guard = prev->guard;
 
+      unsigned int atomic_section_id = prev->atomic_section_id;
+
+      if(prev->is_atomic_begin())
+        atomic_section_id = 1;
+
       create_active_thread_statements(
         prev->source,
         prev_guard,
-        prev->atomic_section_id,
+        atomic_section_id,
         thread_current,
         temp_equation,
         //message_handler,
@@ -670,7 +689,7 @@ void lazy_c_seqt::handling_active_threads(
       create_active_thread_statements(
         s_it->source,
         guard,
-        s_it->atomic_section_id,
+        1,
         thread_created,
         temp_equation,
         //message_handler,
@@ -709,10 +728,15 @@ void lazy_c_seqt::handling_active_threads(
       exprt prev_guard = true_exprt{};
       unsigned thread = thread_end.first;
 
+      unsigned int atomic_section_id = prev->atomic_section_id;
+
+      if(prev->is_atomic_begin())
+        atomic_section_id = 1;
+
       create_active_thread_statements(
         prev->source,
         prev_guard,
-        prev->atomic_section_id,
+        atomic_section_id,
         thread,
         temp_equation,
         //message_handler,
@@ -722,7 +746,7 @@ void lazy_c_seqt::handling_active_threads(
   equation = temp_equation;
 }
 
-void lazy_c_seqt::create_active_thread_statements(
+void lazy_pot::create_active_thread_statements(
   const symex_targett::sourcet &source,
   exprt &guard,
   unsigned int atomic_section_id,
@@ -758,7 +782,7 @@ void lazy_c_seqt::create_active_thread_statements(
   //log.warning() << format(active_step.get_ssa_expr()) << messaget::eom;
 }
 
-symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
+symbol_exprt lazy_pot::phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
 
   //log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_1_name =  as_string(v) + "_phase_1";
@@ -838,7 +862,7 @@ symbol_exprt lazy_c_seqt::phase_1(/*messaget log,*/ symex_target_equationt &equa
   return phase_1_symbl;
 }
 
-symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
+symbol_exprt lazy_pot::phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
   //log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_2_name = as_string(v) + "_phase_2";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
@@ -965,7 +989,7 @@ symbol_exprt lazy_c_seqt::phase_2(/*messaget log,*/ symex_target_equationt &equa
   return phase_2_symbl;
 }
 
-symbol_exprt lazy_c_seqt::same_round(/*messaget log,*/ symex_target_equationt &equation) {
+symbol_exprt lazy_pot::same_round(/*messaget log,*/ symex_target_equationt &equation) {
   //log.warning() << "------------------ sameround" << messaget::eom;
   irep_idt same_round_name = "same_round";
   symbol_exprt same_round_symbl{same_round_name, bool_typet{}};
@@ -1006,7 +1030,7 @@ symbol_exprt lazy_c_seqt::same_round(/*messaget log,*/ symex_target_equationt &e
   return same_round_symbl;
 }
 
-symbol_exprt lazy_c_seqt::no_interf(/*messaget log,*/ symex_target_equationt &equation) {
+symbol_exprt lazy_pot::no_interf(/*messaget log,*/ symex_target_equationt &equation) {
   //log.warning() << "------------------ no interf" << messaget::eom;
   irep_idt no_interf_name = "no_interf";
   symbol_exprt no_interf_symbl{no_interf_name, bool_typet{}};
@@ -1075,7 +1099,7 @@ symbol_exprt lazy_c_seqt::no_interf(/*messaget log,*/ symex_target_equationt &eq
   return no_interf_symbl;
 }
 
-void lazy_c_seqt::handling_datarace(
+void lazy_pot::handling_datarace(
   symex_target_equationt &equation/*,
   message_handlert &message_handler*/) {
 
@@ -1118,7 +1142,7 @@ void lazy_c_seqt::handling_datarace(
   equation.assertion(true_exprt{},not_exprt{datarace_contraint},"datarace",equation.SSA_steps.begin()->source);
 }
 
-void lazy_c_seqt::collect_reads_and_writes(
+void lazy_pot::collect_reads_and_writes(
   symex_target_equationt::SSA_stepst &ssa_steps/*,
   message_handlert &message_handler*/)
 {
@@ -1227,7 +1251,7 @@ void lazy_c_seqt::collect_reads_and_writes(
 
     if(s_it->is_assert() || s_it->is_assume())
     {
-      if (labels[s_it->source.thread_nr] == 0  || s_it->atomic_section_id == 0 || (s_it->atomic_section_id != 0 && !prev->is_atomic_begin() && prev->guard != s_it->guard))
+      if (labels[s_it->source.thread_nr] == 0  || s_it->atomic_section_id == 0)
       {
         labels[s_it->source.thread_nr]++;
         num = 0;
@@ -1286,9 +1310,9 @@ void lazy_c_seqt::collect_reads_and_writes(
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
-        if (labels[s_it->source.thread_nr] == 0 || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location()) ||
-          (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard) ||
-          (s_it->atomic_section_id != 0 && prev->guard != s_it->guard))
+        if (labels[s_it->source.thread_nr] == 0
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location())
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard))
         {
           labels[s_it->source.thread_nr]++;
           num = 0;
@@ -1352,9 +1376,9 @@ void lazy_c_seqt::collect_reads_and_writes(
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
-        if (labels[s_it->source.thread_nr] == 0 || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location()) ||
-          (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard) ||
-          (s_it->atomic_section_id != 0 && prev->guard != s_it->guard))
+        if (labels[s_it->source.thread_nr] == 0
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location())
+              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard))
         {
           labels[s_it->source.thread_nr]++;
           num = 0;
@@ -1417,8 +1441,12 @@ void lazy_c_seqt::collect_reads_and_writes(
     const unsigned n_ids =
       (this->writes.count(global_variable)
          ? this->writes.at(global_variable).size() * rounds
+         : 0) +
+      (this->reads.count(global_variable)
+         ? this->reads.at(global_variable).size() * rounds
          : 0) + 1;
     this->bit_writes[global_variable] = 32 - __builtin_clz(n_ids);
+    this->bit_reads[global_variable] = this->bit_writes[global_variable];
   }
 
   for(auto &thread_and_pending : pending_trace_steps)
@@ -1443,7 +1471,7 @@ void lazy_c_seqt::collect_reads_and_writes(
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
 }
 
-void lazy_c_seqt::annotate_round_robin_trace_event(
+void lazy_pot::annotate_round_robin_trace_event(
   SSA_stept &step,
   unsigned label,
   unsigned num,
@@ -1464,7 +1492,7 @@ void lazy_c_seqt::annotate_round_robin_trace_event(
       create_exec_symbol(label, num, thread, round));
 }
 
-symbol_exprt lazy_c_seqt::create_lazy_symbol(
+symbol_exprt lazy_pot::create_lazy_symbol(
   unsigned label,
   unsigned thread,
   size_t round,
@@ -1481,7 +1509,7 @@ symbol_exprt lazy_c_seqt::create_lazy_symbol(
 }
 
 symbol_exprt
-lazy_c_seqt::create_exec_symbol(unsigned label, unsigned num, unsigned thread, size_t round)
+lazy_pot::create_exec_symbol(unsigned label, unsigned num, unsigned thread, size_t round)
 {
   for(const auto &exec : exec_vector)
   {
@@ -1500,7 +1528,21 @@ lazy_c_seqt::create_exec_symbol(unsigned label, unsigned num, unsigned thread, s
 }
 
 symbol_exprt
-lazy_c_seqt::create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread)
+lazy_pot::create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, size_t round)
+{
+  // memo O(1) sopra create_exec_symbol: stessa semantica, stessi simboli,
+  // usata dai loop della parte canonica
+  const uint64_t key = chain_key(round, thread, label, num);
+  auto it = exec_map.find(key);
+  if(it != exec_map.end())
+    return it->second;
+  symbol_exprt sym = create_exec_symbol(label, num, thread, round);
+  exec_map.emplace(key, sym);
+  return sym;
+}
+
+symbol_exprt
+lazy_pot::create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread)
 {
   for(const auto &exec : exec_tot_vector)
   {
@@ -1528,7 +1570,7 @@ lazy_c_seqt::create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &eq
   return exec_symbol;
 }
 
-symbol_exprt lazy_c_seqt::create_enabled_symbol(
+symbol_exprt lazy_pot::create_enabled_symbol(
   unsigned label,
   unsigned thread,
   size_t round)
@@ -1550,7 +1592,7 @@ symbol_exprt lazy_c_seqt::create_enabled_symbol(
   return enabled_symbol;
 }
 
-symbol_exprt lazy_c_seqt::create_cs_symbol(size_t thread, size_t round)
+symbol_exprt lazy_pot::create_cs_symbol(size_t thread, size_t round)
 {
   for(const auto &cs : cs_vector)
   {
@@ -1567,7 +1609,7 @@ symbol_exprt lazy_c_seqt::create_cs_symbol(size_t thread, size_t round)
   return cs_symbol;
 }
 
-symbol_exprt lazy_c_seqt::create_reach_symbol(unsigned label, size_t thread)
+symbol_exprt lazy_pot::create_reach_symbol(unsigned label, size_t thread)
 {
   for(const auto &reach : reach_vector)
   {
@@ -1584,7 +1626,7 @@ symbol_exprt lazy_c_seqt::create_reach_symbol(unsigned label, size_t thread)
   return reach_symbol;
 }
 
-symbol_exprt lazy_c_seqt::create_active_thread_symbol(unsigned thread)
+symbol_exprt lazy_pot::create_active_thread_symbol(unsigned thread)
 {
   irep_idt active_thread_name = "__CPROVER_active_thread_T" + std::to_string(thread);
   symbol_exprt active_thread_expr{active_thread_name, bool_typet{}};
@@ -1595,7 +1637,7 @@ symbol_exprt lazy_c_seqt::create_active_thread_symbol(unsigned thread)
   return active_thread_expr;
 }
 
-symbol_exprt lazy_c_seqt::create_dr_thread_symbol(unsigned num)
+symbol_exprt lazy_pot::create_dr_thread_symbol(unsigned num)
 {
   if (dr_thread.find(num) != dr_thread.end())
     return dr_thread.at(num);
@@ -1606,7 +1648,7 @@ symbol_exprt lazy_c_seqt::create_dr_thread_symbol(unsigned num)
   return thread_expr;
 }
 
-symbol_exprt lazy_c_seqt::create_dr_round_symbol(unsigned num)
+symbol_exprt lazy_pot::create_dr_round_symbol(unsigned num)
 {
   if (dr_round.find(num) != dr_round.end())
     return dr_round.at(num);
@@ -1618,7 +1660,7 @@ symbol_exprt lazy_c_seqt::create_dr_round_symbol(unsigned num)
   return round_expr;
 }
 
-symbol_exprt lazy_c_seqt::create_dr_atom_symbol(unsigned num)
+symbol_exprt lazy_pot::create_dr_atom_symbol(unsigned num)
 {
   if (dr_atom.find(num) != dr_atom.end())
     return dr_atom.at(num);
@@ -1630,7 +1672,7 @@ symbol_exprt lazy_c_seqt::create_dr_atom_symbol(unsigned num)
   return atom_expr;
 }
 
-symbol_exprt lazy_c_seqt::create_dr_loc_symbol(unsigned num)
+symbol_exprt lazy_pot::create_dr_loc_symbol(unsigned num)
 {
   if (dr_loc.find(num) != dr_loc.end())
     return dr_loc.at(num);
@@ -1642,7 +1684,7 @@ symbol_exprt lazy_c_seqt::create_dr_loc_symbol(unsigned num)
 
   return loc_expr;
 }
-void lazy_c_seqt::create_winr_tot_symbol(
+void lazy_pot::create_winr_tot_symbol(
   symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   for(auto global_variable : global_variables)
@@ -1665,7 +1707,7 @@ void lazy_c_seqt::create_winr_tot_symbol(
   }
 }
 
-void lazy_c_seqt::create_lw_tot_symbol(
+void lazy_pot::create_lw_tot_symbol(
   symex_target_equationt &equation/*,message_handlert &message_handler*/) {
   for(auto global_variable : global_variables)
   {
@@ -1686,7 +1728,52 @@ void lazy_c_seqt::create_lw_tot_symbol(
   }
 }
 
-void lazy_c_seqt::create_atomic_canonical(
+void lazy_pot::create_nrp_tot_symbol(
+  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+{
+  for(auto global_variable : global_variables)
+  {
+    if(this->reads.count(global_variable) == 0)
+      continue;
+
+    auto sorted_reads = this->reads.at(global_variable);
+    std::sort(sorted_reads.begin(), sorted_reads.end(),
+      [](const shared_event &a, const shared_event &b) {
+        return std::tie(a.thread, a.label, a.num) > std::tie(b.thread, b.label, b.num);
+      });
+    for(std::size_t round = rounds + 1; round-- > 0; )
+    {
+      for(const auto &read : sorted_reads)
+      {
+        create_NRP_symbol(global_variable, read.thread, read.label, read.num, round, equation/*, message_handler*/);
+      }
+    }
+  }
+}
+
+void lazy_pot::create_low_tot_symbol(
+  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+{
+  for(auto global_variable : global_variables)
+  {
+    if(this->writes.count(global_variable) == 0)
+      continue;
+    auto sorted_writes = this->writes.at(global_variable);
+    std::sort(sorted_writes.begin(), sorted_writes.end(),
+      [](const shared_event &a, const shared_event &b) {
+        return std::tie(a.thread, a.label, a.num) < std::tie(b.thread, b.label, b.num);
+      });
+    for(std::size_t round = 0; round <= rounds; ++round)
+    {
+      for(const auto &write : sorted_writes)
+      {
+        create_LOW_symbol(global_variable, write.thread, write.label, write.num, round, equation/*, message_handler*/);
+      }
+    }
+  }
+}
+
+void lazy_pot::create_atomic_canonical(
   symex_target_equationt &equation/*,message_handlert &message_handler*/) {
   for(std::size_t round = 1; round <= rounds; ++round){
     for(const auto &entry : atomic_blocks)
@@ -1716,7 +1803,7 @@ void lazy_c_seqt::create_atomic_canonical(
   }
 }
 
-symbol_exprt lazy_c_seqt::create_ABR(
+symbol_exprt lazy_pot::create_ABR(
   const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round,
   unsigned label, unsigned thread,
   symex_target_equationt &equation/*,message_handlert &message_handler*/) {
@@ -1740,7 +1827,7 @@ symbol_exprt lazy_c_seqt::create_ABR(
         (pw->round == round && pw->thread == rd.thread && pw->label < rd.label);
       if(!prev_outside)
         continue;
-      exprt exec = create_exec_symbol(rd.label, rd.num, rd.thread, round);
+      exprt exec = create_exec_symbol_fast(rd.label, rd.num, rd.thread, round);
 
 
       // ABR = paper eq(2) puro. La precondizione di delay (cs_t(r-2)==l) sta nel
@@ -1759,7 +1846,7 @@ symbol_exprt lazy_c_seqt::create_ABR(
   atomic_block_rounds.push_back({thread, label, static_cast<unsigned>(round), sym});
   return sym;
 }
-symbol_exprt lazy_c_seqt::create_ABW(
+symbol_exprt lazy_pot::create_ABW(
   const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round,
   unsigned label, unsigned thread,
   symex_target_equationt &equation/*,message_handlert &message_handler*/)
@@ -1769,19 +1856,36 @@ symbol_exprt lazy_c_seqt::create_ABW(
   for(auto global_variable : global_variables){
     if(writes.count(global_variable) == 0)
       continue;
-    for(const auto &write : writes.at(global_variable)) {
-      if(src == nullptr)
-        src = &write.s_it->source;
-      exprt exec = create_exec_symbol(write.label, write.num, write.thread, round);
+    const auto &ws = writes.at(global_variable);
+    if(src == nullptr)
+      src = &ws.front().s_it->source;
 
-      exprt id_prev = get_id_symbol(write, round - 1,global_variable);
-      exprt id_curr = get_id_symbol(write, round,global_variable);
-      exprt winr_control= equal_exprt(create_WINR_symbol(global_variable, write.thread, write.label+1, 0, round,equation/*, message_handler*/),id_curr);
-      exprt write_a = greater_than_exprt(id_prev, create_WINR_symbol(global_variable, write.thread, write.label+1, 0, round - 1,equation/*, message_handler*/));
-      exprt write_b = and_exprt(winr_control, less_than_exprt(id_prev, create_LW_symbol(global_variable,
-        write.thread, write.label,write.num,round,equation/*, message_handler*/)));
-      result = or_exprt{result, and_exprt{exec, or_exprt{write_a, write_b}}};
-    }
+    exprt guard = false_exprt{};
+    for(const auto &write : ws)
+      guard = or_exprt{guard, create_exec_symbol_fast(write.label, write.num, write.thread, round)};
+
+    exprt id_first_r    = boundary_id(global_variable, round, thread, label, 0);
+    exprt id_first_r1   = boundary_id(global_variable, round - 1, thread, label, 0);
+    exprt id_first_next = boundary_id(global_variable, round, thread, label + 1, 0);
+    exprt id_after_r1   = boundary_id(global_variable, round - 1, thread, label, 1);
+
+    exprt nrp_a  = create_NRP_symbol(global_variable, thread, label + 1, 0, round - 1, equation);
+    exprt winr_a = create_WINR_symbol(global_variable, thread, label + 1, 0, round - 1, equation);
+    exprt wc_a = and_exprt{
+      less_than_exprt{nrp_a, id_first_r},
+      less_than_exprt{winr_a, id_first_r1}};
+
+    exprt lw_b  = create_LW_symbol(global_variable, thread, label, 0, round, equation);
+    exprt low_b = create_LOW_symbol(global_variable, thread, label, 0, round, equation);
+    exprt gap_w = greater_than_or_equal_exprt{lw_b, id_after_r1};
+    exprt winr_b = create_WINR_symbol(global_variable, thread, label + 1, 0, round, equation);
+    exprt b_src = and_exprt{
+      greater_than_or_equal_exprt{winr_b, id_first_r},
+      less_than_exprt{winr_b, id_first_next}};
+    exprt gap_obs_w = greater_than_or_equal_exprt{low_b, id_after_r1};
+    exprt wc_b = and_exprt{gap_w, or_exprt{b_src, gap_obs_w}};
+
+    result = or_exprt{result, and_exprt{guard, or_exprt{wc_a, wc_b}}};
   }
   irep_idt abw_r = "ABW_T" + std::to_string(thread) + "_L" + std::to_string(label) +
      "_R" + std::to_string(round);
@@ -1792,7 +1896,7 @@ symbol_exprt lazy_c_seqt::create_ABW(
   return sym;
 }
 
-void lazy_c_seqt::build_atomic_blocks(){
+void lazy_pot::build_atomic_blocks(){
   for(const auto &entry : reads)
   {
     const irep_idt &var = entry.first;
@@ -1818,25 +1922,27 @@ void lazy_c_seqt::build_atomic_blocks(){
 }
 
 
-symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
+symbol_exprt lazy_pot::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
   symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
   std::optional<lazy_variable> prev_op = get_previous_write(thread, label, num, round, variable);
 
+  auto &memo = lw_variables[variable];
 
   auto emit = [&](unsigned t, unsigned l, unsigned n, size_t r, const exprt &rhs) {
-    for(const auto &lw : lw_variables[variable])
-      if(lw.round == r && lw.label == l && lw.num == n && lw.thread == t)
-        return lw.exptr_id;
+    const uint64_t key = chain_key(r, t, l, n);
+    auto m_it = memo.find(key);
+    if(m_it != memo.end())
+      return m_it->second;
     irep_idt lw_id = "LW_T" + std::to_string(t) + "_L" + std::to_string(l) +
       "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
     symbol_exprt sym{lw_id, type};
     exprt rhs_s = rhs;
     simplify(rhs_s, ns);
     equation.constraint(equal_exprt{sym, rhs_s}, "lw canonical", src);
-    lw_variables[variable].push_back({r, l, n, t, sym});
+    memo.emplace(key, sym);
     return sym;
   };
 
@@ -1845,49 +1951,50 @@ symbol_exprt lazy_c_seqt::create_LW_symbol(irep_idt variable, unsigned thread, u
 
   const lazy_variable &prev = *prev_op;
 
-
-  for(const auto &lw : lw_variables[variable])
-    if(lw.round == prev.round && lw.label == prev.label && lw.num == prev.num && lw.thread == prev.thread)
-      return lw.exptr_id;
+  {
+    auto m_it = memo.find(chain_key(prev.round, prev.thread, prev.label, prev.num));
+    if(m_it != memo.end())
+      return m_it->second;
+  }
 
   if(prev.round == 0)
     return emit(prev.thread, prev.label, prev.num, 0, from_integer(0, type));
 
-  symbol_exprt exec = create_exec_symbol(prev.label, prev.num, prev.thread, prev.round);
+  symbol_exprt exec = create_exec_symbol_fast(prev.label, prev.num, prev.thread, prev.round);
   std::optional<lazy_variable> prev_op_ = get_previous_write(prev.thread, prev.label, prev.num, prev.round, variable);
   exprt inner_lw_expr = from_integer(0, type);
   if(prev_op_.has_value()) {
-    lazy_variable prev_value = *prev_op_;
-
-    bool found = false;
-    for(const auto &lw : lw_variables[variable])
-      if(lw.round == prev_value.round && lw.label == prev_value.label && lw.num == prev_value.num && lw.thread == prev_value.thread)
-      { inner_lw_expr = lw.exptr_id; found = true; break; }
-    if(!found)
-
+    const lazy_variable &prev_value = *prev_op_;
+    auto m_it = memo.find(chain_key(prev_value.round, prev_value.thread, prev_value.label, prev_value.num));
+    if(m_it != memo.end())
+      inner_lw_expr = m_it->second;
+    else
       inner_lw_expr = create_LW_symbol(variable, prev.thread, prev.label, prev.num, prev.round, equation);
   }
   return emit(prev.thread, prev.label, prev.num, prev.round,
     if_exprt{exec, from_integer(prev.id, type), inner_lw_expr});
 }
 
-symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round, symex_target_equationt &equation)
+symbol_exprt lazy_pot::create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round, symex_target_equationt &equation)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
   std::optional<lazy_variable_read> next_op = get_next_read(thread, label, num, round, variable);
 
+  auto &memo = winr_variables[variable];
+
   auto emit = [&](unsigned t, unsigned l, unsigned n, size_t r, const exprt &rhs) {
-    for(const auto &w : winr_variables[variable])
-      if(w.round == r && w.label == l && w.num == n && w.thread == t)
-        return w.exptr_id;
+    const uint64_t key = chain_key(r, t, l, n);
+    auto m_it = memo.find(key);
+    if(m_it != memo.end())
+      return m_it->second;
     irep_idt winr_id = "WINR_T" + std::to_string(t) + "_L" + std::to_string(l) +
       "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
     symbol_exprt sym{winr_id, type};
     exprt rhs_s = rhs;
     simplify(rhs_s, ns);
     equation.constraint(equal_exprt{sym, rhs_s}, "winr canonical", src);
-    winr_variables[variable].push_back({r, l, n, t, sym});
+    memo.emplace(key, sym);
     return sym;
   };
 
@@ -1901,26 +2008,26 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, unsigned thread,
 
   const lazy_variable_read &next = *next_op;
 
-  for(const auto &w : winr_variables[variable])
-    if(w.round == next.round && w.label == next.label && w.num == next.num && w.thread == next.thread)
-      return w.exptr_id;
+  {
+    auto m_it = memo.find(chain_key(next.round, next.thread, next.label, next.num));
+    if(m_it != memo.end())
+      return m_it->second;
+  }
   std::optional<lazy_variable_read> next_op_ =
     get_next_read(next.thread, next.label, next.num, next.round, variable, true);
 
-  symbol_exprt exec = create_exec_symbol(next.label, next.num, next.thread, next.round);
+  symbol_exprt exec = create_exec_symbol_fast(next.label, next.num, next.thread, next.round);
   symbol_exprt lw   = create_LW_symbol(variable, next.thread, next.label, next.num, next.round, equation);
 
   exprt inner_winr_expr =
     from_integer((1ULL << bit_writes[variable]) - 1, unsignedbv_typet(bit_writes[variable]));
 
   if(next_op_.has_value()) {
-    lazy_variable_read next_value = *next_op_;
-    bool found = false;
-    for(const auto &winr : winr_variables[variable])
-      if(winr.round == next_value.round && winr.label == next_value.label &&
-         winr.num == next_value.num && winr.thread == next_value.thread)
-      { inner_winr_expr = winr.exptr_id; found = true; break; }
-    if(!found)
+    const lazy_variable_read &next_value = *next_op_;
+    auto m_it = memo.find(chain_key(next_value.round, next_value.thread, next_value.label, next_value.num));
+    if(m_it != memo.end())
+      inner_winr_expr = m_it->second;
+    else
       inner_winr_expr = create_WINR_symbol(
         variable, next_value.thread, next_value.label, next_value.num, next_value.round, equation);
   }
@@ -1928,60 +2035,194 @@ symbol_exprt lazy_c_seqt::create_WINR_symbol(irep_idt variable, unsigned thread,
   return emit(next.thread, next.label, next.num, next.round,
               if_exprt{exec, lw, inner_winr_expr});
 }
-exprt lazy_c_seqt::get_id_symbol(const shared_event &event, std::size_t round, irep_idt variable)
+
+symbol_exprt lazy_pot::create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round, symex_target_equationt &equation)
+{
+  const unsignedbv_typet type(bit_reads[variable]);
+  const auto &src = equation.SSA_steps.begin()->source;
+  std::optional<lazy_variable_read> next_op = get_next_read(thread, label, num, round, variable);
+
+  auto &memo = nrp_variables[variable];
+
+  auto emit = [&](unsigned t, unsigned l, unsigned n, size_t r, const exprt &rhs) {
+    const uint64_t key = chain_key(r, t, l, n);
+    auto m_it = memo.find(key);
+    if(m_it != memo.end())
+      return m_it->second;
+    irep_idt nrp_id = "NRP_T" + std::to_string(t) + "_L" + std::to_string(l) +
+      "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
+    symbol_exprt sym{nrp_id, type};
+    exprt rhs_s = rhs;
+    simplify(rhs_s, ns);
+    equation.constraint(equal_exprt{sym, rhs_s}, "nrp canonical", src);
+    memo.emplace(key, sym);
+    return sym;
+  };
+
+  if(!next_op.has_value()) {
+    unsigned max_val = 0;
+    for(const auto &[k, v] : labels)
+      if(v > max_val) max_val = v;
+    return emit(threads, max_val, 0, rounds,
+      from_integer((1ULL << bit_reads[variable]) - 1, type));
+  }
+
+  const lazy_variable_read &next = *next_op;
+
+  {
+    auto m_it = memo.find(chain_key(next.round, next.thread, next.label, next.num));
+    if(m_it != memo.end())
+      return m_it->second;
+  }
+  std::optional<lazy_variable_read> next_op_ =
+    get_next_read(next.thread, next.label, next.num, next.round, variable, true);
+
+  symbol_exprt exec = create_exec_symbol_fast(next.label, next.num, next.thread, next.round);
+
+  exprt inner_nrp_expr =
+    from_integer((1ULL << bit_reads[variable]) - 1, type);
+
+  if(next_op_.has_value()) {
+    const lazy_variable_read &next_value = *next_op_;
+    auto m_it = memo.find(chain_key(next_value.round, next_value.thread, next_value.label, next_value.num));
+    if(m_it != memo.end())
+      inner_nrp_expr = m_it->second;
+    else
+      inner_nrp_expr = create_NRP_symbol(
+        variable, next_value.thread, next_value.label, next_value.num, next_value.round, equation);
+  }
+
+  return emit(next.thread, next.label, next.num, next.round,
+              if_exprt{exec, from_integer(next.id, type), inner_nrp_expr});
+}
+
+symbol_exprt lazy_pot::create_OBS_symbol(irep_idt variable, const lazy_variable &w, symex_target_equationt &equation)
+{
+  auto &memo = obs_variables[variable];
+  const uint64_t key = chain_key(w.round, w.thread, w.label, w.num);
+  {
+    auto m_it = memo.find(key);
+    if(m_it != memo.end())
+      return m_it->second;
+  }
+
+  const unsignedbv_typet type(bit_writes[variable]);
+  const auto &src = equation.SSA_steps.begin()->source;
+
+  exprt winr_anchor = create_WINR_symbol(
+    variable, w.thread, w.label + 1, 0, w.round, equation);
+  exprt result = equal_exprt{winr_anchor, from_integer(w.id, type)};
+
+  irep_idt obs_id = "OBS_T" + std::to_string(w.thread) + "_L" + std::to_string(w.label) +
+    "_N" + std::to_string(w.num) + "_R" + std::to_string(w.round) + "_V" + id2string(variable);
+  symbol_exprt sym{obs_id, bool_typet{}};
+  equation.constraint(equal_exprt{sym, result}, "obs canonical", src);
+  memo.emplace(key, sym);
+  return sym;
+}
+
+symbol_exprt lazy_pot::create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+  symex_target_equationt &equation/*,message_handlert &message_handler*/)
 {
   const unsignedbv_typet type(bit_writes[variable]);
-  unsigned id = lazy_variables.at(variable).front().id;
-  for(const auto &lazy_variable : lazy_variables.at(variable)) {
-    if(lazy_variable.label == event.label && lazy_variable.num == event.num && lazy_variable.round == round && lazy_variable.thread == event.thread) {
-      id = lazy_variable.id;
-      break;
-    }
-  }
-  return from_integer(id, type);
-}
-std::optional<lazy_c_seqt::lazy_variable> lazy_c_seqt::get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable)
-{
-  if(lazy_variables.count(variable) == 0)
-    return std::nullopt;
-  lazy_variable previous = lazy_variables.at(variable).front();
-  auto& front_var = lazy_variables.at(variable).front();
-  for(const auto &lazy_variable : lazy_variables.at(variable))
+  const auto &src = equation.SSA_steps.begin()->source;
+  std::optional<lazy_variable> prev_op = get_previous_write(thread, label, num, round, variable);
+
+  auto &memo = low_variables[variable];
+
+  auto emit = [&](unsigned t, unsigned l, unsigned n, size_t r, const exprt &rhs) {
+    const uint64_t key = chain_key(r, t, l, n);
+    auto m_it = memo.find(key);
+    if(m_it != memo.end())
+      return m_it->second;
+    irep_idt low_id = "LOW_T" + std::to_string(t) + "_L" + std::to_string(l) +
+      "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
+    symbol_exprt sym{low_id, type};
+    exprt rhs_s = rhs;
+    simplify(rhs_s, ns);
+    equation.constraint(equal_exprt{sym, rhs_s}, "low canonical", src);
+    memo.emplace(key, sym);
+    return sym;
+  };
+
+  if(!prev_op.has_value())
+    return emit(0, 0, 0, 0, from_integer(0, type));
+
+  const lazy_variable &prev = *prev_op;
+
   {
-    if(round > lazy_variable.round)
-    {
-      previous = lazy_variable;
-      continue;
-    }
-    if(round == lazy_variable.round && thread > lazy_variable.thread)
-    {
-      previous = lazy_variable;
-      continue;
-    }
-    if(
-      round == lazy_variable.round && thread == lazy_variable.thread &&
-      label > lazy_variable.label)
-    {
-      previous = lazy_variable;
-      continue;
-    }
-    if(
-      round == lazy_variable.round && thread == lazy_variable.thread &&
-      label == lazy_variable.label && num > lazy_variable.num)
-    {
-      previous = lazy_variable;
-      continue;
-    }
-    if (previous.round == front_var.round &&
-      previous.label == front_var.label &&
-      previous.thread == front_var.thread &&
-      previous.num == front_var.num &&  (label > lazy_variables.at(variable).front().label || (label <= lazy_variables.at(variable).front().label && num > lazy_variables.at(variable).front().num)))
-      return std::nullopt;
-    return previous;
+    auto m_it = memo.find(chain_key(prev.round, prev.thread, prev.label, prev.num));
+    if(m_it != memo.end())
+      return m_it->second;
   }
-  return previous;
+
+  if(prev.round == 0)
+    return emit(prev.thread, prev.label, prev.num, 0, from_integer(0, type));
+
+  symbol_exprt exec = create_exec_symbol_fast(prev.label, prev.num, prev.thread, prev.round);
+  exprt obs = create_OBS_symbol(variable, prev, equation);
+  std::optional<lazy_variable> prev_op_ = get_previous_write(prev.thread, prev.label, prev.num, prev.round, variable);
+  exprt inner_low_expr = from_integer(0, type);
+  if(prev_op_.has_value()) {
+    const lazy_variable &prev_value = *prev_op_;
+    auto m_it = memo.find(chain_key(prev_value.round, prev_value.thread, prev_value.label, prev_value.num));
+    if(m_it != memo.end())
+      inner_low_expr = m_it->second;
+    else
+      inner_low_expr = create_LOW_symbol(variable, prev.thread, prev.label, prev.num, prev.round, equation);
+  }
+  return emit(prev.thread, prev.label, prev.num, prev.round,
+    if_exprt{and_exprt{exec, obs}, from_integer(prev.id, type), inner_low_expr});
 }
-void lazy_c_seqt::create_lazy_variable_read() {
+
+exprt lazy_pot::boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num)
+{
+  const unsignedbv_typet type(bit_writes[variable]);
+  unsigned best = static_cast<unsigned>((1ULL << bit_writes[variable]) - 1);
+  const auto qk = std::make_tuple(round, thread, label, num);
+  const auto w_it = lazy_variables.find(variable);
+  if(w_it != lazy_variables.end())
+  {
+    const auto &v = w_it->second;
+    const auto it = std::lower_bound(
+      v.begin(), v.end(), qk,
+      [](const lazy_variable &lv, const std::tuple<std::size_t, unsigned, unsigned, unsigned> &k) {
+        return std::make_tuple(lv.round, lv.thread, lv.label, lv.num) < k;
+      });
+    if(it != v.end() && it->id < best)
+      best = it->id;
+  }
+  const auto r_it = lazy_variables_read.find(variable);
+  if(r_it != lazy_variables_read.end())
+  {
+    const auto &v = r_it->second;
+    const auto it = std::lower_bound(
+      v.begin(), v.end(), qk,
+      [](const lazy_variable_read &lv, const std::tuple<std::size_t, unsigned, unsigned, unsigned> &k) {
+        return std::make_tuple(lv.round, lv.thread, lv.label, lv.num) < k;
+      });
+    if(it != v.end() && it->id < best)
+      best = it->id;
+  }
+  return from_integer(best, type);
+}
+std::optional<lazy_pot::lazy_variable> lazy_pot::get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable)
+{
+  const auto v_it = lazy_variables.find(variable);
+  if(v_it == lazy_variables.end() || v_it->second.empty())
+    return std::nullopt;
+  const auto &v = v_it->second;
+  const auto qk = std::make_tuple(round, thread, label, num);
+  const auto it = std::lower_bound(
+    v.begin(), v.end(), qk,
+    [](const lazy_variable &lv, const std::tuple<std::size_t, unsigned, unsigned, unsigned> &k) {
+      return std::make_tuple(lv.round, lv.thread, lv.label, lv.num) < k;
+    });
+  if(it == v.begin())
+    return std::nullopt;
+  return *std::prev(it);
+}
+void lazy_pot::create_lazy_variable_read() {
   for(auto global_variable : global_variables)
   {
     if(this->reads.count(global_variable) == 0)
@@ -1990,30 +2231,67 @@ void lazy_c_seqt::create_lazy_variable_read() {
       for(const auto &read : this->reads.at(global_variable)) {
         lazy_variable_read lazy_variable_read{round,read.label,read.num, read.thread};
         lazy_variables_read[global_variable].emplace_back(lazy_variable_read);
-        {
-        }
       }
+    }
+    auto &lvr = lazy_variables_read[global_variable];
+    std::sort(lvr.begin(), lvr.end(),
+      [](const lazy_variable_read &a, const lazy_variable_read &b) {
+        return std::tie(a.round, a.thread, a.label, a.num)
+             < std::tie(b.round, b.thread, b.label, b.num);
+      });
+  }
+}
+
+void lazy_pot::enumerate_accesses()
+{
+  for(auto global_variable : global_variables)
+  {
+    auto w_it = lazy_variables.find(global_variable);
+    auto r_it = lazy_variables_read.find(global_variable);
+    std::size_t wi = 0, ri = 0;
+    const std::size_t wn = w_it != lazy_variables.end() ? w_it->second.size() : 0;
+    const std::size_t rn = r_it != lazy_variables_read.end() ? r_it->second.size() : 0;
+    unsigned id = 0;
+    while(wi < wn || ri < rn)
+    {
+      const bool take_write =
+        ri >= rn ||
+        (wi < wn &&
+         std::tie(w_it->second[wi].round, w_it->second[wi].thread,
+                  w_it->second[wi].label, w_it->second[wi].num) <
+         std::tie(r_it->second[ri].round, r_it->second[ri].thread,
+                  r_it->second[ri].label, r_it->second[ri].num));
+      if(take_write)
+        w_it->second[wi++].id = id++;
+      else
+        r_it->second[ri++].id = id++;
     }
   }
 }
 
-std::optional<lazy_c_seqt::lazy_variable_read>
-lazy_c_seqt::get_next_read(unsigned thread, unsigned label, unsigned num,
+std::optional<lazy_pot::lazy_variable_read>
+lazy_pot::get_next_read(unsigned thread, unsigned label, unsigned num,
   std::size_t round, irep_idt variable, bool strict)
 {
-  if(lazy_variables_read.count(variable) == 0)
+  const auto v_it = lazy_variables_read.find(variable);
+  if(v_it == lazy_variables_read.end() || v_it->second.empty())
     return std::nullopt;
-  std::optional<lazy_variable_read> best;
-  const auto qk = std::tie(round, thread, label, num);
-  for(const auto &lv : lazy_variables_read.at(variable))
-  {
-    const auto lk = std::tie(lv.round, lv.thread, lv.label, lv.num);
-    if(strict ? lk <= qk : lk < qk)
-      continue;
-    if(!best.has_value())
-    { best = lv; continue; }
-    const auto bk = std::tie(best->round, best->thread, best->label, best->num);
-    if(lk < bk) best = lv;
-  }
-  return best;
+  const auto &v = v_it->second;
+  const auto qk = std::make_tuple(round, thread, label, num);
+  const auto it =
+    strict ? std::upper_bound(
+               v.begin(), v.end(), qk,
+               [](const std::tuple<std::size_t, unsigned, unsigned, unsigned> &k,
+                  const lazy_variable_read &lv) {
+                 return k < std::make_tuple(lv.round, lv.thread, lv.label, lv.num);
+               })
+           : std::lower_bound(
+               v.begin(), v.end(), qk,
+               [](const lazy_variable_read &lv,
+                  const std::tuple<std::size_t, unsigned, unsigned, unsigned> &k) {
+                 return std::make_tuple(lv.round, lv.thread, lv.label, lv.num) < k;
+               });
+  if(it == v.end())
+    return std::nullopt;
+  return *it;
 }
