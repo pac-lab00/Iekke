@@ -1758,10 +1758,10 @@ void lazy_pot::create_atomic_canonical(
       const auto &src = !b.reads.empty()
         ? b.reads.begin()->second.front().s_it->source
         : b.writes.begin()->second.front().s_it->source;
-
       const exprt cs_1 = create_enabled_symbol(b.label, b.thread, round);
       exprt cs = equal_exprt(create_cs_symbol(b.thread, round-1), from_integer(b.label, unsignedbv_typet(n_bit[b.thread])));
-      exprt fire_cond = and_exprt(cs_1, cs);
+      exprt fire_cond =
+        and_exprt(cs_1, cs, active_at_turn(b.thread, b.label, round - 1));
       exprt abr = b.reads.empty()
         ? exprt(false_exprt{})
         : exprt(create_ABR(b.reads, round, b.label, b.thread, equation));
