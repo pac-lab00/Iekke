@@ -3,6 +3,7 @@
 
 #include "lazy_po.h"
 #include <algorithm>
+#include <functional>
 #include <thread>
 #include <util/cprover_prefix.h>
 #include <util/format.h>
@@ -11,6 +12,7 @@
 #include <util/c_types.h>
 #include <util/prefix.h>
 #include <util/expr_util.h>
+#include <ansi-c/expr2c.h>
 #include <util/simplify_expr.h>
 #include <util/source_location.h>
 
@@ -42,7 +44,6 @@ static void align_pointer_equalities(exprt &e)
   }
   else if(e.id() == ID_if)
   {
-
     auto &if_e = to_if_expr(e);
     if(if_e.true_case().type() != if_e.false_case().type())
     {
@@ -54,7 +55,6 @@ static void align_pointer_equalities(exprt &e)
   }
   else if(e.id() == ID_with)
   {
-
     auto &with_e = to_with_expr(e);
     if(with_e.type() != with_e.old().type())
       with_e.type() = with_e.old().type();
@@ -71,45 +71,74 @@ void lazy_pot::operator()(
 
   //check_shared_event(equation, message_handler);
 
-  handling_active_threads(equation/*, message_handler*/);
+  handling_active_threads(equation);
 
-  collect_reads_and_writes(equation.SSA_steps/*, message_handler*/);
+  collect_reads_and_writes(equation.SSA_steps);
+
+  if(skipped_writes || skipped_reads)
+    log.error() << "lazy_po: accessi shared SCARTATI dal modello di memoria -- W="
+                << skipped_writes << " R=" << skipped_reads
+                << " (ssa_lhs non e' un symbol_exprt; quelle scritture sono "
+                   "invisibili agli altri thread)" << messaget::eom;
 
   if(por)
     build_atomic_blocks();
 
-  create_write_constraints(equation/*, message_handler*/);
+  create_write_constraints(equation);
 
-  create_read_constraints(equation/*, message_handler*/);
+  create_read_constraints(equation);
 
   if(por)
     create_lazy_variable_read();
 
-  create_cs_constraint(equation/*, message_handler*/);
+  create_cs_constraint(equation);
 
   if(por) {
     enumerate_accesses();
 
-    create_lw_tot_symbol(equation/*, message_handler*/);
+    // Guardia sulla larghezza degli id. Se un id raggiunge la sentinella ⊥
+    // (2^bits-1 usata da WINR/NRP e da boundary_id), i confronti di canonicita'
+    // scambiano un accesso reale per "nessun accesso" e il POR pota schedule
+    // legittimi -- fallimento silenzioso. Meglio urlare.
+    for(const auto &gv : global_variables)
+    {
+      const unsigned bits = bit_writes[gv];
+      const unsigned bottom = static_cast<unsigned>((1ULL << bits) - 1);
+      unsigned max_id = 0;
+      if(lazy_variables.count(gv))
+        for(const auto &lv : lazy_variables.at(gv))
+          max_id = std::max(max_id, lv.id);
+      if(lazy_variables_read.count(gv))
+        for(const auto &lv : lazy_variables_read.at(gv))
+          max_id = std::max(max_id, lv.id);
+      if(max_id >= bottom)
+        log.error() << "lazy_po: id overflow su " << id2string(gv)
+                    << " -- max_id=" << max_id << " sentinella=" << bottom
+                    << " bits=" << bits
+                    << " (il POR potrebbe potare esecuzioni valide)"
+                    << messaget::eom;
+    }
 
-    create_winr_tot_symbol(equation/*, message_handler*/);
+    create_lw_tot_symbol(equation);
+
+    create_winr_tot_symbol(equation);
 
     // NRP/LOW on-demand: le catene si materializzano (memoizzate) solo dalle
     // ancore usate in create_ABW; niente pre-creazione totale.
-    // create_nrp_tot_symbol(equation/*, message_handler*/);
-    // create_low_tot_symbol(equation/*, message_handler*/);
+    // create_nrp_tot_symbol(equation);
+    // create_low_tot_symbol(equation);
 
-    create_atomic_canonical(equation/*, message_handler*/);
+    create_atomic_canonical(equation);
   }
 
-  //handling_atomic_sections(equation/*, message_handler*/);
+  //handling_atomic_sections(equation);
 
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
-    handling_datarace(equation/*, message_handler*/);
+    handling_datarace(equation);
   }
   else
-    handling_guards(equation/*, message_handler*/);
+    handling_guards(equation);
 
   for(auto &step : equation.SSA_steps)
   {
@@ -119,14 +148,8 @@ void lazy_pot::operator()(
 }
 
 void lazy_pot::create_write_constraints(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
-  //messaget log{message_handler};
-
-  //log.warning() << "-------------------WRITES--------------------------"
-  //              << messaget::eom;
-
   for(auto global_variable : global_variables)
   {
     if(this->writes.count(global_variable) == 0)
@@ -167,7 +190,6 @@ void lazy_pot::create_write_constraints(
                    typecast_exprt::conditional_cast(
                      previous, write.s_it->ssa_lhs.type())}};
 
-        //log.warning() << format(constraint) << messaget::eom;
         equation.constraint(constraint, "write constraint", write.s_it->source);
 
         previous = lazy_variable_exprt;
@@ -192,13 +214,8 @@ void lazy_pot::create_write_constraints(
 }
 
 void lazy_pot::create_read_constraints(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
-  //messaget log{message_handler};
-  //log.warning() << "-------------------READS--------------------------"
-  //              << messaget::eom;
-
   for(auto global_variable : global_variables)
   {
     if(this->reads.count(global_variable) == 0)
@@ -225,7 +242,6 @@ void lazy_pot::create_read_constraints(
         }
       }
       equal_exprt final_constraint{read.s_it->ssa_lhs, temp_constraint};
-      //log.warning() << format(final_constraint) << messaget::eom;
       equation.constraint(
         final_constraint, "read constraint", read.s_it->source);
     }
@@ -276,15 +292,29 @@ std::optional<symbol_exprt> lazy_pot::previous_shared(
   return previous;
 }
 
-void lazy_pot::check_shared_event(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/)
+exprt lazy_pot::active_at_turn(
+  unsigned thread,
+  unsigned label,
+  std::size_t round)
 {
-  // messaget log{message_handler};
-  //
-  // log.warning() << "-------------------CHECKING EVENTS--------------------------"
-  //                << messaget::eom;
+  // active_thread_t^(r) del paper: valutata al turno round-robin di t nel round
+  // r, cioe' l'ultima versione SSA del flag di attivita' scritta prima della
+  // posizione (round, thread, label, 0). Vera esattamente quando t e' stato
+  // creato prima di quel turno e non e' terminato prima di esso.
+  if(label == 0)
+    return true_exprt{};
+  const std::string active_name =
+    "__CPROVER_active_thread_T" + std::to_string(thread);
+  std::optional<symbol_exprt> active =
+    previous_shared(active_name, label, 0, thread, round);
+  if(active.has_value())
+    return active.value();
+  return true_exprt{};
+}
 
+void lazy_pot::check_shared_event(
+    symex_target_equationt &equation)
+{
   symex_target_equationt temp_equation{equation};
   temp_equation.clear();
 
@@ -318,7 +348,6 @@ void lazy_pot::check_shared_event(
     if (!assigned)
     {
       equation.SSA_steps.pop_front();
-      //log.warning() << "Invalid event: SHARED_WRITE(" << format(s_it->get_ssa_expr()) << ")" << messaget::eom;
     }
     else
     {
@@ -333,13 +362,8 @@ void lazy_pot::check_shared_event(
 }
 
 void lazy_pot::create_cs_constraint(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
-  //messaget log{message_handler};
-  //log.warning() << "-------------------CS--------------------------"
-  //              << messaget::eom;
-
   for(unsigned thread = 0; thread <= threads; ++thread)
   {
     exprt previous;
@@ -349,7 +373,6 @@ void lazy_pot::create_cs_constraint(
 
     n_bit[thread] = 0 ? 0 : 32 - __builtin_clz(max_num + 1);
 
-    //log.warning() << "thread " << thread << ": from 0 to " << max_num << messaget::eom;
 
     for(size_t round = 0; round <= rounds; ++round)
     {
@@ -358,7 +381,6 @@ void lazy_pot::create_cs_constraint(
       if(round == 0)
       {
         less_than_or_equal_exprt constraint{cs, from_integer({0}, unsignedbv_typet{n_bit[thread]})};
-        //log.warning() << format(constraint) << messaget::eom;
         equation.constraint(
           constraint,
           "cs constraint",
@@ -367,7 +389,6 @@ void lazy_pot::create_cs_constraint(
       }
       else {
           less_than_or_equal_exprt constraint{previous, cs};
-          //log.warning() << format(constraint) << messaget::eom;
           equation.constraint(
             constraint,
             "cs constraint",
@@ -378,7 +399,6 @@ void lazy_pot::create_cs_constraint(
       {
         exprt max{from_integer({max_num + 1}, unsignedbv_typet{n_bit[thread]})};
         less_than_or_equal_exprt last_constraint{cs, max};
-        //log.warning() << format(last_constraint) << messaget::eom;
         equation.constraint(
           last_constraint,
           "cs constraint",
@@ -402,18 +422,7 @@ void lazy_pot::create_cs_constraint(
         symbol_exprt cs_prev =
           create_cs_symbol(thread, round - 1);
 
-        std::string active_name =
-          "__CPROVER_active_thread_T" + std::to_string(thread);
-        exprt active_thread_value = true_exprt{};
-        if (label > 0) {
-          std::optional<symbol_exprt> active_thread =
-            previous_shared(active_name, label, 0, thread, round);
-          if(active_thread.has_value())
-          {
-            active_thread_value = active_thread.value();
-          }
-        }
-
+        exprt active_thread_value = active_at_turn(thread, label, round);
 
         if (label != 0) {
           greater_than_exprt expr_1{cs_curr, label_exp};
@@ -427,18 +436,15 @@ void lazy_pot::create_cs_constraint(
           and_exprt expr_3{expr_1, expr_2};
           equal_exprt enabled_expr{enabled, expr_3};
           simplify(enabled_expr, ns);
-          //log.warning() << format(enabled_expr) << messaget::eom;
           equation.constraint(
             enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
           implies_exprt active_expr{enabled, active_thread_value};
           simplify(active_expr, ns);
-          //log.warning() << format(active_expr) << messaget::eom;
           equation.constraint(active_expr, "cs constraint", equation.SSA_steps.begin()->source);
         }
         else {
           equal_exprt enabled_expr{enabled, false_exprt{}};
           simplify(enabled_expr, ns);
-          //log.warning() << format(enabled_expr) << messaget::eom;
           equation.constraint(
             enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
         }
@@ -459,29 +465,65 @@ void lazy_pot::create_cs_constraint(
           symbol_exprt exec = create_exec_symbol(label, num, thread, round);
           equal_exprt constraint{exec, expr_5};
           simplify(constraint, ns);
-          //log.warning() << format(constraint) << messaget::eom;
           equation.constraint(constraint, "cs constraint", equation.SSA_steps.begin()->source);
         }
+
+        // Tightening dei confini di contesto (paper, sec:uniqueCS): un contesto
+        // non vuoto non puo' iniziare con un blocco le cui guard sono tutte
+        // false, perche' quel prefisso si sposterebbe nel contesto precedente
+        // senza cambiare la sequenza di accessi eseguiti. Esente la prima
+        // traversata dopo la creazione del thread, come la clausola di
+        // creazione della canonicalita': senza activity a r-1 lo spostamento
+        // e' impossibile e il vincolo taglierebbe schedule legittimi.
+        if(label != 0 && round > 1)
+        {
+          exprt witness = false_exprt{};
+          for(unsigned num = 0; num < nmax; ++num)
+            witness = or_exprt{
+              witness, create_exec_symbol(label, num, thread, round)};
+
+          implies_exprt tightening{
+            and_exprt{
+              enabled,
+              equal_exprt{cs_prev, label_exp},
+              active_at_turn(thread, label, round - 1)},
+            witness};
+          simplify(tightening, ns);
+          equation.constraint(
+            tightening,
+            "cs boundary tightening",
+            equation.SSA_steps.begin()->source);
+        }
+      }
+
+      // At-most-one sui round: gli intervalli [cs^(r-1), cs^(r)) sono disgiunti
+      // perche' cs e' monotona, quindi un blocco e' eleggibile in al piu' un
+      // round. E' gia' implicato dai vincoli su cs -- non toglie modelli -- ma
+      // esplicitarlo lo rende propagabile per unit propagation invece che
+      // derivabile dai confronti su bitvector. Serve a far collassare subito le
+      // entry pass-through delle catene dei tag.
+      if(label != 0 && rounds > 1)
+      {
+        for(std::size_t r1 = 1; r1 <= rounds; ++r1)
+          for(std::size_t r2 = r1 + 1; r2 <= rounds; ++r2)
+            equation.constraint(
+              or_exprt{
+                not_exprt{create_enabled_symbol(
+                  static_cast<unsigned>(label), thread, r1)},
+                not_exprt{create_enabled_symbol(
+                  static_cast<unsigned>(label), thread, r2)}},
+              "enabled at-most-one",
+              equation.SSA_steps.begin()->source);
       }
     }
   }
 }
 
 void lazy_pot::handling_atomic_sections(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
-  //messaget log{message_handler};
-
-  //log.warning()
-  //  << "-------------------ATOMIC SECTIONS--------------------------"
-  //  << messaget::eom;
-
   for(auto atomic_section : atomic_sections)
   {
-    // log.warning() << "atomic section Thread " << atomic_section.first << ": L"
-    //               << atomic_section.second.first << " : L"
-    //               << atomic_section.second.second << messaget::eom;
     exprt constraint;
 
     if (atomic_section.second.first != atomic_section.second.second)
@@ -501,7 +543,6 @@ void lazy_pot::handling_atomic_sections(
               atomic_section.second.second,
               unsignedbv_typet{n_bit[atomic_section.first]})}};
 
-        //log.warning() << format(constraint) << messaget::eom;
         equation.constraint(
           constraint, "atomic constraint", equation.SSA_steps.begin()->source);
       }
@@ -510,14 +551,8 @@ void lazy_pot::handling_atomic_sections(
 }
 
 void lazy_pot::handling_guards(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
-  //messaget log{message_handler};
-
-  //log.warning() << "-------------------GUARDS--------------------------"
-  //              << messaget::eom;
-
   symex_target_equationt temp_equation{equation};
   temp_equation.clear();
 
@@ -553,7 +588,6 @@ void lazy_pot::handling_guards(
 
       equal_exprt final_constraint{reach, constraint};
       simplify(final_constraint, ns);
-      //log.warning() << format(final_constraint) << messaget::eom;
       temp_equation.constraint(
         final_constraint,
         "blocking statement constraint",
@@ -566,8 +600,6 @@ void lazy_pot::handling_guards(
       simplify(new_expr, ns);
       step.cond_expr = new_expr;
       step.type = s_it->type;
-      //log.warning() << format(step.get_ssa_expr()) << messaget::eom;
-      //log.warning() << "guard: " << format(step.guard) << messaget::eom;
       temp_equation.SSA_steps.emplace_back(step);
     }
     else
@@ -583,14 +615,8 @@ void lazy_pot::handling_guards(
 }
 
 void lazy_pot::handling_active_threads(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
-  // messaget log{message_handler};
-  //
-  // log.warning() << "-------------------ACTIVE THREAD--------------------------"
-  //               << messaget::eom;
-
   symex_target_equationt temp_equation{equation};
   temp_equation.clear();
 
@@ -624,7 +650,6 @@ void lazy_pot::handling_active_threads(
         ssa_steps.begin()->atomic_section_id,
         thread,
         temp_equation,
-        //message_handler,
         true_exprt{});
     else
       create_active_thread_statements(
@@ -633,7 +658,6 @@ void lazy_pot::handling_active_threads(
         ssa_steps.begin()->atomic_section_id,
         thread,
         temp_equation,
-        //message_handler,
         false_exprt{});
   }
 
@@ -667,7 +691,6 @@ void lazy_pot::handling_active_threads(
         atomic_section_id,
         thread_current,
         temp_equation,
-        //message_handler,
         false_exprt{});
 
       thread_current = s_it->source.thread_nr;
@@ -692,7 +715,6 @@ void lazy_pot::handling_active_threads(
         1,
         thread_created,
         temp_equation,
-        //message_handler,
         true_exprt{});
 
       thread_created++;
@@ -739,7 +761,6 @@ void lazy_pot::handling_active_threads(
         atomic_section_id,
         thread,
         temp_equation,
-        //message_handler,
         false_exprt{});
     }
   }
@@ -751,11 +772,9 @@ void lazy_pot::create_active_thread_statements(
   exprt &guard,
   unsigned int atomic_section_id,
   unsigned &thread,
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/,
+  symex_target_equationt &equation,
   const exprt &value)
 {
-  //messaget log{message_handler};
 
   SSA_stept event_step{source, goto_trace_stept::typet::SHARED_WRITE};
   event_step.guard = guard;
@@ -764,7 +783,6 @@ void lazy_pot::create_active_thread_statements(
   event_step.ssa_lhs = event_expr;
   event_step.atomic_section_id = atomic_section_id;
   equation.SSA_steps.emplace_back(event_step);
-  //log.warning() << format(event_step.get_ssa_expr()) << messaget::eom;
 
   SSA_stept active_step{source, goto_trace_stept::typet::ASSIGNMENT};
   active_step.guard = guard;
@@ -779,12 +797,10 @@ void lazy_pot::create_active_thread_statements(
   active_step.hidden = true;
   active_step.atomic_section_id = atomic_section_id;
   equation.SSA_steps.emplace_back(active_step);
-  //log.warning() << format(active_step.get_ssa_expr()) << messaget::eom;
 }
 
-symbol_exprt lazy_pot::phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
+symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
 
-  //log.warning() << "------------------ fase 1 per " << as_string(v) << " iniziata" << messaget::eom;
   irep_idt phase_1_name =  as_string(v) + "_phase_1";
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
@@ -841,29 +857,25 @@ symbol_exprt lazy_pot::phase_1(/*messaget log,*/ symex_target_equationt &equatio
           and_exprt{phase_1_t_v_exp, exp2}};
 
         simplify(phase_1_t_v_exp, ns);
-        //log.warning() << format(phase_1_t_v_exp) << messaget::eom;
         equation.constraint(
           phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
     phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
     simplify(phase_1_t_exp, ns);
-    //log.warning() << format(phase_1_t_exp) << messaget::eom;
     equation.constraint(
       phase_1_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
   phase_1_exp = equal_exprt {phase_1_symbl, phase_1_exp};
   simplify(phase_1_exp, ns);
-  //log.warning() << format(phase_1_exp) << messaget::eom;
   equation.constraint(
     phase_1_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
   return phase_1_symbl;
 }
 
-symbol_exprt lazy_pot::phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v) {
-  //log.warning() << "------------------ fase 2 per " << as_string(v) << " iniziata" << messaget::eom;
+symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
   irep_idt phase_2_name = as_string(v) + "_phase_2";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
@@ -920,7 +932,6 @@ symbol_exprt lazy_pot::phase_2(/*messaget log,*/ symex_target_equationt &equatio
           and_exprt{phase_2_t_v_exp, exp2}};
 
         simplify(phase_2_t_v_exp, ns);
-        //log.warning() << format(phase_2_t_v_exp) << messaget::eom;
         equation.constraint(
           phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
@@ -968,29 +979,25 @@ symbol_exprt lazy_pot::phase_2(/*messaget log,*/ symex_target_equationt &equatio
           and_exprt{phase_2_t_v_exp, exp2}};
 
         simplify(phase_2_t_v_exp, ns);
-        //log.warning() << format(phase_2_t_v_exp) << messaget::eom;
         equation.constraint(
           phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
     phase_2_t_exp = equal_exprt {phase_2_t_symbl, phase_2_t_exp};
     simplify(phase_2_t_exp, ns);
-    //log.warning() << format(phase_2_t_exp) << messaget::eom;
     equation.constraint(
       phase_2_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
   phase_2_exp = equal_exprt {phase_2_symbl, phase_2_exp};
   simplify(phase_2_exp, ns);
-  //log.warning() << format(phase_2_exp) << messaget::eom;
   equation.constraint(
     phase_2_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
   return phase_2_symbl;
 }
 
-symbol_exprt lazy_pot::same_round(/*messaget log,*/ symex_target_equationt &equation) {
-  //log.warning() << "------------------ sameround" << messaget::eom;
+symbol_exprt lazy_pot::same_round(symex_target_equationt &equation) {
   irep_idt same_round_name = "same_round";
   symbol_exprt same_round_symbl{same_round_name, bool_typet{}};
 
@@ -1023,15 +1030,13 @@ symbol_exprt lazy_pot::same_round(/*messaget log,*/ symex_target_equationt &equa
 
   same_round_exp = equal_exprt{same_round_symbl, same_round_exp};
   simplify(same_round_exp, ns);
-  //log.warning() << format(same_round_exp) << messaget::eom;
   equation.constraint(
     same_round_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
   return same_round_symbl;
 }
 
-symbol_exprt lazy_pot::no_interf(/*messaget log,*/ symex_target_equationt &equation) {
-  //log.warning() << "------------------ no interf" << messaget::eom;
+symbol_exprt lazy_pot::no_interf(symex_target_equationt &equation) {
   irep_idt no_interf_name = "no_interf";
   symbol_exprt no_interf_symbl{no_interf_name, bool_typet{}};
 
@@ -1084,7 +1089,6 @@ symbol_exprt lazy_pot::no_interf(/*messaget log,*/ symex_target_equationt &equat
 
     no_interf_t_exp = equal_exprt{no_interf_t_symbl, no_interf_t_exp};
     simplify(no_interf_t_exp, ns);
-    //log.warning() << format(no_interf_t_exp) << messaget::eom;
     equation.constraint(
       no_interf_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
@@ -1092,7 +1096,6 @@ symbol_exprt lazy_pot::no_interf(/*messaget log,*/ symex_target_equationt &equat
   }
   no_interf_exp = equal_exprt{no_interf_symbl, no_interf_exp};
   simplify(no_interf_exp, ns);
-  //log.warning() << format(no_interf_exp) << messaget::eom;
   equation.constraint(
     no_interf_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
@@ -1100,13 +1103,8 @@ symbol_exprt lazy_pot::no_interf(/*messaget log,*/ symex_target_equationt &equat
 }
 
 void lazy_pot::handling_datarace(
-  symex_target_equationt &equation/*,
-  message_handlert &message_handler*/) {
+  symex_target_equationt &equation) {
 
-  // messaget log{message_handler};
-  //
-  // log.warning() << "-------------------DATARACE--------------------------"
-  //               << messaget::eom;
 
   irep_idt phases_name = "phases";
   symbol_exprt phases_symbl{phases_name, bool_typet{}};
@@ -1117,16 +1115,12 @@ void lazy_pot::handling_datarace(
     if (equation.symbol_is_atomic(ns,v))
       continue;
     symbol_exprt pha_1 = phase_1(/*log,*/ equation, v);
-    //log.warning() << "------------------ fase 1 per " << as_string(v) << " fatta " << messaget::eom;
     symbol_exprt pha_2 = phase_2(/*log,*/ equation, v);
-    //log.warning() << "------------------ fase 2 per " << as_string(v) << " fatta " << messaget::eom;
     exprt pha_1_2 = and_exprt{pha_1, pha_2};
     phases_exp = or_exprt{phases_exp, pha_1_2};
-    //log.warning() << "------------------ merging fase 1 e 2 per " << as_string(v) << " fatto " << messaget::eom;
   }
   phases_exp = equal_exprt{phases_symbl, phases_exp};
   simplify(phases_exp, ns);
-  //log.warning() << format(phases_exp) << messaget::eom;
   equation.constraint(
     phases_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
@@ -1136,22 +1130,16 @@ void lazy_pot::handling_datarace(
 
   exprt datarace_contraint = and_exprt{phases_symbl, and_exprt{same_round_symbl, no_interf_symbl}};
   simplify(datarace_contraint, ns);
-  //log.warning() << "ASSERT: " << format(datarace_contraint) << messaget::eom;
   //equation.constraint(
    // datarace_contraint, "datarace constraint", equation.SSA_steps.begin()->source);
   equation.assertion(true_exprt{},not_exprt{datarace_contraint},"datarace",equation.SSA_steps.begin()->source);
 }
 
 void lazy_pot::collect_reads_and_writes(
-  symex_target_equationt::SSA_stepst &ssa_steps/*,
-  message_handlert &message_handler*/)
+  symex_target_equationt::SSA_stepst &ssa_steps)
 {
-  // messaget log{message_handler};
-  //
-  // log.warning() << "-------------------COLLECTING--------------------------"
-  //               << messaget::eom;
-
   unsigned num = 0;
+  skipped_writes = 0; skipped_reads = 0;
   symex_target_equationt::SSA_stepst::iterator prev =
         ssa_steps.begin();
   std::map<unsigned, std::vector<symex_target_equationt::SSA_stepst::iterator>>
@@ -1242,7 +1230,9 @@ void lazy_pot::collect_reads_and_writes(
   {
     if(this->labels.count(s_it->source.thread_nr) == 0)
     {
-      threads = s_it->source.thread_nr;
+      // massimo, non assegnamento: i thread non compaiono necessariamente in
+      // ordine crescente nell'equazione, e da `threads` dipende threads_bits.
+      threads = std::max<std::size_t>(threads, s_it->source.thread_nr);
       labels[s_it->source.thread_nr] = 0;
     }
 
@@ -1275,9 +1265,6 @@ void lazy_pot::collect_reads_and_writes(
         gv[num] = s_it->guard;
       }
 
-      // log.warning() << "Thread: " << shared_event.s_it->source.thread_nr
-      //               << "\tBlocking statement: " << shared_event.label << "\t"
-      //               << format(s_it->cond_expr) << messaget::eom;
 
       this->blocking_events.emplace_back(shared_event);
       shared_events.emplace_back(shared_event);
@@ -1294,16 +1281,17 @@ void lazy_pot::collect_reads_and_writes(
         gv[num] = s_it->guard;
       }
       atomic_sections.emplace_back(
-        s_it->source.thread_nr, std::pair<unsigned,unsigned>(labels[s_it->source.thread_nr], NULL));
-      //log.warning() << "ATOMIC BEGIN: " << labels[s_it->source.thread_nr] << messaget::eom;
+        s_it->source.thread_nr,
+        std::pair<unsigned, unsigned>(labels[s_it->source.thread_nr], 0u));
       prev = s_it;
     }
 
     if(s_it->is_atomic_end())
     {
-      atomic_sections.back().second.second =  labels[s_it->source.thread_nr];
+      // un atomic_end senza begin corrispondente lascerebbe il vector vuoto
+      if(!atomic_sections.empty())
+        atomic_sections.back().second.second = labels[s_it->source.thread_nr];
       num = 0;
-      //log.warning() << "ATOMIC END: " <<  labels[s_it->source.thread_nr] << messaget::eom;
     }
 
     if(s_it->is_shared_write()) {
@@ -1323,7 +1311,7 @@ void lazy_pot::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
-        if (next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
+        if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
           where = to_with_expr(next->ssa_rhs).where();
         }
         else { //STRUCT
@@ -1351,11 +1339,6 @@ void lazy_pot::collect_reads_and_writes(
           gv[num] = s_it->guard;
         }
 
-        // log.warning()
-        //   << "Thread: " << shared_event.s_it->source.thread_nr
-        //   << "\tWrite: " << shared_event.label << "   \t"
-        //   << to_symbol_expr(shared_event.s_it->ssa_lhs).get_identifier()
-        //   << "\tL" << shared_event.label << messaget::eom;
         shared_events.emplace_back(shared_event);
         this->writes[shared_event.s_it->ssa_lhs.get_l1_object_identifier()]
           .emplace_back(shared_event);
@@ -1365,10 +1348,7 @@ void lazy_pot::collect_reads_and_writes(
       }
       else
       {
-        // log.warning() << "Skipping: "
-        //               << "Thread: " << s_it->source.thread_nr
-        //               << "\tWrite: " << s_it->source.pc->location_number
-        //               << messaget::eom;
+        ++skipped_writes;
       }
     }
     if(s_it->is_shared_read())
@@ -1389,7 +1369,7 @@ void lazy_pot::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
-        if (next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
+        if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
           where = to_index_expr(next->ssa_rhs).index();
         }
         else { //STRUCT
@@ -1417,11 +1397,6 @@ void lazy_pot::collect_reads_and_writes(
           gv[num] = s_it->guard;
         }
 
-        // log.warning()
-        //   << "Thread: " << shared_event.s_it->source.thread_nr
-        //   << "\tRead: " << shared_event.label << "   \t"
-        //   << to_symbol_expr(shared_event.s_it->ssa_lhs).get_identifier()
-        //   << "\tL" << shared_event.label << messaget::eom;
 
         shared_events.emplace_back(shared_event);
 
@@ -1431,9 +1406,7 @@ void lazy_pot::collect_reads_and_writes(
       }
       else
       {
-        // log.warning() << "Skipping: " << "Thread: " << s_it->source.thread_nr
-        //               << "\tRead: " << s_it->source.pc->location_number
-        //               << messaget::eom;
+        ++skipped_reads;
       }
     }
   }
@@ -1511,11 +1484,11 @@ symbol_exprt lazy_pot::create_lazy_symbol(
 symbol_exprt
 lazy_pot::create_exec_symbol(unsigned label, unsigned num, unsigned thread, size_t round)
 {
-  for(const auto &exec : exec_vector)
-  {
-    if(exec.label == label && exec.num == num && exec.round == round && exec.thread == thread)
-      return exec.symbol;
-  }
+  const uint64_t key = chain_key(round, thread, label, num);
+  auto it = exec_map.find(key);
+  if(it != exec_map.end())
+    return it->second;
+
   irep_idt exec_name = "Ex_T" + std::to_string(thread) + "_L" +
                        std::to_string(label) + "_N" + std::to_string(num) +
                        "_R" + std::to_string(round);
@@ -1523,6 +1496,7 @@ lazy_pot::create_exec_symbol(unsigned label, unsigned num, unsigned thread, size
 
   exec exec_struct{label, num, thread, round, exec_symbol};
   exec_vector.emplace_back(exec_struct);
+  exec_map.emplace(key, exec_symbol);
 
   return exec_symbol;
 }
@@ -1530,24 +1504,18 @@ lazy_pot::create_exec_symbol(unsigned label, unsigned num, unsigned thread, size
 symbol_exprt
 lazy_pot::create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, size_t round)
 {
-  // memo O(1) sopra create_exec_symbol: stessa semantica, stessi simboli,
-  // usata dai loop della parte canonica
-  const uint64_t key = chain_key(round, thread, label, num);
-  auto it = exec_map.find(key);
-  if(it != exec_map.end())
-    return it->second;
-  symbol_exprt sym = create_exec_symbol(label, num, thread, round);
-  exec_map.emplace(key, sym);
-  return sym;
+
+  return create_exec_symbol(label, num, thread, round);
 }
 
 symbol_exprt
-lazy_pot::create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread)
+lazy_pot::create_exec_tot_symbol(symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread)
 {
-  for(const auto &exec : exec_tot_vector)
+  const uint64_t tot_key = chain_key(0, thread, label, num);
   {
-    if(exec.label == label && exec.num == num && exec.thread == thread)
-      return exec.symbol;
+    auto it = exec_tot_map.find(tot_key);
+    if(it != exec_tot_map.end())
+      return it->second;
   }
 
   exprt constraint = false_exprt{};
@@ -1557,13 +1525,13 @@ lazy_pot::create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equat
 
   exec_tot exec_struct{label, num, thread, exec_symbol};
   exec_tot_vector.emplace_back(exec_struct);
+  exec_tot_map.emplace(tot_key, exec_symbol);
 
   for (std::size_t round = 1; round <= rounds; round++) {
     constraint = or_exprt{constraint, create_exec_symbol(label,num,thread,round)};
   }
   constraint = equal_exprt{exec_symbol, constraint};
   simplify(constraint, ns);
-  //log.warning() << format(constraint) << messaget::eom;
   equation.constraint(
     constraint, "exec tot constraint", equation.SSA_steps.begin()->source);
 
@@ -1575,12 +1543,11 @@ symbol_exprt lazy_pot::create_enabled_symbol(
   unsigned thread,
   size_t round)
 {
-  for(const auto &enabled : enabled_vector)
+  const uint64_t en_key = chain_key(round, thread, label, 0);
   {
-    if(
-      enabled.label == label && enabled.round == round &&
-      enabled.thread == thread)
-      return enabled.symbol;
+    auto it = enabled_map.find(en_key);
+    if(it != enabled_map.end())
+      return it->second;
   }
   irep_idt enabled_name = "En_T" + std::to_string(thread) + "_L" +
                           std::to_string(label) + "_R" + std::to_string(round);
@@ -1588,16 +1555,18 @@ symbol_exprt lazy_pot::create_enabled_symbol(
 
   enabled enabled_struct{label, thread, round, enabled_symbol};
   enabled_vector.emplace_back(enabled_struct);
+  enabled_map.emplace(en_key, enabled_symbol);
 
   return enabled_symbol;
 }
 
 symbol_exprt lazy_pot::create_cs_symbol(size_t thread, size_t round)
 {
-  for(const auto &cs : cs_vector)
+  const uint64_t cs_key = chain_key(round, static_cast<unsigned>(thread), 0, 0);
   {
-    if(cs.thread == thread && cs.round == round)
-      return cs.symbol;
+    auto it = cs_map.find(cs_key);
+    if(it != cs_map.end())
+      return it->second;
   }
   irep_idt cs_name =
     "cs_T" + std::to_string(thread) + "_R" + std::to_string(round);
@@ -1605,16 +1574,18 @@ symbol_exprt lazy_pot::create_cs_symbol(size_t thread, size_t round)
 
   cs cs_struct{thread, round, cs_symbol};
   cs_vector.emplace_back(cs_struct);
+  cs_map.emplace(cs_key, cs_symbol);
 
   return cs_symbol;
 }
 
 symbol_exprt lazy_pot::create_reach_symbol(unsigned label, size_t thread)
 {
-  for(const auto &reach : reach_vector)
+  const uint64_t re_key = chain_key(0, static_cast<unsigned>(thread), label, 0);
   {
-    if(reach.label == label && reach.thread == thread)
-      return reach.symbol;
+    auto it = reach_map.find(re_key);
+    if(it != reach_map.end())
+      return it->second;
   }
   irep_idt reach_name =
     "reach_T" + std::to_string(thread) + "_L" + std::to_string(label);
@@ -1622,6 +1593,7 @@ symbol_exprt lazy_pot::create_reach_symbol(unsigned label, size_t thread)
 
   reach reach_struct{label, thread, reach_symbol};
   reach_vector.emplace_back(reach_struct);
+  reach_map.emplace(re_key, reach_symbol);
 
   return reach_symbol;
 }
@@ -1685,7 +1657,7 @@ symbol_exprt lazy_pot::create_dr_loc_symbol(unsigned num)
   return loc_expr;
 }
 void lazy_pot::create_winr_tot_symbol(
-  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
   for(auto global_variable : global_variables)
   {
@@ -1701,14 +1673,14 @@ void lazy_pot::create_winr_tot_symbol(
     {
       for(const auto &write : sorted_writes)
       {
-        create_WINR_symbol(global_variable, write.thread, write.label, write.num, round,equation/*, message_handler*/);
+        create_WINR_symbol(global_variable, write.thread, write.label, write.num, round,equation);
       }
     }
   }
 }
 
 void lazy_pot::create_lw_tot_symbol(
-  symex_target_equationt &equation/*,message_handlert &message_handler*/) {
+  symex_target_equationt &equation) {
   for(auto global_variable : global_variables)
   {
     if(this->reads.count(global_variable) == 0)
@@ -1722,14 +1694,14 @@ void lazy_pot::create_lw_tot_symbol(
     for(std::size_t round = 0; round <= rounds; ++round){
       for(const auto &read : sorted_reads)
       {
-        create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation/*, message_handler*/);
+        create_LW_symbol(global_variable,read.thread, read.label,read.num, round, equation);
       }
     }
   }
 }
 
 void lazy_pot::create_nrp_tot_symbol(
-  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
   for(auto global_variable : global_variables)
   {
@@ -1745,14 +1717,14 @@ void lazy_pot::create_nrp_tot_symbol(
     {
       for(const auto &read : sorted_reads)
       {
-        create_NRP_symbol(global_variable, read.thread, read.label, read.num, round, equation/*, message_handler*/);
+        create_NRP_symbol(global_variable, read.thread, read.label, read.num, round, equation);
       }
     }
   }
 }
 
 void lazy_pot::create_low_tot_symbol(
-  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
   for(auto global_variable : global_variables)
   {
@@ -1767,15 +1739,15 @@ void lazy_pot::create_low_tot_symbol(
     {
       for(const auto &write : sorted_writes)
       {
-        create_LOW_symbol(global_variable, write.thread, write.label, write.num, round, equation/*, message_handler*/);
+        create_LOW_symbol(global_variable, write.thread, write.label, write.num, round, equation);
       }
     }
   }
 }
 
 void lazy_pot::create_atomic_canonical(
-  symex_target_equationt &equation/*,message_handlert &message_handler*/) {
-  for(std::size_t round = 1; round <= rounds; ++round){
+  symex_target_equationt &equation) {
+  for(std::size_t round = 2; round <= rounds; ++round){
     for(const auto &entry : atomic_blocks)
     {
       const atomic_block &b = entry.second;
@@ -1792,10 +1764,10 @@ void lazy_pot::create_atomic_canonical(
       exprt fire_cond = and_exprt(cs_1, cs);
       exprt abr = b.reads.empty()
         ? exprt(false_exprt{})
-        : exprt(create_ABR(b.reads, round, b.label, b.thread, equation/*,message_handlert &message_handler*/));
+        : exprt(create_ABR(b.reads, round, b.label, b.thread, equation));
       exprt abw = b.writes.empty()
         ? exprt(false_exprt{})
-        : exprt(create_ABW(b.writes, round, b.label, b.thread, equation/*,message_handlert &message_handler*/));
+        : exprt(create_ABW(b.writes, round, b.label, b.thread, equation));
       exprt expression = implies_exprt(fire_cond, or_exprt(abr, abw));
       simplify(expression, ns);
       equation.constraint(expression, "atomic_block_canonical", src);
@@ -1806,7 +1778,7 @@ void lazy_pot::create_atomic_canonical(
 symbol_exprt lazy_pot::create_ABR(
   const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round,
   unsigned label, unsigned thread,
-  symex_target_equationt &equation/*,message_handlert &message_handler*/) {
+  symex_target_equationt &equation) {
   exprt result = false_exprt{};
   const symex_targett::sourcet *src = nullptr;
   for(auto global_variable : global_variables){
@@ -1826,16 +1798,39 @@ symbol_exprt lazy_pot::create_ABR(
         (pw->round == round && pw->thread < rd.thread) ||
         (pw->round == round && pw->thread == rd.thread && pw->label < rd.label);
       if(!prev_outside)
-        continue;
+      {
+        const auto t_it = guards.find(rd.thread);
+        if(t_it != guards.end())
+        {
+          const auto l_it = t_it->second.find(rd.label);
+          if(
+            l_it != t_it->second.end() && pw->num < l_it->second.size() &&
+            rd.num < l_it->second.size())
+          {
+            const exprt &guard_w = l_it->second.at(pw->num);
+            if(guard_w.is_true() || guard_w == l_it->second.at(rd.num))
+              continue;
+          }
+        }
+      }
+
       exprt exec = create_exec_symbol_fast(rd.label, rd.num, rd.thread, round);
 
+      symbol_exprt lw_r =
+        create_LW_symbol(global_variable, rd.thread, rd.label, rd.num, round, equation);
+      symbol_exprt lw_r1 =
+        create_LW_symbol(global_variable, rd.thread, rd.label, rd.num, round - 1, equation);
+      exprt disjunct = and_exprt{exec, notequal_exprt{lw_r, lw_r1}};
+      
+      if(!prev_outside)
+      {
+        disjunct = and_exprt{
+          disjunct,
+          less_than_exprt{
+            lw_r, boundary_id(global_variable, round, rd.thread, rd.label, 0)}};
+      }
 
-      // ABR = paper eq(2) puro. La precondizione di delay (cs_t(r-2)==l) sta nel
-      // firing guard di create_atomic_canonical, non qui.
-      exprt lw_neq = notequal_exprt{
-        create_LW_symbol(global_variable, rd.thread, rd.label, rd.num, round, equation),
-        create_LW_symbol(global_variable, rd.thread, rd.label, rd.num, round - 1, equation)};
-      result = or_exprt{result, and_exprt{exec, lw_neq}};
+      result = or_exprt{result, disjunct};
     }
   }
   irep_idt abr_r = "ABR_T" + std::to_string(thread) + "_L" + std::to_string(label) +
@@ -1849,10 +1844,19 @@ symbol_exprt lazy_pot::create_ABR(
 symbol_exprt lazy_pot::create_ABW(
   const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round,
   unsigned label, unsigned thread,
-  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
   exprt result = false_exprt{};
   const symex_targett::sourcet *src = nullptr;
+
+
+  exprt block_guard = false_exprt{};
+  for(const auto &entry : writes)
+    for(const auto &write : entry.second)
+      block_guard = or_exprt{
+        block_guard,
+        create_exec_symbol_fast(write.label, write.num, write.thread, round)};
+
   for(auto global_variable : global_variables){
     if(writes.count(global_variable) == 0)
       continue;
@@ -1860,24 +1864,21 @@ symbol_exprt lazy_pot::create_ABW(
     if(src == nullptr)
       src = &ws.front().s_it->source;
 
-    exprt guard = false_exprt{};
-    for(const auto &write : ws)
-      guard = or_exprt{guard, create_exec_symbol_fast(write.label, write.num, write.thread, round)};
-
     exprt id_first_r    = boundary_id(global_variable, round, thread, label, 0);
     exprt id_first_r1   = boundary_id(global_variable, round - 1, thread, label, 0);
     exprt id_first_next = boundary_id(global_variable, round, thread, label + 1, 0);
     exprt id_after_r1   = boundary_id(global_variable, round - 1, thread, label, 1);
 
-    exprt nrp_a  = create_NRP_symbol(global_variable, thread, label + 1, 0, round - 1, equation);
     exprt winr_a = create_WINR_symbol(global_variable, thread, label + 1, 0, round - 1, equation);
+    exprt lw_b  = create_LW_symbol(global_variable, thread, label, 0, round, equation);
+    exprt gap_w = greater_than_or_equal_exprt{lw_b, id_after_r1};
+
+    exprt nrp_a = create_NRP_symbol(global_variable, thread, label + 1, 0, round - 1, equation);
     exprt wc_a = and_exprt{
       less_than_exprt{nrp_a, id_first_r},
       less_than_exprt{winr_a, id_first_r1}};
 
-    exprt lw_b  = create_LW_symbol(global_variable, thread, label, 0, round, equation);
     exprt low_b = create_LOW_symbol(global_variable, thread, label, 0, round, equation);
-    exprt gap_w = greater_than_or_equal_exprt{lw_b, id_after_r1};
     exprt winr_b = create_WINR_symbol(global_variable, thread, label + 1, 0, round, equation);
     exprt b_src = and_exprt{
       greater_than_or_equal_exprt{winr_b, id_first_r},
@@ -1885,8 +1886,9 @@ symbol_exprt lazy_pot::create_ABW(
     exprt gap_obs_w = greater_than_or_equal_exprt{low_b, id_after_r1};
     exprt wc_b = and_exprt{gap_w, or_exprt{b_src, gap_obs_w}};
 
-    result = or_exprt{result, and_exprt{guard, or_exprt{wc_a, wc_b}}};
+    result = or_exprt{result, or_exprt{wc_a, wc_b}};
   }
+  result = and_exprt{block_guard, result};
   irep_idt abw_r = "ABW_T" + std::to_string(thread) + "_L" + std::to_string(label) +
      "_R" + std::to_string(round);
   symbol_exprt sym{abw_r, bool_typet{}};
@@ -1923,7 +1925,7 @@ void lazy_pot::build_atomic_blocks(){
 
 
 symbol_exprt lazy_pot::create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
-  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;
@@ -2122,7 +2124,7 @@ symbol_exprt lazy_pot::create_OBS_symbol(irep_idt variable, const lazy_variable 
 }
 
 symbol_exprt lazy_pot::create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-  symex_target_equationt &equation/*,message_handlert &message_handler*/)
+  symex_target_equationt &equation)
 {
   const unsignedbv_typet type(bit_writes[variable]);
   const auto &src = equation.SSA_steps.begin()->source;

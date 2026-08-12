@@ -128,6 +128,7 @@ private:
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
   std::unordered_map<irep_idt, std::vector<lazy_variable_read>> lazy_variables_read;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
+  std::size_t skipped_writes = 0, skipped_reads = 0;
   std::vector<exec> exec_vector;
   std::unordered_map<uint64_t, symbol_exprt> exec_map;
   std::vector<atomic_block_round> atomic_block_rounds;
@@ -135,6 +136,11 @@ private:
   std::vector<enabled> enabled_vector;
   std::vector<cs> cs_vector;
   std::vector<reach> reach_vector;
+
+  std::unordered_map<uint64_t, symbol_exprt> exec_tot_map;
+  std::unordered_map<uint64_t, symbol_exprt> enabled_map;
+  std::unordered_map<uint64_t, symbol_exprt> cs_map;
+  std::unordered_map<uint64_t, symbol_exprt> reach_map;
   std::vector<std::pair<unsigned, std::pair<std::size_t, std::size_t>>>
     atomic_sections;
   std::map<std::pair<unsigned, unsigned>, atomic_block>
@@ -144,20 +150,16 @@ private:
   std::unordered_map<unsigned,std::unordered_map<unsigned, std::vector<exprt>>> guards; // < thread, < label, < num, guard > > >
 
   void handling_active_threads(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void check_shared_event(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void handling_atomic_sections(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void collect_reads_and_writes(
-    symex_target_equationt::SSA_stepst &ssa_steps/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt::SSA_stepst &ssa_steps);
 
   void annotate_round_robin_trace_event(
     SSA_stept &step,
@@ -169,12 +171,10 @@ private:
   void build_atomic_blocks();
 
   void create_write_constraints(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void create_read_constraints(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   std::optional<symbol_exprt> previous_shared(
     irep_idt variable,
@@ -183,26 +183,24 @@ private:
     unsigned thread,
     std::size_t round);
 
+  exprt active_at_turn(unsigned thread, unsigned label, std::size_t round);
+
   void create_cs_constraint(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void create_reach_constraint(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void handling_guards(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void handling_datarace(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
-  symbol_exprt phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v);
-  symbol_exprt phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v);
-  symbol_exprt same_round(/*messaget log,*/ symex_target_equationt &equation);
-  symbol_exprt no_interf(/*messaget log,*/ symex_target_equationt &equation);
+  symbol_exprt phase_1(symex_target_equationt &equation, irep_idt v);
+  symbol_exprt phase_2(symex_target_equationt &equation, irep_idt v);
+  symbol_exprt same_round(symex_target_equationt &equation);
+  symbol_exprt no_interf(symex_target_equationt &equation);
 
   symbol_exprt create_lazy_symbol(
     unsigned label,
@@ -218,7 +216,7 @@ private:
   create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, std::size_t round);
 
   symbol_exprt
-  create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
+  create_exec_tot_symbol(symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
 
   symbol_exprt
   create_enabled_symbol(unsigned label, unsigned thread, std::size_t round);
@@ -237,34 +235,34 @@ private:
 
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
-  void create_lw_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_lw_tot_symbol(symex_target_equationt &equation);
 
-  void create_winr_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_winr_tot_symbol(symex_target_equationt &equation);
 
-  void create_low_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_low_tot_symbol(symex_target_equationt &equation);
 
-  void create_nrp_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_nrp_tot_symbol(symex_target_equationt &equation);
 
-  void create_atomic_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_atomic_canonical(symex_target_equationt &equation);
 
-  symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
 
-  symbol_exprt create_ABW(const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  symbol_exprt create_ABW(const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
 
   symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
-  symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  symex_target_equationt &equation);
 
-  symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,  symex_target_equationt &equation
-    /*,message_handlert &message_handler*/);
+  symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
+    symex_target_equationt &equation);
 
   symbol_exprt create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   symbol_exprt create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   symbol_exprt create_OBS_symbol(irep_idt variable, const lazy_variable &w,
-    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   exprt boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num);
 
@@ -275,15 +273,13 @@ private:
   std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable, bool strict= false);
 
 
-
   void create_lazy_variable_read();
   void create_active_thread_statements(
     const symex_targett::sourcet &source,
     exprt &guard,
     unsigned int atomic_section_id,
     unsigned &thread,
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/,
+    symex_target_equationt &equation,
     const exprt &value);
 };
 
