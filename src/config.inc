@@ -31,13 +31,19 @@ endif
 #MINISAT = ../../MiniSat-p_v1.14
 #MINISAT2 = ../../minisat-2.2.1
 #IPASIR = ../../ipasir
-#GLUCOSE = ../../glucose-syrup
+# Glucose in-process, in aggiunta a MiniSat2: serve al tier di decisione POR
+# (--glucose). Il default resta MiniSat2, quindi i solver Deagle non cambiano.
+GLUCOSE = ../../glucose-syrup
 #CADICAL = ../../cadical
 
 # select default solver to be minisat2 if no other is specified
 ifeq ($(BOOLEFORCE)$(CHAFF)$(GLUCOSE)$(IPASIR)$(LINGELING)$(MINISAT)$(MINISAT2)$(PICOSAT)$(CADICAL),)
   MINISAT2 = ../../minisat-2.2.1
 endif
+
+# MiniSat2 resta il backend di default (satcheck.h lo sceglie prima di Glucose)
+# ed e' obbligatorio: i solver Deagle di questo fork ne derivano.
+MINISAT2 = ../../minisat-2.2.1
 
 ifneq ($(PICOSAT),)
   CP_CXXFLAGS += -DSATCHECK_PICOSAT

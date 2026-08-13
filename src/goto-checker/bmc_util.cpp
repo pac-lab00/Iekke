@@ -28,6 +28,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <linking/static_lifetime_init.h>
 
 #include <solvers/decision_procedure.h>
+#include <solvers/flattening/boolbv.h>
 
 #include <util/json_stream.h>
 #include <util/make_unique.h>
@@ -173,6 +174,73 @@ void output_graphml(
     std::ofstream out(graphml);
     write_graphml(graphml_witness.graph(), out, filename, options);
   }
+}
+
+/// Hand the POR provenance to the SAT backend: for every auxiliary symbol the
+/// reduction created, mark the SAT variables it was flattened into. The mapping
+/// symbol -> literals is read from the flattening layer (boolean symbols from
+/// prop_conv_solvert, bitvector symbols from the boolbv map), never guessed from
+/// names at SAT level: after bit-blasting one symbol is several variables and
+/// ordinary constraints introduce helpers of their own. Backends that ignore the
+/// classification are unaffected.
+void mark_por_variables(
+  decision_proceduret &decision_procedure,
+  propt &prop,
+  message_handlert &message_handler)
+{
+  const auto &por_symbols = por_auxiliary_symbols();
+  if(por_symbols.empty())
+    return;
+
+  messaget log(message_handler);
+
+  auto *boolbv = dynamic_cast<boolbvt *>(&decision_procedure);
+  if(boolbv == nullptr)
+  {
+    log.warning() << "POR provenance: flattening layer does not expose a "
+                     "literal map, variables left unclassified"
+                  << messaget::eom;
+    return;
+  }
+
+  std::size_t marked_symbols = 0, marked_variables = 0;
+
+  for(const auto &sym : por_symbols)
+  {
+    const irep_idt &identifier = sym.get_identifier();
+
+    if(sym.type().id() == ID_bool)
+    {
+      const auto &symbols = boolbv->get_symbols();
+      const auto it = symbols.find(identifier);
+      if(it == symbols.end())
+        continue;
+      if(it->second.is_constant())
+        continue;
+      prop.set_por_variable(it->second);
+      ++marked_symbols;
+      ++marked_variables;
+    }
+    else
+    {
+      const auto entry = boolbv->get_map().get_map_entry(identifier);
+      if(!entry.has_value())
+        continue;
+      ++marked_symbols;
+      for(const auto &literal : entry->get().literal_map)
+      {
+        if(literal.is_constant())
+          continue;
+        prop.set_por_variable(literal);
+        ++marked_variables;
+      }
+    }
+  }
+
+  log.statistics() << "POR provenance: " << marked_variables
+                   << " SAT variables classified from " << marked_symbols
+                   << " of " << por_symbols.size() << " auxiliary symbols"
+                   << messaget::eom;
 }
 
 void convert_symex_target_equation(
@@ -435,6 +503,7 @@ void postprocess_equation(
 
 #include <solvers/sat/satcheck_minisat2.h>
 #include <solvers/prop/prop_conv_solver.h>
+#include <solvers/flattening/boolbv.h>
 
 std::chrono::duration<double> prepare_property_decider(
   propertiest &properties,
@@ -460,6 +529,11 @@ std::chrono::duration<double> prepare_property_decider(
   property_decider.update_properties_goals_from_symex_target_equation(
     properties);
   property_decider.convert_goals();
+
+  mark_por_variables(
+    property_decider.get_decision_procedure(),
+    property_decider.get_solver()->prop(),
+    ui_message_handler);
 
   // __SZH_ADD_BEGIN__
   auto &prop_solver = property_decider.get_solver()->prop();

@@ -215,6 +215,10 @@ make_satcheck_prop(message_handlert &message_handler, const optionst &options)
 
 #include "solvers/sat/satcheck_minisat2.h"
 
+#ifdef HAVE_GLUCOSE
+#include "solvers/sat/satcheck_glucose.h"
+#endif
+
 static std::unique_ptr<propt>
 get_sat_solver(message_handlert &message_handler, const optionst &options)
 {
@@ -258,6 +262,26 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_minisat()
 std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
 {
   auto solver = util_make_unique<solvert>();
+#ifdef HAVE_GLUCOSE
+  // In-process Glucose, opt-in and first in the chain: the POR decision-tier
+  // experiment needs variable provenance, which the external DIMACS path cannot
+  // carry, and an explicit --glucose must win over the Deagle solvers that this
+  // fork enables by default. Without the flag nothing changes.
+  if(options.get_bool_option("glucose"))
+  {
+    // Honour --no-sat-preprocessor here too: with the simplifier the freezing
+    // that prop_conv_solvert applies to every symbol-bearing literal blocks most
+    // of SatELite's work, so being able to switch it off is what makes that cost
+    // measurable.
+    if(options.get_bool_option("sat-preprocessor"))
+      solver->set_prop(
+        make_satcheck_prop<satcheck_glucose_simplifiert>(message_handler, options));
+    else
+      solver->set_prop(
+        make_satcheck_prop<satcheck_glucose_no_simplifiert>(message_handler, options));
+  }
+  else
+#endif
   // __SZH_ADD_BEGIN__
   if(options.get_bool_option("cat"))
   {

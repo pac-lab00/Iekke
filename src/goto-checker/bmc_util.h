@@ -34,6 +34,17 @@ class symex_target_equationt;
 struct trace_optionst;
 class ui_message_handlert;
 
+class propt;
+
+/// Classify the SAT variables that the partial-order reduction introduced, so
+/// that a backend supporting decision tiers can keep them out of the ordinary
+/// branching heuristic. No-op when nothing was recorded or when the backend
+/// ignores the classification.
+void mark_por_variables(
+  decision_proceduret &decision_procedure,
+  propt &prop,
+  message_handlert &message_handler);
+
 void convert_symex_target_equation(
   symex_target_equationt &equation,
   decision_proceduret &decision_procedure,
@@ -180,6 +191,7 @@ void run_property_decider(
   "(slice-formula)" \
   "(rounds):" \
   "(por)" \
+  "(glucose)" \
   "(unwinding-assertions)" \
   "(no-unwinding-assertions)" \
   "(mm-strict-guard)" \

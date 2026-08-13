@@ -3,6 +3,7 @@
 
 #include "lazy_po.h"
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <thread>
 #include <util/cprover_prefix.h>
@@ -17,12 +18,54 @@
 #include <util/source_location.h>
 
 #include <util/arith_tools.h>
+#include <util/invariant.h>
 
+
+// Campi impaccati nella chiave delle memo: num [0,20), label [20,40),
+// thread [40,52), round [52,64). Un overflow silenzioso farebbe collidere
+// posizioni distinte nelle cache delle catene (una LW di un thread diventa
+// quella di un altro) -- stessa classe di guasto del troncamento degli id in
+// bit_writes. Meglio abortire che emettere vincoli sbagliati.
+static const unsigned chain_key_num_max = 1u << 20;
+static const unsigned chain_key_label_max = 1u << 20;
+static const unsigned chain_key_thread_max = 1u << 12;
+static const std::size_t chain_key_round_max = std::size_t(1) << 12;
 
 static uint64_t chain_key(std::size_t round, unsigned thread, unsigned label, unsigned num)
 {
+  PRECONDITION(num < chain_key_num_max);
+  PRECONDITION(label < chain_key_label_max);
+  PRECONDITION(thread < chain_key_thread_max);
+  PRECONDITION(round < chain_key_round_max);
   return (uint64_t(round) << 52) | (uint64_t(thread) << 40) |
          (uint64_t(label) << 20) | uint64_t(num);
+}
+
+// Registry della provenance POR: i simboli ausiliari introdotti dalla
+// riduzione (catene dei tag e testimoni di blocco). Serve al backend SAT per
+// classificare le variabili corrispondenti senza indovinare dai nomi dopo il
+// bit-blasting, dove un simbolo diventa molti letterali e i nomi sparaiscono.
+// Ambito processo: una run = un'equazione, ripulito a ogni costruzione.
+static std::vector<symbol_exprt> &por_symbol_registry()
+{
+  static std::vector<symbol_exprt> registry;
+  return registry;
+}
+
+const std::vector<symbol_exprt> &por_auxiliary_symbols()
+{
+  return por_symbol_registry();
+}
+
+void clear_por_auxiliary_symbols()
+{
+  por_symbol_registry().clear();
+}
+
+static const symbol_exprt &register_por_symbol(const symbol_exprt &sym)
+{
+  por_symbol_registry().push_back(sym);
+  return por_symbol_registry().back();
 }
 
 static void align_pointer_equalities(exprt &e)
@@ -66,14 +109,33 @@ void lazy_pot::operator()(
   message_handlert &message_handler)
 {
   messaget log{message_handler};
+  clear_por_auxiliary_symbols();
   log.statistics() << "Adding Iekke constraints with " << rounds << " rounds"
                    << messaget::eom;
+
+  // Instrumentation per fase: separa il costo di costruzione da quello del
+  // solver, e dentro la costruzione separa base da POR. Serve per attribuire
+  // le regressioni di performance alla fase giusta invece che al totale di
+  // postprocess_equation.
+  const auto t_start = std::chrono::steady_clock::now();
+  auto t_last = t_start;
+  const auto phase = [&](const char *name) {
+    const auto now = std::chrono::steady_clock::now();
+    log.statistics()
+      << "lazy_po phase " << name << ": "
+      << std::chrono::duration_cast<std::chrono::milliseconds>(now - t_last)
+           .count()
+      << "ms" << messaget::eom;
+    t_last = now;
+  };
 
   //check_shared_event(equation, message_handler);
 
   handling_active_threads(equation);
+  phase("active-threads");
 
   collect_reads_and_writes(equation.SSA_steps);
+  phase("collect-events");
 
   if(skipped_writes || skipped_reads)
     log.error() << "lazy_po: accessi shared SCARTATI dal modello di memoria -- W="
@@ -82,19 +144,31 @@ void lazy_pot::operator()(
                    "invisibili agli altri thread)" << messaget::eom;
 
   if(por)
+  {
     build_atomic_blocks();
+    phase("atomic-blocks");
+  }
 
   create_write_constraints(equation);
+  phase("base-writes");
 
   create_read_constraints(equation);
+  phase("base-reads");
 
   if(por)
+  {
     create_lazy_variable_read();
+    phase("lazy-reads");
+  }
 
   create_cs_constraint(equation);
+  phase("context-switch");
 
   if(por) {
     enumerate_accesses();
+
+    validate_access_order();
+    phase("enumerate+validate");
 
     // Guardia sulla larghezza degli id. Se un id raggiunge la sentinella ⊥
     // (2^bits-1 usata da WINR/NRP e da boundary_id), i confronti di canonicita'
@@ -122,6 +196,7 @@ void lazy_pot::operator()(
     create_lw_tot_symbol(equation);
 
     create_winr_tot_symbol(equation);
+    phase("tags-LW-WINR");
 
     // NRP/LOW on-demand: le catene si materializzano (memoizzate) solo dalle
     // ancore usate in create_ABW; niente pre-creazione totale.
@@ -129,6 +204,7 @@ void lazy_pot::operator()(
     // create_low_tot_symbol(equation);
 
     create_atomic_canonical(equation);
+    phase("canonicality+NRP/LOW");
   }
 
   //handling_atomic_sections(equation);
@@ -136,15 +212,27 @@ void lazy_pot::operator()(
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
     handling_datarace(equation);
+    phase("datarace");
   }
   else
+  {
     handling_guards(equation);
+    phase("guards");
+  }
 
   for(auto &step : equation.SSA_steps)
   {
     align_pointer_equalities(step.cond_expr);
     align_pointer_equalities(step.guard);
   }
+  phase("pointer-alignment");
+
+  log.statistics()
+    << "lazy_po total: "
+    << std::chrono::duration_cast<std::chrono::milliseconds>(
+         std::chrono::steady_clock::now() - t_start)
+         .count()
+    << "ms" << messaget::eom;
 }
 
 void lazy_pot::create_write_constraints(
@@ -558,6 +646,12 @@ void lazy_pot::handling_guards(
 
   auto ssa_steps = equation.SSA_steps;
 
+  // Consumo in ordine con un cursore: l'erase(begin()) precedente ricopiava
+  // tutta la coda a ogni assert/assume (O(n^2) sui programmi con molti
+  // blocking statement). at() sostituisce anche il front() su vettore vuoto,
+  // che era UB se gli eventi bloccanti non coprivano tutti gli assert/assume.
+  std::size_t blocking_cursor = 0;
+
   for(symex_target_equationt::SSA_stepst::const_iterator s_it =
         ssa_steps.begin();
       s_it != ssa_steps.end();
@@ -567,8 +661,7 @@ void lazy_pot::handling_guards(
 
     if(s_it->is_assert() || s_it->is_assume())
     {
-      shared_event blocking_event = blocking_events.front();
-      blocking_events.erase(blocking_events.begin());
+      shared_event blocking_event = blocking_events.at(blocking_cursor++);
       SSA_stept step{equation.SSA_steps.front()};
       equation.SSA_steps.pop_front();
       symbol_exprt reach = create_reach_symbol(
@@ -1836,6 +1929,7 @@ symbol_exprt lazy_pot::create_ABR(
   irep_idt abr_r = "ABR_T" + std::to_string(thread) + "_L" + std::to_string(label) +
      "_R" + std::to_string(round);
   symbol_exprt sym{abr_r, bool_typet{}};
+  register_por_symbol(sym);
   simplify(result, ns);
   equation.constraint(equal_exprt{sym, result}, "abr", *src);
   atomic_block_rounds.push_back({thread, label, static_cast<unsigned>(round), sym});
@@ -1850,19 +1944,25 @@ symbol_exprt lazy_pot::create_ABW(
   const symex_targett::sourcet *src = nullptr;
 
 
-  exprt block_guard = false_exprt{};
-  for(const auto &entry : writes)
-    for(const auto &write : entry.second)
-      block_guard = or_exprt{
-        block_guard,
-        create_exec_symbol_fast(write.label, write.num, write.thread, round)};
-
+  // eq(4) del paper: la guardia di esecuzione sta DENTRO il disgiunto su x e
+  // scorre solo le write di quella x, non tutte quelle del blocco. Con la
+  // guardia fattorizzata fuori bastava una write di y eseguita per abilitare un
+  // testimone WC su x: ma se nessuna write di x del blocco esegue, anticipare
+  // il blocco non tocca x, quindi quel testimone e' spurio e teneva in vita
+  // schedule ridondanti (sound, ma rompe l'unicita' del canonico del teorema).
+  // Sui blocchi che scrivono una sola variabile le due forme coincidono.
   for(auto global_variable : global_variables){
     if(writes.count(global_variable) == 0)
       continue;
     const auto &ws = writes.at(global_variable);
     if(src == nullptr)
       src = &ws.front().s_it->source;
+
+    exprt var_guard = false_exprt{};
+    for(const auto &write : ws)
+      var_guard = or_exprt{
+        var_guard,
+        create_exec_symbol_fast(write.label, write.num, write.thread, round)};
 
     exprt id_first_r    = boundary_id(global_variable, round, thread, label, 0);
     exprt id_first_r1   = boundary_id(global_variable, round - 1, thread, label, 0);
@@ -1886,12 +1986,12 @@ symbol_exprt lazy_pot::create_ABW(
     exprt gap_obs_w = greater_than_or_equal_exprt{low_b, id_after_r1};
     exprt wc_b = and_exprt{gap_w, or_exprt{b_src, gap_obs_w}};
 
-    result = or_exprt{result, or_exprt{wc_a, wc_b}};
+    result = or_exprt{result, and_exprt{var_guard, or_exprt{wc_a, wc_b}}};
   }
-  result = and_exprt{block_guard, result};
   irep_idt abw_r = "ABW_T" + std::to_string(thread) + "_L" + std::to_string(label) +
      "_R" + std::to_string(round);
   symbol_exprt sym{abw_r, bool_typet{}};
+  register_por_symbol(sym);
   simplify(result, ns);
   equation.constraint(equal_exprt{sym, result}, "abw", *src);
   atomic_block_rounds.push_back({thread, label, static_cast<unsigned>(round), sym});
@@ -1941,6 +2041,7 @@ symbol_exprt lazy_pot::create_LW_symbol(irep_idt variable, unsigned thread, unsi
     irep_idt lw_id = "LW_T" + std::to_string(t) + "_L" + std::to_string(l) +
       "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
     symbol_exprt sym{lw_id, type};
+    register_por_symbol(sym);
     exprt rhs_s = rhs;
     simplify(rhs_s, ns);
     equation.constraint(equal_exprt{sym, rhs_s}, "lw canonical", src);
@@ -1993,6 +2094,7 @@ symbol_exprt lazy_pot::create_WINR_symbol(irep_idt variable, unsigned thread, un
     irep_idt winr_id = "WINR_T" + std::to_string(t) + "_L" + std::to_string(l) +
       "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
     symbol_exprt sym{winr_id, type};
+    register_por_symbol(sym);
     exprt rhs_s = rhs;
     simplify(rhs_s, ns);
     equation.constraint(equal_exprt{sym, rhs_s}, "winr canonical", src);
@@ -2054,6 +2156,7 @@ symbol_exprt lazy_pot::create_NRP_symbol(irep_idt variable, unsigned thread, uns
     irep_idt nrp_id = "NRP_T" + std::to_string(t) + "_L" + std::to_string(l) +
       "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
     symbol_exprt sym{nrp_id, type};
+    register_por_symbol(sym);
     exprt rhs_s = rhs;
     simplify(rhs_s, ns);
     equation.constraint(equal_exprt{sym, rhs_s}, "nrp canonical", src);
@@ -2118,6 +2221,7 @@ symbol_exprt lazy_pot::create_OBS_symbol(irep_idt variable, const lazy_variable 
   irep_idt obs_id = "OBS_T" + std::to_string(w.thread) + "_L" + std::to_string(w.label) +
     "_N" + std::to_string(w.num) + "_R" + std::to_string(w.round) + "_V" + id2string(variable);
   symbol_exprt sym{obs_id, bool_typet{}};
+  register_por_symbol(sym);
   equation.constraint(equal_exprt{sym, result}, "obs canonical", src);
   memo.emplace(key, sym);
   return sym;
@@ -2140,6 +2244,7 @@ symbol_exprt lazy_pot::create_LOW_symbol(irep_idt variable, unsigned thread, uns
     irep_idt low_id = "LOW_T" + std::to_string(t) + "_L" + std::to_string(l) +
       "_N" + std::to_string(n) + "_R" + std::to_string(r) + "_V" + id2string(variable);
     symbol_exprt sym{low_id, type};
+    register_por_symbol(sym);
     exprt rhs_s = rhs;
     simplify(rhs_s, ns);
     equation.constraint(equal_exprt{sym, rhs_s}, "low canonical", src);
@@ -2241,6 +2346,59 @@ void lazy_pot::create_lazy_variable_read() {
         return std::tie(a.round, a.thread, a.label, a.num)
              < std::tie(b.round, b.thread, b.label, b.num);
       });
+  }
+}
+
+void lazy_pot::validate_access_order() const
+{
+  // Le navigazioni (get_previous_write/get_next_read/boundary_id) usano
+  // lower_bound/upper_bound sui vettori per locazione: assumono ordine lex
+  // stretto su (round, thread, label, num). Se l'ordine si rompe le catene
+  // ancorano alla posizione sbagliata e il POR pota schedule legittimi senza
+  // segnalare nulla. Stessa cosa per gli id, che devono essere unici e
+  // crescenti nello spazio unificato write+read (enumerate_accesses).
+  for(const auto &entry : lazy_variables)
+  {
+    const auto &v = entry.second;
+    for(std::size_t i = 1; i < v.size(); ++i)
+      DATA_INVARIANT(
+        std::tie(v[i - 1].round, v[i - 1].thread, v[i - 1].label, v[i - 1].num) <
+          std::tie(v[i].round, v[i].thread, v[i].label, v[i].num),
+        "lazy_po: write positions must be strictly lex-ordered");
+  }
+
+  for(const auto &entry : lazy_variables_read)
+  {
+    const auto &v = entry.second;
+    for(std::size_t i = 1; i < v.size(); ++i)
+      DATA_INVARIANT(
+        std::tie(v[i - 1].round, v[i - 1].thread, v[i - 1].label, v[i - 1].num) <
+          std::tie(v[i].round, v[i].thread, v[i].label, v[i].num),
+        "lazy_po: read positions must be strictly lex-ordered");
+  }
+
+  for(const auto &gv : global_variables)
+  {
+    std::unordered_set<unsigned> ids;
+    const auto w_it = lazy_variables.find(gv);
+    if(w_it != lazy_variables.end())
+      for(const auto &lv : w_it->second)
+        DATA_INVARIANT(
+          ids.insert(lv.id).second, "lazy_po: duplicate write id in location");
+    const auto r_it = lazy_variables_read.find(gv);
+    if(r_it != lazy_variables_read.end())
+      for(const auto &lv : r_it->second)
+        DATA_INVARIANT(
+          ids.insert(lv.id).second,
+          "lazy_po: read id collides with another access id in location");
+  }
+
+  for(const auto &entry : atomic_blocks)
+  {
+    const atomic_block &b = entry.second;
+    DATA_INVARIANT(
+      entry.first.first == b.thread && entry.first.second == b.label,
+      "lazy_po: atomic block key must match its thread/label");
   }
 }
 

@@ -9,6 +9,13 @@
 #include <optional>
 #include <vector>
 
+// Provenance POR per il backend SAT: elenco dei simboli ausiliari creati
+// dall'ultima costruzione (LW, WINR, NRP, LOW, OBS, ABR, ABW). La
+// classificazione delle variabili appartiene al livello che costruisce la
+// formula, non al solver.
+const std::vector<symbol_exprt> &por_auxiliary_symbols();
+void clear_por_auxiliary_symbols();
+
 class lazy_pot
 {
 public:
@@ -169,6 +176,8 @@ private:
     unsigned trace_order);
 
   void build_atomic_blocks();
+
+  void validate_access_order() const;
 
   void create_write_constraints(
     symex_target_equationt &equation);

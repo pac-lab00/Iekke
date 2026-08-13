@@ -41,6 +41,8 @@ public:
   void lcnf(const bvt &bv) override;
   void set_assignment(literalt a, bool value) override;
 
+  void set_por_variable(literalt a) override;
+
   // extra MiniSat feature: solve with assumptions
   void set_assumptions(const bvt &_assumptions) override;
 
