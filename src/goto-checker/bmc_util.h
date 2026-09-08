@@ -192,6 +192,7 @@ void run_property_decider(
   "(rounds):" \
   "(por)" \
   "(glucose)" \
+  "(kissat)" \
   "(unwinding-assertions)" \
   "(no-unwinding-assertions)" \
   "(mm-strict-guard)" \

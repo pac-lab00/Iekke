@@ -127,14 +127,7 @@ void satcheck_glucose_baset<T>::lcnf(const bvt &bv)
       }
     }
 
-    Glucose::vec<Glucose::Lit> c;
-
-    convert(bv, c);
-
-    // Note the underscore.
-    // Add a clause to the solver without making superflous internal copy.
-
-    solver->addClause_(c);
+    add_clause_to_solver(bv);
 
     if(solver_hardness)
     {
@@ -163,6 +156,16 @@ void satcheck_glucose_baset<T>::lcnf(const bvt &bv)
     status = statust::ERROR;
     throw std::bad_alloc();
   }
+}
+
+template <typename T>
+void satcheck_glucose_baset<T>::add_clause_to_solver(const bvt &bv)
+{
+  // Note the underscore.
+  // Add a clause to the solver without making a superfluous internal copy.
+  Glucose::vec<Glucose::Lit> c;
+  convert(bv, c);
+  solver->addClause_(c);
 }
 
 template <typename T>
@@ -204,7 +207,11 @@ propt::resultt satcheck_glucose_baset<T>::do_prop_solve()
         Glucose::vec<Glucose::Lit> solver_assumptions;
         convert(assumptions, solver_assumptions);
 
+        before_solve();
+
         const bool sat_result = solver->solve(solver_assumptions);
+
+        after_solve(sat_result);
 
         // Split the decision count by tier: the fallback figure is the evidence
         // that POR variables are reachable at all. If it stays zero while POR
@@ -212,9 +219,14 @@ propt::resultt satcheck_glucose_baset<T>::do_prop_solve()
         // out of ordinary candidates.
         log.statistics() << "decisions: " << solver->decisions << " total, "
                          << solver->stats_por_fallback_decisions
-                         << " from the POR fallback tier; conflicts: "
+                         << " from the POR fallback tier, "
+                         << solver->stats_por_decisions
+                         << " landing on a POR variable; conflicts: "
                          << solver->conflicts << ", propagations: "
-                         << solver->propagations << messaget::eom;
+                         << solver->propagations
+                         << "; CS-first: "
+                         << (solver->cs_first_enabled ? "on" : "off")
+                         << messaget::eom;
 
         if(sat_result)
         {

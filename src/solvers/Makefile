@@ -31,7 +31,7 @@ ifneq ($(IPASIR),)
 endif
 
 ifneq ($(GLUCOSE),)
-  GLUCOSE_SRC=sat/satcheck_glucose.cpp
+  GLUCOSE_SRC=sat/satcheck_glucose.cpp sat/satcheck_glucose_sms.cpp
   GLUCOSE_INCLUDE=-I $(GLUCOSE)
   GLUCOSE_LIB=$(GLUCOSE)/simp/SimpSolver$(OBJEXT) $(GLUCOSE)/core/Solver$(OBJEXT)
   CP_CXXFLAGS += -DHAVE_GLUCOSE -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
@@ -62,6 +62,13 @@ ifneq ($(LINGELING),)
   CP_CXXFLAGS += -DHAVE_LINGELING
 endif
 
+ifneq ($(KISSAT),)
+  KISSAT_SRC=sat/satcheck_kissat.cpp
+  KISSAT_INCLUDE=-I $(KISSAT)/src
+  KISSAT_LIB=$(KISSAT)/build/libkissat$(LIBEXT)
+  CP_CXXFLAGS += -DHAVE_KISSAT
+endif
+
 ifneq ($(CADICAL),)
   CADICAL_SRC=sat/satcheck_cadical.cpp
   CADICAL_INCLUDE=-I $(CADICAL)/src
@@ -80,6 +87,7 @@ SRC = $(BOOLEFORCE_SRC) \
       $(PICOSAT_SRC) \
       $(SQUOLEM2_SRC) \
       $(CADICAL_SRC) \
+      $(KISSAT_SRC) \
       decision_procedure.cpp \
       flattening/arrays.cpp \
       flattening/boolbv.cpp \
@@ -274,7 +282,8 @@ INCLUDES += -I .. \
   $(CHAFF_INCLUDE) $(BOOLEFORCE_INCLUDE) $(MINISAT_INCLUDE) $(MINISAT2_INCLUDE) \
   $(IPASIR_INCLUDE) \
   $(SQUOLEM2_INC) $(CUDD_INCLUDE) $(GLUCOSE_INCLUDE) \
-	$(PICOSAT_INCLUDE) $(LINGELING_INCLUDE) $(CADICAL_INCLUDE)
+	$(PICOSAT_INCLUDE) $(LINGELING_INCLUDE) $(CADICAL_INCLUDE) \
+	$(KISSAT_INCLUDE)
 
 CLEANFILES += solvers$(LIBEXT) \
   smt2_solver$(EXEEXT) smt2/smt2_solver$(OBJEXT) smt2/smt2_solver$(DEPEXT)
@@ -291,7 +300,8 @@ endif
 
 SOLVER_LIB = $(CHAFF_LIB) $(BOOLEFORCE_LIB) $(MINISAT_LIB) \
         $(MINISAT2_LIB) $(SQUOLEM2_LIB) $(CUDD_LIB) \
-        $(PICOSAT_LIB) $(LINGELING_LIB) $(GLUCOSE_LIB) $(CADICAL_LIB)
+        $(PICOSAT_LIB) $(LINGELING_LIB) $(GLUCOSE_LIB) $(CADICAL_LIB) \
+        $(KISSAT_LIB)
 
 SOLVER_OBJS = $(filter %$(OBJEXT), $(SOLVER_LIB))
 ifneq ($(SOLVER_OBJS),)

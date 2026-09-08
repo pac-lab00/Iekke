@@ -29,6 +29,9 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include <solvers/decision_procedure.h>
 #include <solvers/flattening/boolbv.h>
+#include <solvers/sat/cnf.h>
+
+#include <cstdlib>
 
 #include <util/json_stream.h>
 #include <util/make_unique.h>
@@ -519,21 +522,61 @@ std::chrono::duration<double> prepare_property_decider(
     << property_decider.get_decision_procedure().decision_procedure_text()
     << messaget::eom;
 
+  // Marcatori per il test di separazione SMS. Le clausole vengono emesse in
+  // ordine di conversione, quindi questi tre punti tagliano la CNF in:
+  //   [0, m0]   base            -> modulo master
+  //   (m0, m1]  canonicalita'   -> modulo slave
+  //   (m1, m2]  goal            -> modulo master
+  // Se la separazione e' esatta, il segmento base sotto --por deve coincidere
+  // con quello dell'encoding plain: ogni clausola in piu' e' canonicalita'
+  // colata nel master.
+  // SAT Modulo SAT (opt-in con LAZYPO_SMS=1): la canonicalita' non entra nella
+  // formula del master ma in un modulo a parte, agganciato come teoria
+  // sull'interfaccia condivisa. Il master resta esattamente l'encoding plain --
+  // verificato clausola per clausola dai marcatori qui sotto.
+  const bool sms_modular = getenv("LAZYPO_SMS") != nullptr;
+
+  const auto cnf_mark = [&](const char *name) {
+    if(!sms_modular)
+      return;
+    auto *c = dynamic_cast<cnft *>(&property_decider.get_solver()->prop());
+    if(c != nullptr)
+      log.statistics() << "sms-mark " << name << ": vars " << c->no_variables()
+                       << " clauses " << c->no_clauses() << messaget::eom;
+  };
+  auto &prop_for_sms = property_decider.get_solver()->prop();
+
   convert_symex_target_equation(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
 
+  cnf_mark("m0-base");
+
+  if(sms_modular)
+    prop_for_sms.set_clause_redirect(true);
 
   equation.convert_canonical_constraints(
     property_decider.get_decision_procedure());
+
+  if(sms_modular)
+    prop_for_sms.set_clause_redirect(false);
+
+  cnf_mark("m1-canonicalita");
 
   property_decider.update_properties_goals_from_symex_target_equation(
     properties);
   property_decider.convert_goals();
 
+  cnf_mark("m2-goal");
+
   mark_por_variables(
     property_decider.get_decision_procedure(),
     property_decider.get_solver()->prop(),
     ui_message_handler);
+
+  // Tutte le clausole sono caricate: ora si puo' calcolare l'interfaccia
+  // (le variabili presenti in entrambi i moduli) e agganciare lo slave.
+  if(sms_modular)
+    prop_for_sms.finalize_modules();
 
   // __SZH_ADD_BEGIN__
   auto &prop_solver = property_decider.get_solver()->prop();

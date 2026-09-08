@@ -120,6 +120,13 @@ public:
   /// use the classification ignore it.
   virtual void set_por_variable(literalt) { }
 
+  /// SAT Modulo SAT: da qui in avanti le clausole vanno al modulo slave invece
+  /// che al master. No-op sui backend senza catena modulare.
+  virtual void set_clause_redirect(bool) { }
+  /// Tutte le clausole sono state caricate: aggancia i moduli fra loro
+  /// sull'interfaccia condivisa.
+  virtual void finalize_modules() { }
+
   // Resource limits:
   virtual void set_time_limit_seconds(uint32_t)
   {

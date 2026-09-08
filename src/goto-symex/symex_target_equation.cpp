@@ -490,7 +490,14 @@ void symex_target_equationt::convert_constraints(
        && step.comment != "abr"
        && step.comment != "abw"
        && step.comment != "lw canonical"
-       && step.comment != "winr canonical")
+       && step.comment != "winr canonical"
+       // Mancavano: le catene NRP/LOW e i simboli OBS finivano nel passo base,
+       // cioe' nel modulo master. Misurato sul taglio della CNF: il 26% delle
+       // clausole POR stava dalla parte sbagliata (tri_longer +19040 su 74170,
+       // fib_unsafe-5 +69483 su 264336).
+       && step.comment != "nrp canonical"
+       && step.comment != "low canonical"
+       && step.comment != "obs canonical")
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
@@ -518,7 +525,10 @@ void symex_target_equationt::convert_canonical_constraints(
            || step.comment == "abr"
            || step.comment == "abw"
            || step.comment == "lw canonical"
-           || step.comment == "winr canonical"))
+           || step.comment == "winr canonical"
+           || step.comment == "nrp canonical"
+           || step.comment == "low canonical"
+           || step.comment == "obs canonical"))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);

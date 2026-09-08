@@ -1,28 +1,1042 @@
-diff -rupNw glucose-syrup/core/Solver.cc glucose-syrup-patched/core/Solver.cc
---- glucose-syrup/core/Solver.cc	2014-10-03 11:10:21.000000000 +0200
-+++ glucose-syrup-patched/core/Solver.cc	2018-04-21 16:58:22.950005391 +0200
-@@ -931,7 +931,6 @@ void Solver::uncheckedEnqueue(Lit p, CRe
- CRef Solver::propagate() {
-     CRef confl = CRef_Undef;
-     int num_props = 0;
--    int previousqhead = qhead;
-     watches.cleanAll();
-     watchesBin.cleanAll();
-     unaryWatches.cleanAll();
-@@ -1405,7 +1404,9 @@ lbool Solver::search(int nof_conflicts)
+diff -ruN a/core/ShadowTheory.h b/core/ShadowTheory.h
+--- a/core/ShadowTheory.h	1970-01-01 01:00:00.000000000 +0100
++++ b/core/ShadowTheory.h	2026-09-08 11:44:24.557431043 +0200
+@@ -0,0 +1,124 @@
++/*****************************************************************************
++ShadowTheory.h -- teoria di validazione per l'impalcatura DPLL(T).
++
++Non serve a risolvere niente: serve a ESERCITARE la macchina dei marker.
++
++Prende N clausole dalla formula e le SPOSTA dentro di se', togliendole dal
++master. L'insieme delle clausole non cambia -- cambia solo da che parte della
++partizione stanno -- quindi la teoria e' semanticamente neutra per costruzione,
++ma e' l'unica a farle rispettare: deve propagare e deve entrare in conflitto.
++E' un mini-SMS con una partizione arbitraria.
++
++Copiarle e basta, lasciandole anche nel master, NON avrebbe validato niente:
++la teoria viene chiamata solo dopo che propagate() ha raggiunto il punto fisso,
++quindi nessuna clausola gia' presente nel master puo' essere unitaria in quel
++momento. Zero propagazioni, zero marker, percorso rischioso non eseguito.
++*****************************************************************************/
++
++#ifndef Glucose_ShadowTheory_h
++#define Glucose_ShadowTheory_h
++
++#include "core/Solver.h"
++#include "core/Theory.h"
++
++namespace Glucose {
++
++class ShadowTheory : public Theory {
++public:
++    explicit ShadowTheory(Solver &s) : S(s), marker(CRef_Undef) {}
++    ~ShadowTheory() override { for(int i = 0; i < cls.size(); i++) delete cls[i]; }
++
++    /// Sposta fino a `max_clauses` clausole dal master dentro la teoria.
++    /// Va chiamata dopo addClause() e prima di solve(), a livello 0.
++    void setup(int max_clauses) {
++        marker = S.newReasonMarker(this);
++        reason_of.growTo(S.nVars(), -1);
++
++        vec<CRef> taken;
++        int keep = 0;
++        for(int i = 0; i < S.clauses.size(); i++) {
++            const CRef cr = S.clauses[i];
++            const Clause &c = S.ca[cr];
++            // Corte: la scansione lineare della teoria resta economica.
++            if(cls.size() < max_clauses && c.size() >= 2 && c.size() <= 4) {
++                vec<Lit> *v = new vec<Lit>();
++                for(int j = 0; j < c.size(); j++) {
++                    v->push(c[j]);
++                    S.freezeVar(var(c[j]));
++                }
++                cls.push(v);
++                taken.push(cr);
++            } else {
++                S.clauses[keep++] = cr;
++            }
++        }
++        S.clauses.shrink(S.clauses.size() - keep);
++        for(int i = 0; i < taken.size(); i++) {
++            S.detachClause(taken[i], true);
++            S.ca.free(taken[i]);
++        }
++    }
++
++    int size() const { return cls.size(); }
++    uint64_t propagations() const { return n_props; }
++    uint64_t conflicts() const { return n_confl; }
++    uint64_t reasons_built() const { return n_reasons; }
++
++    void backtrackTheory(int) override {}   // lo stato vive nel trail del solver
++
++    bool propagateTheory(vec<Lit> &conflict) override {
++        for(int i = 0; i < cls.size(); i++) {
++            const vec<Lit> &c = *cls[i];
++            Lit unassigned = lit_Undef;
++            int n_false = 0;
++            bool satisfied = false;
++            for(int j = 0; j < c.size(); j++) {
++                const lbool v = S.value(c[j]);
++                if(v == l_True) { satisfied = true; break; }
++                if(v == l_False) n_false++;
++                else unassigned = c[j];
++            }
++            if(satisfied)
++                continue;
++            if(n_false == c.size()) {           // clausola falsificata
++                conflict.clear();
++                for(int j = 0; j < c.size(); j++) conflict.push(c[j]);
++                n_confl++;
++                return false;
++            }
++            if(n_false == c.size() - 1) {       // unitaria
++                reason_of.growTo(S.nVars(), -1);
++                reason_of[var(unassigned)] = i;
++                S.enqueueTheory(unassigned, marker);
++                n_props++;
++            }
++        }
++        return true;
++    }
++
++    bool solveTheory(vec<Lit> &conflict) override {
++        return propagateTheory(conflict);
++    }
++
++    void buildTheoryReason(Lit p, vec<Lit> &reason) override {
++        n_reasons++;
++        const int i = reason_of[var(p)];
++        assert(i >= 0);
++        const vec<Lit> &c = *cls[i];
++        reason.clear();
++        reason.push(p);                          // reason[0] deve essere p
++        for(int j = 0; j < c.size(); j++)
++            if(c[j] != p) reason.push(c[j]);
++    }
++
++private:
++    Solver &S;
++    CRef marker;
++    vec<vec<Lit> *> cls;
++    vec<int> reason_of;   // var -> indice della clausola ombra che l'ha propagata
++    uint64_t n_props = 0, n_confl = 0, n_reasons = 0;
++};
++
++} // namespace Glucose
++
++#endif
+diff -ruN a/core/Solver.cc b/core/Solver.cc
+--- a/core/Solver.cc	2021-07-15 01:52:10.000000000 +0200
++++ b/core/Solver.cc	2026-09-08 11:44:24.563888761 +0200
+@@ -51,6 +51,8 @@
+ 
+ #include "utils/System.h"
+ #include "mtl/Sort.h"
++#include <cstdlib>
++
+ #include "core/Solver.h"
+ #include "core/Constants.h"
+ #include"simp/SimpSolver.h"
+@@ -178,6 +180,10 @@
+ , simpDB_assigns(-1)
+ , simpDB_props(0)
+ , order_heap(VarOrderLt(activity))
++, por_order_heap(VarOrderLt(activity))
++, stats_por_fallback_decisions(0)
++, stats_por_decisions(0)
++, cs_first_enabled(getenv("LAZYPO_NO_CS_FIRST") == NULL)
+ , progress_estimate(0)
+ , remove_satisfied(true)
+ ,lastLearntClause(CRef_Undef)
+@@ -263,6 +269,10 @@
+ , simpDB_assigns(s.simpDB_assigns)
+ , simpDB_props(s.simpDB_props)
+ , order_heap(VarOrderLt(activity))
++, por_order_heap(VarOrderLt(activity))
++, stats_por_fallback_decisions(0)
++, stats_por_decisions(0)
++, cs_first_enabled(getenv("LAZYPO_NO_CS_FIRST") == NULL)
+ , progress_estimate(s.progress_estimate)
+ , remove_satisfied(s.remove_satisfied)
+ ,lastLearntClause(CRef_Undef)
+@@ -302,6 +312,8 @@
+     s.decision.memCopyTo(decision);
+     s.trail.memCopyTo(trail);
+     s.order_heap.copyTo(order_heap);
++    s.por_var.memCopyTo(por_var);
++    s.por_order_heap.copyTo(por_order_heap);
+     s.clauses.memCopyTo(clauses);
+     s.learnts.memCopyTo(learnts);
+     s.permanentLearnts.memCopyTo(permanentLearnts);
+@@ -386,6 +398,9 @@
+     polarity.push(sign);
+     forceUNSAT.push(0);
+     decision.push();
++    // Default to ordinary; the frontend tags POR variables explicitly. Must be
++    // pushed before setDecisionVar, which routes the variable to a heap.
++    por_var.push(0);
+     trail.capacity(v + 1);
+     setDecisionVar(v, dvar);
+     return v;
+@@ -668,6 +683,11 @@
+         qhead = trail_lim[level];
+         trail.shrink(trail.size() - trail_lim[level]);
+         trail_lim.shrink(trail_lim.size() - level);
++
++        // Le teorie mantengono stato incrementale lungo il trail: vanno
++        // avvisate DOPO che il trail e' stato tagliato.
++        for(int i = 0; i < theories.size(); i++)
++            theories[i]->backtrackTheory(level);
+     }
+ }
+ 
+@@ -678,15 +698,19 @@
+ Lit Solver::pickBranchLit() {
+     Var next = var_Undef;
+ 
+-    // Random decision:
++    // Random decision: ordinary tier only, so that POR variables never displace
++    // ordinary candidates.
+     if(((randomizeFirstDescent && conflicts == 0) || drand(random_seed) < random_var_freq) && !order_heap.empty()) {
+         next = order_heap[irand(random_seed, order_heap.size())];
+-        if(value(next) == l_Undef && decision[next])
++        if(value(next) == l_Undef && decision[next] && !por_var[next])
+             stats[rnd_decisions]++;
+     }
+ 
+-    // Activity based decision:
+-    while(next == var_Undef || value(next) != l_Undef || !decision[next])
++    // Activity based decision, ordinary tier. A POR variable may still sit in
++    // this heap if it was classified after being inserted: skip it here, it is
++    // already present in the fallback heap.
++    while(next == var_Undef || value(next) != l_Undef || !decision[next] ||
++          (por_var[next] && cs_first_enabled))
+         if(order_heap.empty()) {
+             next = var_Undef;
+             break;
+@@ -694,16 +718,44 @@
+             next = order_heap.removeMin();
+         }
+ 
+-    if(randomize_on_restarts && !fixed_randomize_on_restarts && newDescent && (decisionLevel() % 2 == 0)) {
++    // Fallback tier: decide POR variables only once no ordinary variable is
++    // eligible. This keeps the search complete -- without it the solver could
++    // run out of decision candidates while POR clauses still have unassigned
++    // variables, and report a partial model as SAT.
++    if(next == var_Undef) {
++        stats_por_fallback_decisions++;
++        while(next == var_Undef || value(next) != l_Undef || !decision[next] || !por_var[next])
++            if(por_order_heap.empty()) {
++                next = var_Undef;
++                break;
++            } else {
++                next = por_order_heap.removeMin();
++            }
++        if(next == var_Undef)
++            stats_por_fallback_decisions--;
++    }
++
++    // I due rami di randomizzazione qui sotto restituivano mkLit(next) senza
++    // guardare next == var_Undef: con entrambe le heap vuote (tutte le var
++    // decise) producevano mkLit(var_Undef) e un accesso fuori limite in
++    // uncheckedEnqueue. Non emergeva finche' lo slave SMS teneva il master in
++    // backtrack costante; col gate il master arriva a esaurire le decisioni.
++    if(next != var_Undef && randomize_on_restarts && !fixed_randomize_on_restarts && newDescent && (decisionLevel() % 2 == 0)) {
+         return mkLit(next, (randomDescentAssignments >> (decisionLevel() % 32)) & 1);
+     }
+ 
+-    if(fixed_randomize_on_restarts && decisionLevel() < 7) {
++    if(next != var_Undef && fixed_randomize_on_restarts && decisionLevel() < 7) {
+         return mkLit(next, (randomDescentAssignments >> (decisionLevel() % 32)) & 1);
+     }
+ 
+     if(next == var_Undef) return lit_Undef;
+ 
++    // Count every decision that lands on a POR variable, whichever tier it came
++    // from. Under CS-first this should stay near zero: the paper's Layer-2 claim
++    // is that POR tags are forced by unit propagation and never branched on.
++    // With CS-first off it measures how much branching the tags actually attract.
++    if(por_var[next]) stats_por_decisions++;
++
+     if(forceUnsatOnNewDescent && newDescent) {
+         if(forceUNSAT[next] != 0)
+             return mkLit(next, forceUNSAT[next] < 0);
+@@ -801,7 +853,12 @@
+                     if(level(var(q)) >= decisionLevel()) {
+                         pathC++;
+                         // UPDATEVARACTIVITY trick (see competition'09 companion paper)
+-                        if(!isSelector(var(q)) && (reason(var(q)) != CRef_Undef) && ca[reason(var(q))].learnt())
++                        // Un marker non e' ancora una clausola: niente learnt().
++                        // E' solo un'euristica di bump, saltarla non cambia la
++                        // semantica -- e risolvere qui il marker allochererebbe
++                        // in `ca`, invalidando il `Clause &c` ancora vivo sopra.
++                        if(!isSelector(var(q)) && (reason(var(q)) != CRef_Undef) &&
++                           !isTheoryMarker(reason(var(q))) && ca[reason(var(q))].learnt())
+                             lastDecisionLevel.push(q);
+                     } else {
+                         if(isSelector(var(q))) {
+@@ -818,7 +875,7 @@
+         while (!seen[var(trail[index--])]);
+         p = trail[index + 1];
+         //stats[sumRes]++;
+-        confl = reason(var(p));
++        confl = resolveReason(var(p)); // materializza la reason se e' un marker
+         seen[var(p)] = 0;
+         pathC--;
+ 
+@@ -849,7 +906,7 @@
+             if(reason(x) == CRef_Undef)
+                 out_learnt[j++] = out_learnt[i];
+             else {
+-                Clause &c = ca[reason(var(out_learnt[i]))];
++                Clause &c = ca[resolveReason(var(out_learnt[i]))];
+                 // Thanks to Siert Wieringa for this bug fix!
+                 for(int k = ((c.size() == 2) ? 0 : 1); k < c.size(); k++)
+                     if(!seen[var(c[k])] && level(var(c[k])) > 0) {
+@@ -908,7 +965,8 @@
+     // UPDATEVARACTIVITY trick (see competition'09 companion paper)
+     if(lastDecisionLevel.size() > 0) {
+         for(int i = 0; i < lastDecisionLevel.size(); i++) {
+-            if(ca[reason(var(lastDecisionLevel[i]))].lbd() < lbd)
++            if(!isTheoryMarker(reason(var(lastDecisionLevel[i]))) &&
++               ca[reason(var(lastDecisionLevel[i]))].lbd() < lbd)
+                 varBumpActivity(var(lastDecisionLevel[i]));
+         }
+         lastDecisionLevel.clear();
+@@ -929,7 +987,10 @@
+     int top = analyze_toclear.size();
+     while(analyze_stack.size() > 0) {
+         assert(reason(var(analyze_stack.last())) != CRef_Undef);
+-        Clause &c = ca[reason(var(analyze_stack.last()))];
++        // Risolvere PRIMA di prendere il riferimento: resolveReason puo'
++        // allocare in `ca` e rilocare la regione.
++        const CRef lr_cr = resolveReason(var(analyze_stack.last()));
++        Clause &c = ca[lr_cr];
+         analyze_stack.pop(); //
+         if(c.size() == 2 && value(c[0]) == l_False) {
+             assert(value(c[1]) == l_True);
+@@ -985,7 +1046,8 @@
+                 assert(level(x) > 0);
+                 out_conflict.push(~trail[i]);
+             } else {
+-                Clause &c = ca[reason(x)];
++                const CRef af_cr = resolveReason(x);
++                Clause &c = ca[af_cr];
+                 //                for (int j = 1; j < c.size(); j++) Minisat (glucose 2.0) loop
+                 // Bug in case of assumptions due to special data structures for Binary.
+                 // Many thanks to Sam Bayless (sbayless@cs.ubc.ca) for discover this bug.
+@@ -1303,11 +1365,14 @@
+ 
+ 
+ void Solver::rebuildOrderHeap() {
+-    vec <Var> vs;
++    vec <Var> vs, por_vs;
+     for(Var v = 0; v < nVars(); v++)
+-        if(decision[v] && value(v) == l_Undef)
+-            vs.push(v);
++        if(decision[v] && value(v) == l_Undef) {
++            if(por_var[v] && cs_first_enabled) por_vs.push(v);
++            else                                vs.push(v);
++        }
+     order_heap.build(vs);
++    por_order_heap.build(por_vs);
+ 
+ }
+ 
+@@ -1460,6 +1525,371 @@
+ |    all variables are decision variables, this means that the clause set is satisfiable. 'l_False'
+ |    if the clause set is unsatisfiable. 'l_Undef' if the bound on number of conflicts is reached.
+ |________________________________________________________________________________________________@*/
++//=================================================================================================
++// DPLL(T): marker, reason pigre, propagazione a punto fisso.
++//
++// Portato da modsat (SAT Modulo SAT, Bayless et al. FMCAD'13), Alg. 2 e Alg. 3.
++// La reason di una propagazione di teoria e' costruita solo se l'analisi del
++// conflitto la chiede: e' questo che rende la propagazione di teoria piu'
++// economica delle clausole che la codificherebbero.
++
++//=================================================================================================
++// Questo solver come TEORIA di un altro: la catena di SAT Modulo SAT.
++//
++// Alg. 2 del paper (PROPAGATE_ALL) e' bidirezionale: gli assegnamenti passano
++// nei due sensi fino a punto fisso. Il modulo inferiore non decide mai da solo
++// -- riceve i letterali di interfaccia dal master come fatti (senza reason,
++// esattamente come le assumption di MiniSat), propaga, e o entra in conflitto
++// o produce nuovi letterali di interfaccia da rimandare in su.
++
++void Solver::attachTo(Solver *s, const vec<Var> &shared) {
++    super = s;
++    interface_var.growTo(nVars(), 0);
++    for(int i = 0; i < shared.size(); i++) {
++        const Var v = shared[i];
++        if(v < nVars())            interface_var[v] = 1;
++        if(v < s->nVars())         s->freezeVar(v);
++        if(v < nVars())            freezeVar(v);
++    }
++    // Registrare PRIMA: newReasonMarker cerca la teoria in `theories` per
++    // associarle il segnaposto, e non la troverebbe.
++    s->addTheory(this);
++    super_marker = s->newReasonMarker(this);
++    super_qhead = 0;
++    slave_reported = 0;
++
++    // Lista esplicita dell'interfaccia (per il gate) + soglia da ambiente.
++    interface_list.clear();
++    for(int i = 0; i < shared.size(); i++)
++        if(shared[i] < nVars()) interface_list.push(shared[i]);
++    if(const char *g = getenv("LAZYPO_SMS_GATE")) sms_gate = atoi(g);
++
++    // Quali variabili compaiono davvero in questo modulo.
++    module_var.growTo(nVars(), 0);
++    for(int i = 0; i < clauses.size(); i++) {
++        const Clause &c = ca[clauses[i]];
++        for(int j = 0; j < c.size(); j++) module_var[var(c[j])] = 1;
++    }
++    for(int i = 0; i < trail.size(); i++) module_var[var(trail[i])] = 1;
++}
++
++void Solver::backtrackTheory(int level) {
++    cancelUntil(level);
++    // Il trail del master si e' accorciato: riconsumarlo da capo dal punto in
++    // cui e' ancora valido.
++    if(super != nullptr && super_qhead > super->trail.size())
++        super_qhead = super->trail.size();
++    if(slave_reported > trail.size())
++        slave_reported = trail.size();
++}
++
++void Solver::interfaceConflict(CRef confl, vec<Lit> &out) {
++    out.clear();
++    if(decisionLevel() == 0) return;   // insoddisfacibile di suo: clausola vuota
++
++    seen.growTo(nVars(), 0);
++    int marked = 0;
++    {
++        const Clause &c = ca[confl];
++        for(int i = 0; i < c.size(); i++)
++            if(!seen[var(c[i])] && level(var(c[i])) > 0) { seen[var(c[i])] = 1; marked++; }
++    }
++    // Risoluzione all'indietro lungo il trail: ogni letterale con una reason
++    // viene sostituito dalle sue premesse; restano solo i fatti ricevuti.
++    for(int i = trail.size() - 1; i >= trail_lim[0] && marked > 0; i--) {
++        const Var x = var(trail[i]);
++        if(!seen[x]) continue;
++        seen[x] = 0; marked--;
++        const CRef r = reason(x);
++        if(r == CRef_Undef) {
++            out.push(~trail[i]);       // fatto ricevuto dal master: lo neghiamo
++        } else {
++            const Clause &c = ca[r];
++            for(int j = ((c.size() == 2) ? 0 : 1); j < c.size(); j++)
++                if(!seen[var(c[j])] && level(var(c[j])) > 0) { seen[var(c[j])] = 1; marked++; }
++        }
++    }
++    for(int i = 0; i < trail.size(); i++) seen[var(trail[i])] = 0;
++}
++
++int Solver::unassignedInterface() const {
++    int n = 0;
++    for(int i = 0; i < interface_list.size(); i++)
++        if(super->value(interface_list[i]) == l_Undef) n++;
++    return n;
++}
++
++bool Solver::propagateTheory(vec<Lit> &conflict) {
++    if(super == nullptr) return true;
++    stats_theory_calls++;
++
++    // Gate LAZYPO_SMS_GATE: finche' restano piu' di `sms_gate` variabili di
++    // interfaccia libere lo slave sta inerte; quando conviene valutarlo lo si
++    // valuta FLAT -- stato scartato e ricostruito dall'assegnamento corrente del
++    // master, a un solo livello -- cosi' non c'e' stato incrementale che possa
++    // divergere dal master dopo un backtrack. Sound: la canonicalita' e'
++    // pruning-only, saltare potatura non cambia il verdetto.
++    if(sms_gate >= 0) {
++        if(unassignedInterface() > sms_gate) {
++            stats_theory_calls_gated++;
++            return true;
++        }
++        bool changed = gate_last_iface.size() != interface_list.size();
++        for(int i = 0; !changed && i < interface_list.size(); i++)
++            if(gate_last_iface[i] != super->value(interface_list[i])) changed = true;
++        if(!changed) {
++            stats_theory_calls_gated++;
++            return true;
++        }
++
++        cancelUntil(0);
++        newDecisionLevel();   // livello 1: interfaceConflict scarta il livello 0
++        for(int i = 0; i < super->trail.size(); i++) {
++            const Lit l = super->trail[i];
++            const Var v = var(l);
++            if(v >= interface_var.size() || !interface_var[v]) continue;
++            if(value(l) == l_True) continue;
++            if(value(l) == l_False) {
++                const CRef r = reason(v);
++                conflict.clear();
++                if(r != CRef_Undef) interfaceConflict(r, conflict);
++                if(!conflict.size()) conflict.push(~l);
++                stats_slave_conflicts++;
++                gate_last_iface.clear();
++                return false;
++            }
++            uncheckedEnqueue(l);
++        }
++        stats_theory_calls_fed++;
++        const CRef gconfl = propagate();
++        if(gconfl != CRef_Undef) {
++            interfaceConflict(gconfl, conflict);
++            stats_slave_conflicts++;
++            gate_last_iface.clear();
++            return false;
++        }
++        gate_last_iface.growTo(interface_list.size());
++        for(int i = 0; i < interface_list.size(); i++)
++            gate_last_iface[i] = super->value(interface_list[i]);
++        return true;
++    }
++
++    const int lits_before = trail.size();
++
++    // Allinea i livelli di decisione a quelli del master, cosi' il backtrack
++    // del master si traduce direttamente in un backtrack qui.
++    while(decisionLevel() < super->decisionLevel())
++        newDecisionLevel();
++
++    // master -> slave
++    while(super_qhead < super->trail.size()) {
++        const Lit l = super->trail[super_qhead++];
++        const Var v = var(l);
++        if(v >= interface_var.size() || !interface_var[v]) continue;
++        if(value(l) == l_True)  continue;
++        if(value(l) == l_False) {
++            // Il master afferma l, lo slave aveva gia' dedotto ~l: conflitto
++            // gia' spiegabile risalendo dalla reason di ~l.
++            const CRef r = reason(v);
++            if(r == CRef_Undef) { conflict.clear(); conflict.push(~l); }
++            else                interfaceConflict(r, conflict);
++            if(!conflict.size()) conflict.push(~l);
++            stats_slave_conflicts++;
++            return false;
++        }
++        uncheckedEnqueue(l);   // fatto ricevuto: nessuna reason, come un'assumption
++    }
++
++    if(trail.size() > lits_before) {
++        stats_theory_calls_fed++;
++        stats_theory_lits_in += trail.size() - lits_before;
++    }
++
++    const CRef confl = propagate();
++    if(confl != CRef_Undef) {
++        interfaceConflict(confl, conflict);
++        stats_slave_conflicts++;
++        return false;
++    }
++
++    // slave -> master: le nuove deduzioni sull'interfaccia risalgono con un
++    // segnaposto; la clausola che le spiega si costruira' solo se servira'.
++    for(; slave_reported < trail.size(); slave_reported++) {
++        const Lit l = trail[slave_reported];
++        const Var v = var(l);
++        if(v >= interface_var.size() || !interface_var[v]) continue;
++        if(reason(v) == CRef_Undef) continue;         // e' un fatto ricevuto
++        if(super->value(l) != l_Undef) continue;
++        super->enqueueTheory(l, super_marker);
++        stats_slave_up++;
++        // A livello 0 il letterale entra nel master senza che nessuna clausola
++        // lo spieghi mai: un conflitto a livello 0 esce da search() senza
++        // passare da analyze(), quindi il segnaposto non viene materializzato.
++        // E' l'unica via per cui lo slave puo' contribuire alla refutazione
++        // restando invisibile.
++        if(super->decisionLevel() == 0) stats_slave_up_level0++;
++    }
++    return true;
++}
++
++bool Solver::solveTheory(vec<Lit> &conflict) {
++    if(!propagateTheory(conflict))
++        return false;
++    // Il modulo di canonicalita' non ha variabili libere proprie: i tag sono
++    // funzioni dell'interfaccia, quindi dopo la propagazione tutto e' deciso.
++    // Se cosi' non fosse, accettare l'assegnamento costa POTATURA, non
++    // correttezza: il master da solo e' l'encoding plain completo, quindi ogni
++    // suo modello e' un'esecuzione reale. Il contatore dice se succede mai.
++    int undecided = 0, undecided_por = 0;
++    for(int v = 0; v < nVars(); v++)
++        if(assigns[v] == l_Undef && v < module_var.size() && module_var[v] &&
++           (v >= interface_var.size() || !interface_var[v])) {
++            undecided++;
++            // Il master porta la classificazione di provenienza (set_por_variable,
++            // dal mark_por_variables della frontend). La numerazione e' condivisa,
++            // quindi da qui si vede se una variabile e' un tag POR vero o una
++            // intermedia Tseitin senza nome.
++            if(super != nullptr && v < super->por_var.size() && super->por_var[v])
++                undecided_por++;
++            if(slave_undecided_vars.size() < 40) slave_undecided_vars.push(v);
++        }
++    if(undecided > 0) {
++        stats_slave_incomplete++;
++        stats_slave_undecided_por += undecided_por;
++        stats_slave_undecided_max =
++            (uint64_t)undecided > stats_slave_undecided_max ? (uint64_t)undecided
++                                                            : stats_slave_undecided_max;
++    }
++    return true;
++}
++
++void Solver::buildTheoryReason(Lit p, vec<Lit> &reason_out) {
++    // p e' stato propagato dallo slave verso il master. La sua spiegazione e'
++    // la clausola di interfaccia: p oppure la negazione dei fatti ricevuti che
++    // lo hanno forzato.
++    reason_out.clear();
++    reason_out.push(p);
++    const Var v = var(p);
++    const CRef r = (v < nVars()) ? reason(v) : CRef_Undef;
++    if(r == CRef_Undef || value(p) != l_True) {
++        // Non abbiamo piu' lo stato che l'ha prodotto: ripiego conservativo,
++        // la negazione dell'intero prefisso ricevuto.
++        for(int i = trail_lim.size() ? trail_lim[0] : 0; i < trail.size(); i++)
++            if(reason(var(trail[i])) == CRef_Undef && trail[i] != p)
++                reason_out.push(~trail[i]);
++        return;
++    }
++    vec<Lit> cause;
++    interfaceConflict(r, cause);
++    for(int i = 0; i < cause.size(); i++)
++        if(var(cause[i]) != v) reason_out.push(cause[i]);
++}
++
++CRef Solver::newReasonMarker(Theory *forTheory) {
++    markers.push(ca.makeMarkerReference());
++    const int num = CRef_Undef - markers.last() - 1;
++    marker_index.growTo(num + 1, -1);
++    for(int i = 0; i < theories.size(); i++)
++        if(theories[i] == forTheory) { marker_index[num] = i; break; }
++    assert(marker_index[num] >= 0);
++    return markers.last();
++}
++
++CRef Solver::resolveReason(Var x) {
++    const CRef cr = vardata[x].reason;
++    if(!isTheoryMarker(cr))
++        return cr;
++
++    const Lit p = mkLit(x, value(x) == l_False); // il letterale assegnato vero
++    theory_reason.clear();
++    Theory *const t = theories[getTheory(cr)];
++    if(Solver *const sub = dynamic_cast<Solver *>(t)) sub->stats_slave_reasons++;
++    t->buildTheoryReason(p, theory_reason);
++    assert(theory_reason.size() >= 2);
++    assert(theory_reason[0] == p);
++
++    // Learnt, non permanente: finche' e' la reason di x resta protetta da
++    // locked(), che vede theory_reason[0] == p e vardata[x].reason == questa
++    // clausola. Appena x si disassegna, reduceDB puo' recuperarla come una
++    // learnt qualsiasi. Tenerle in `clauses` le rendeva indistruttibili: su
++    // triangular-longest-2 erano 100816 clausole permanenti in piu' nel master.
++    const CRef reason = ca.alloc(theory_reason, true);
++    ca[reason].setLBD(computeLBD(ca[reason]));
++    ca[reason].setOneWatched(false);
++    learnts.push(reason);
++    claBumpActivity(ca[reason]);
++    attachClause(reason);
++    vardata[x].reason = reason;
++    return reason;
++}
++
++CRef Solver::addTheoryConflict(vec<Lit> &ps) {
++    if(ps.size() == 0) {
++        // Clausola vuota: il modulo inferiore e' insoddisfacibile di suo,
++        // indipendentemente dall'interfaccia. L'intera formula lo e'.
++        ok = false;
++        return CRef_Undef;
++    }
++    if(ps.size() == 1) {
++        // Fatto di livello 0: non c'e' clausola da restituire come conflitto.
++        cancelUntil(0);
++        if(value(ps[0]) == l_False) { ok = false; return CRef_Undef; }
++        if(value(ps[0]) == l_Undef) uncheckedEnqueue(ps[0]);
++        return CRef_Undef;
++    }
++    // La spiegazione di un conflitto di teoria puo' avere il suo letterale di
++    // livello massimo sotto decisionLevel() (lo slave gated lo trova dopo che il
++    // master e' gia' sceso). analyze() pretende >=1 letterale al livello
++    // corrente: si backjumpa al livello massimo della clausola. Sul percorso
++    // non-gated k == decisionLevel() e questo non fa nulla.
++    int k = 0;
++    for(int i = 0; i < ps.size(); i++)
++        if(value(ps[i]) != l_Undef && level(var(ps[i])) > k)
++            k = level(var(ps[i]));
++    if(k < decisionLevel())
++        cancelUntil(k);
++    const CRef cr = ca.alloc(ps, false);
++    clauses.push(cr);
++    attachClause(cr);
++    return cr;
++}
++
++CRef Solver::propagateTheories() {
++    for(int i = 0; i < theories.size(); i++) {
++        theory_conflict.clear();
++        if(!theories[i]->propagateTheory(theory_conflict))
++            return addTheoryConflict(theory_conflict);
++    }
++    return CRef_Undef;
++}
++
++CRef Solver::propagateAll() {
++    CRef confl = propagate();
++    if(theories.size() == 0)
++        return confl;
++    while(confl == CRef_Undef) {
++        const int before = trail.size();
++        confl = propagateTheories();
++        if(confl != CRef_Undef || !ok)
++            break;
++        if(trail.size() == before)
++            break;              // punto fisso fra formula e teorie
++        confl = propagate();
++    }
++    return confl;
++}
++
++CRef Solver::checkTheoriesOnModel() {
++    for(int i = 0; i < theories.size(); i++) {
++        // Un modulo di sola potatura non puo' invalidare un modello del master.
++        if(theories[i]->isPruningOnly()) { stats_model_checks_skipped++; continue; }
++        theory_conflict.clear();
++        if(!theories[i]->solveTheory(theory_conflict))
++            return addTheoryConflict(theory_conflict);
++    }
++    return CRef_Undef;
++}
++
+ lbool Solver::search(int nof_conflicts) {
+     assert(ok);
+     int backtrack_level;
+@@ -1478,7 +1908,23 @@
+                 return l_False;
+ 
+         }
+-        CRef confl = propagate();
++        // Alg. 3 di SMS, modifica 1: propagazione a punto fisso fra la formula
++        // e le teorie. `pending_theory_conflict` porta un conflitto scoperto
++        // sul modello totale (modifica 2, sotto): non lo troverebbe propagate(),
++        // perche' la clausola e' gia' interamente falsificata quando nasce e i
++        // suoi watcher non possono piu' scattare.
++        CRef confl;
++        if(pending_theory_conflict != CRef_Undef) {
++            confl = pending_theory_conflict;
++            pending_theory_conflict = CRef_Undef;
++        } else {
++            confl = propagateAll();
++        }
++
++        // Una teoria puo' aver prodotto la clausola vuota: nessun CRef da
++        // analizzare, la formula e' insoddisfacibile.
++        if(!ok)
++            return l_False;
+ 
+         if(confl != CRef_Undef) {
+             newDescent = false;
+@@ -1645,6 +2091,15 @@
                  decisions++;
                  next = pickBranchLit();
-                 if (next == lit_Undef) {
-+#if 0
-                     printf("c last restart ## conflicts  :  %d %d \n", conflictC, decisionLevel());
-+#endif
-                     // Model found:
-                     return l_True;
-                 }
-diff -rupNw glucose-syrup/core/SolverTypes.h glucose-syrup-patched/core/SolverTypes.h
---- glucose-syrup/core/SolverTypes.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/core/SolverTypes.h	2018-04-21 16:58:22.950005391 +0200
-@@ -53,7 +53,9 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR
+                 if(next == lit_Undef) {
++                  // Alg. 3 di SMS, modifica 2: prima di dichiarare SAT, le
++                  // teorie devono confermare il modello. La propagazione non e'
++                  // completa, quindi senza questo controllo si restituirebbe
++                  // SAT su un assegnamento che una teoria rifiuta.
++                  const CRef mconfl = checkTheoriesOnModel();
++                  if(mconfl != CRef_Undef) {
++                      pending_theory_conflict = mconfl;
++                      continue;
++                  }
+ 		  if (verbosity > 0) printf("c last restart ## conflicts  :  %d %d \n", conflictC, decisionLevel());
+ 		  // Model found:
+ 		  return l_True;
+@@ -1946,7 +2401,8 @@
+     for(int i = 0; i < trail.size(); i++) {
+         Var v = var(trail[i]);
+ 
+-        if(reason(v) != CRef_Undef && (ca[reason(v)].reloced() || locked(ca[reason(v)])))
++        if(reason(v) != CRef_Undef && !isTheoryMarker(reason(v)) &&
++           (ca[reason(v)].reloced() || locked(ca[reason(v)])))
+             ca.reloc(vardata[v].reason, to);
+     }
+ 
+@@ -1972,6 +2428,12 @@
+     // Initialize the next region to a size corresponding to the estimated utilization degree. This
+     // is not precise but should avoid some unnecessary reallocations for the new region:
+     ClauseAllocator to(ca.size() - ca.wasted());
++    // I segnaposto delle reason di teoria vivono in cima allo spazio dei CRef,
++    // sotto `marker_refs`. Il nuovo allocatore nasce con marker_refs =
++    // CRef_Undef e moveTo() lo ricopia dentro `ca`: senza questa riga
++    // l'intervallo dei marker si perde alla prima garbage collection, e da li'
++    // in poi isClause() scambia ogni marker per una clausola vera.
++    to.marker_refs = ca.marker_refs;
+     relocAll(to);
+     if(verbosity >= 2)
+         printf("|  Garbage collection:   %12d bytes => %12d bytes             |\n",
+diff -ruN a/core/Solver.h b/core/Solver.h
+--- a/core/Solver.h	2021-07-15 01:52:10.000000000 +0200
++++ b/core/Solver.h	2026-09-08 11:44:24.566885217 +0200
+@@ -58,6 +58,7 @@
+ #include "core/Constants.h"
+ #include "mtl/Clone.h"
+ #include "core/SolverStats.h"
++#include "core/Theory.h"
+ 
+ 
+ namespace Glucose {
+@@ -94,7 +95,11 @@
+ //=================================================================================================
+ // Solver -- the main class:
+ 
+-class Solver : public Clone {
++// Un Solver puo' essere teoria di un altro Solver: e' la catena di SAT Modulo
++// SAT (Bayless et al.). Il modulo inferiore riceve gli assegnamenti alle
++// variabili di interfaccia, propaga, e restituisce o una clausola di interfaccia
++// (conflitto) o nuove assegnazioni da rimandare in su.
++class Solver : public Clone, public Theory {
+ 
+     friend class SolverConfiguration;
+ 
+@@ -153,6 +158,15 @@
+     // 
+     void    setPolarity    (Var v, bool b); // Declare which polarity the decision heuristic should use for a variable. Requires mode 'polarity_user'.
+     void    setDecisionVar (Var v, bool b); // Declare if a variable should be eligible for selection in the decision heuristic.
++    void    setPORVar      (Var v, bool is_por); // Classify a variable as POR-introduced (fallback decision tier).
++    uint64_t stats_por_fallback_decisions; // Decisions taken from the POR fallback tier.
++    uint64_t stats_por_decisions;          // Decisions landing on a POR variable, in either tier.
++    // When false, POR variables stay in the ordinary heap and compete normally.
++    // This is the A/B control for CS-first: classification (and therefore
++    // counting) still happens, only the tiering is switched off, so the two arms
++    // differ in the heuristic alone and stay directly comparable.
++    // Set from the environment (LAZYPO_NO_CS_FIRST) at construction time.
++    bool     cs_first_enabled;
+ 
+     // Read state:
+     //
+@@ -348,6 +362,13 @@
+     int64_t             simpDB_props;     // Remaining number of propagations that must be made before next execution of 'simplify()'.
+     vec<Lit>            assumptions;      // Current set of assumptions provided to solve by the user.
+     Heap<VarOrderLt>    order_heap;       // A priority queue of variables ordered with respect to the variable activity.
++    // G1: two decision tiers. POR-introduced variables live in a separate heap
++    // and are branched on only when the ordinary heap holds no eligible
++    // variable. They stay decision variables: dropping them from the decision
++    // pool altogether would let the solver report a model while POR clauses
++    // still have unassigned, unpropagated variables.
++    vec<char>           por_var;          // 1 iff the variable was introduced by the partial-order reduction.
++    Heap<VarOrderLt>    por_order_heap;   // Fallback priority queue for POR variables.
+     double              progress_estimate;// Set by 'search()'.
+     bool                remove_satisfied; // Indicates whether possibly inefficient linear scan for satisfied clauses should be performed in 'simplify'.
+     vec<unsigned int>   permDiff;           // permDiff[var] contains the current conflict number... Used to count the number of  LBD
+@@ -432,6 +453,7 @@
+     void     attachClausePurgatory(CRef cr);
+     void     removeClause     (CRef cr, bool inPurgatory = false);               // Detach and free a clause.
+     bool     locked           (const Clause& c) const; // Returns TRUE if a clause is a reason for some implication in the current state.
++    bool     reasonIsClause   (Var v) const;  // la reason di v e' una clausola vera, non un marker di teoria
+     bool     satisfied        (const Clause& c) const; // Returns TRUE if a clause is satisfied in the current state.
+ 
+     template <typename T> unsigned int computeLBD(const T & lits,int end=-1);
+@@ -439,6 +461,129 @@
+ 
+     virtual void     relocAll         (ClauseAllocator& to);
+ 
++    // --- DPLL(T): interfaccia di teoria -------------------------------------
++    friend class ShadowTheory;
++public:
++    /// Registra una teoria. Va fatto prima di solve(); riporta a livello 0.
++    void addTheory(Theory *t) { theories.push(t); cancelUntil(0); }
++    int  nTheories() const { return theories.size(); }
++
++    /// Le teorie possono avere bisogno che certe variabili sopravvivano
++    /// all'eliminazione del preprocessore: SimpSolver ridefinisce questo hook.
++    virtual void freezeVar(Var) {}
++
++    /// Un CRef segnaposto invece di una clausola vera.
++    bool isTheoryMarker(CRef cr) const { return cr != CRef_Undef && !ca.isClause(cr); }
++    int  getTheory(CRef cr) const { return marker_index[CRef_Undef - cr - 1]; }
++
++    /// Nuovo segnaposto per le propagazioni di `forTheory`.
++    CRef newReasonMarker(Theory *forTheory);
++
++    /// Enqueue di una propagazione di teoria: la reason resta un segnaposto.
++    void enqueueTheory(Lit p, CRef marker) { uncheckedEnqueue(p, marker); }
++
++protected:
++    /// Materializza la reason di `p` se e' ancora un segnaposto, e restituisce
++    /// il CRef della clausola vera. ATTENZIONE: puo' allocare in `ca` e quindi
++    /// invalidare ogni `Clause&` vivo -- va chiamata solo dove non ce ne sono.
++    CRef resolveReason(Var x);
++
++    /// Una passata di propagazione su tutte le teorie.
++    CRef propagateTheories();
++    /// Propagazione unitaria e teorie, a punto fisso (Alg. 2 di SMS).
++    CRef propagateAll();
++    /// Controllo delle teorie su un modello totale (Alg. 3, modifica 2).
++    CRef checkTheoriesOnModel();
++    /// Materializza una clausola di conflitto di teoria e la restituisce.
++    CRef addTheoryConflict(vec<Lit> &ps);
++    /// Conflitto scoperto fuori da propagate(), da consumare al giro dopo.
++    CRef pending_theory_conflict = CRef_Undef;
++
++public:
++    // --- questo solver COME teoria di un altro (catena SMS) ------------------
++    /// Aggancia questo solver come teoria di `s`. `shared` sono le variabili di
++    /// interfaccia: master e slave condividono la numerazione, quindi la mappa
++    /// e' l'identita' e basta l'insieme. Il paper non richiede che siano
++    /// consecutive (modsat lo faceva solo per mappare con un offset costante):
++    /// un insieme esplicito evita di rastrellare dentro variabili non condivise.
++    void attachTo(Solver *s, const vec<Var> &shared);
++
++    /// Dichiara che questo modulo puo' solo togliere modelli al master.
++    void setPruningOnly(bool b) { pruning_only = b; }
++    bool isPruningOnly() const override { return pruning_only; }
++    bool pruning_only = false;
++    uint64_t stats_model_checks_skipped = 0;
++
++    void backtrackTheory(int level) override;
++    bool propagateTheory(vec<Lit> &conflict) override;
++    bool solveTheory(vec<Lit> &conflict) override;
++    void buildTheoryReason(Lit p, vec<Lit> &reason) override;
++
++    /// Quante volte solveTheory ha trovato variabili private non assegnate dopo
++    /// la propagazione. Sul modulo di canonicalita' deve restare 0: i tag sono
++    /// funzioni dell'interfaccia (misurato: fallback_por = 0 in ogni run).
++    uint64_t stats_slave_incomplete = 0;
++    /// Quante variabili private restano non decise, al massimo, e quali (le
++    /// prime): serve a capire SE sono tag veri o intermedie Tseitin lasciate
++    /// libere perche' la loro definizione e' gia' soddisfatta.
++    uint64_t stats_slave_undecided_max = 0;
++    /// di quelle, quante sono tag POR veri (classificati dalla frontend)
++    uint64_t stats_slave_undecided_por = 0;
++    vec<Var> slave_undecided_vars;
++    uint64_t stats_slave_conflicts = 0;
++    uint64_t stats_slave_up = 0;   // letterali rimandati al master
++    /// Le tre e sole vie con cui questo modulo puo' entrare nella refutazione
++    /// del master. Se restano tutte a zero, l'UNSAT del master e' POR-free e
++    /// non dipende dal teorema di canonicalita'.
++    uint64_t stats_slave_up_level0 = 0;   // propagazioni a livello 0 (senza clausola)
++    uint64_t stats_slave_reasons = 0;     // segnaposto materializzati in clausole
++    /// Profilazione: quante volte il master interroga lo slave, e quante di
++    /// quelle volte gli passa almeno un letterale di interfaccia nuovo. La
++    /// differenza e' lavoro speso per scoprire che non c'era niente da fare.
++    uint64_t stats_theory_calls = 0;
++    uint64_t stats_theory_calls_fed = 0;
++    uint64_t stats_theory_lits_in = 0;
++    /// Quante interrogazioni sono state rimandate dal gate LAZYPO_SMS_GATE
++    /// (interfaccia ancora troppo libera perche' la propagazione del circuito
++    /// dei tag renda: misurato 1400:1 durante gli assegnamenti parziali).
++    uint64_t stats_theory_calls_gated = 0;
++
++protected:
++    /// Da una clausola falsificata risale fino ai soli letterali RICEVUTI
++    /// (quelli senza reason: per lo slave sono fatti dati dal master) e produce
++    /// la clausola di interfaccia che li nega.
++    void interfaceConflict(CRef confl, vec<Lit> &out);
++
++    /// Quante variabili di interfaccia sono ancora non assegnate. Scansione
++    /// diretta di `interface_list` (~1300 var su tri_longer): un ordine di
++    /// grandezza sotto una singola chiamata a propagate() dello slave.
++    int unassignedInterface() const;
++
++    Solver *super = nullptr;        // il solver di cui questo e' teoria
++    vec<char> interface_var;        // var -> appartiene all'interfaccia
++    // var -> compare davvero in una clausola di questo modulo. Serve a
++    // distinguere le variabili PROPRIE del modulo da quelle che esistono solo
++    // perche' i due solver condividono la numerazione: senza questo, contare le
++    // "private non decise" contava soprattutto variabili che nel modulo non
++    // compaiono affatto (3131 su 4337 in pthread_join1).
++    vec<char> module_var;
++    int  super_qhead = 0;           // quanto del trail del super e' stato consumato
++    int  slave_reported = 0;        // quanto del proprio trail e' stato rimandato su
++    CRef super_marker = CRef_Undef; // segnaposto per le propagazioni verso il super
++    int  sms_gate = -1;            // LAZYPO_SMS_GATE: max var d'interfaccia libere
++                                   // sotto cui lo slave propaga; <0 = gate spento
++    vec<Var> interface_list;       // le var d'interfaccia, per il conteggio del gate
++    vec<lbool> gate_last_iface;    // ultima interfaccia valutata dal gate
++protected:
++
++    vec<Theory*> theories;
++    vec<CRef>    markers;        // segnaposto allocati
++    vec<int>     marker_index;   // segnaposto -> indice della teoria
++    vec<Lit>     theory_reason;  // buffer per buildTheoryReason
++    vec<Lit>     theory_conflict;// buffer per i conflitti di teoria
++    // --- fine interfaccia di teoria -----------------------------------------
++
++
+     // Misc:
+     //
+     int      decisionLevel    ()      const; // Gives the current decisionlevel.
+@@ -472,7 +617,19 @@
+ inline int  Solver::level (Var x) const { return vardata[x].level; }
+ 
+ inline void Solver::insertVarOrder(Var x) {
+-    if (!order_heap.inHeap(x) && decision[x]) order_heap.insert(x); }
++    if (!decision[x]) return;
++    if (por_var[x] && cs_first_enabled) {
++        if (!por_order_heap.inHeap(x)) por_order_heap.insert(x);
++    } else {
++        if (!order_heap.inHeap(x)) order_heap.insert(x); } }
++
++inline void Solver::setPORVar(Var v, bool is_por) {
++    if ((bool)por_var[v] == is_por) return;
++    por_var[v] = is_por;
++    // Insert into the heap matching the new class. The stale entry in the other
++    // heap is left in place -- Heap has no remove() -- and pickBranchLit skips
++    // entries whose class does not match the tier it is drawing from.
++    if (value(v) == l_Undef) insertVarOrder(v); }
+ 
+ inline void Solver::varDecayActivity() { var_inc *= (1 / var_decay); }
+ inline void Solver::varBumpActivity(Var v) { varBumpActivity(v, var_inc); }
+@@ -483,9 +640,12 @@
+             activity[i] *= 1e-100;
+         var_inc *= 1e-100; }
+ 
+-    // Update order_heap with respect to new activity:
+-    if (order_heap.inHeap(v))
+-        order_heap.decrease(v); }
++    // Update only the heap the variable belongs to: keeping them separate means
++    // POR-variable activity cannot reorder ordinary candidates.
++    if (por_var[v] && cs_first_enabled) {
++        if (por_order_heap.inHeap(v)) por_order_heap.decrease(v);
++    } else {
++        if (order_heap.inHeap(v)) order_heap.decrease(v); } }
+ 
+ inline void Solver::claDecayActivity() { cla_inc *= (1 / clause_decay); }
+ inline void Solver::claBumpActivity (Clause& c) {
+@@ -507,13 +667,20 @@
+ inline bool     Solver::addClause       (Lit p)                 { add_tmp.clear(); add_tmp.push(p); return addClause_(add_tmp); }
+ inline bool     Solver::addClause       (Lit p, Lit q)          { add_tmp.clear(); add_tmp.push(p); add_tmp.push(q); return addClause_(add_tmp); }
+ inline bool     Solver::addClause       (Lit p, Lit q, Lit r)   { add_tmp.clear(); add_tmp.push(p); add_tmp.push(q); add_tmp.push(r); return addClause_(add_tmp); }
++ // Vero solo se la reason di v e' una clausola vera: un marker di teoria non e'
++ // un riferimento nella regione, e ca.lea() lo dereferenzierebbe fuori range.
++ // Non potendo essere un puntatore a clausola, non puo' mai coincidere con &c.
++ inline bool     Solver::reasonIsClause  (Var v) const {
++   const CRef cr = reason(v);
++   return cr != CRef_Undef && !isTheoryMarker(cr);
++ }
+  inline bool     Solver::locked          (const Clause& c) const { 
+    if(c.size()>2) 
+-     return value(c[0]) == l_True && reason(var(c[0])) != CRef_Undef && ca.lea(reason(var(c[0]))) == &c; 
++     return value(c[0]) == l_True && reasonIsClause(var(c[0])) && ca.lea(reason(var(c[0]))) == &c; 
+    return 
+-     (value(c[0]) == l_True && reason(var(c[0])) != CRef_Undef && ca.lea(reason(var(c[0]))) == &c)
++     (value(c[0]) == l_True && reasonIsClause(var(c[0])) && ca.lea(reason(var(c[0]))) == &c)
+      || 
+-     (value(c[1]) == l_True && reason(var(c[1])) != CRef_Undef && ca.lea(reason(var(c[1]))) == &c);
++     (value(c[1]) == l_True && reasonIsClause(var(c[1])) && ca.lea(reason(var(c[1]))) == &c);
+  }
+ inline void     Solver::newDecisionLevel()                      { trail_lim.push(trail.size()); }
+ 
+diff -ruN a/core/SolverTypes.h b/core/SolverTypes.h
+--- a/core/SolverTypes.h	2021-07-15 01:52:10.000000000 +0200
++++ b/core/SolverTypes.h	2026-09-08 11:44:24.573463036 +0200
+@@ -53,7 +53,9 @@
  
  #include <assert.h>
  #include <stdint.h>
@@ -32,51 +1046,96 @@ diff -rupNw glucose-syrup/core/SolverTypes.h glucose-syrup-patched/core/SolverTy
  
  #include "mtl/IntTypes.h"
  #include "mtl/Alg.h"
-@@ -170,7 +172,10 @@ class Clause {
-       unsigned lbd : BITS_LBD;
-     }  header;
+@@ -284,11 +286,22 @@
+     public:
+         bool extra_clause_field;
  
-+#include <util/pragma_push.def>
-+#include <util/pragma_wzero_length_array.def>
-     union { Lit lit; float act; uint32_t abs; CRef rel; } data[0];
-+#include <util/pragma_pop.def>
- 
-     friend class ClauseAllocator;
- 
-diff -rupNw glucose-syrup/mtl/Clone.h glucose-syrup-patched/mtl/Clone.h
---- glucose-syrup/mtl/Clone.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/mtl/Clone.h	2018-05-10 12:35:25.150491249 +0200
-@@ -8,6 +8,6 @@ namespace Glucose {
-         public:
-           virtual Clone* clone() const = 0;
-     };
--};
-+}
- 
- #endif
-\ No newline at end of file
-diff -rupNw glucose-syrup/mtl/Clone.h~ glucose-syrup-patched/mtl/Clone.h~
---- glucose-syrup/mtl/Clone.h~	1970-01-01 01:00:00.000000000 +0100
-+++ glucose-syrup-patched/mtl/Clone.h~	2018-04-21 16:58:22.950005391 +0200
-@@ -0,0 +1,13 @@
-+#ifndef Glucose_Clone_h
-+#define Glucose_Clone_h
+-        ClauseAllocator(uint32_t start_cap) : RegionAllocator<uint32_t>(start_cap), extra_clause_field(false){}
+-        ClauseAllocator() : extra_clause_field(false){}
++        // Segnaposto per le reason di teoria (DPLL(T)): contano all'indietro da
++        // CRef_Undef, quindi non possono collidere con le clausole vere, che
++        // contano in avanti da 0. Un segnaposto dice "questo letterale e' stato
++        // propagato dalla teoria t"; la clausola che lo spiega si costruisce
++        // solo se e quando l'analisi del conflitto la chiede.
++        CRef marker_refs;
 +
++        CRef makeMarkerReference(){ return --marker_refs; }
++        bool isClause(const CRef &cr) const { return cr < marker_refs; }
++
++        ClauseAllocator(uint32_t start_cap) : RegionAllocator<uint32_t>(start_cap), extra_clause_field(false), marker_refs(CRef_Undef){}
++        ClauseAllocator() : extra_clause_field(false), marker_refs(CRef_Undef){}
+ 
+         void moveTo(ClauseAllocator& to){
+             to.extra_clause_field = extra_clause_field;
++            to.marker_refs = marker_refs;
+             RegionAllocator<uint32_t>::moveTo(to); }
+ 
+         template<class Lits>
+diff -ruN a/core/Theory.h b/core/Theory.h
+--- a/core/Theory.h	1970-01-01 01:00:00.000000000 +0100
++++ b/core/Theory.h	2026-09-08 11:44:24.548413420 +0200
+@@ -0,0 +1,57 @@
++/*****************************************************************************
++Theory.h -- interfaccia DPLL(T) minimale per Glucose.
++
++Portata da modsat (SAT Modulo SAT, Bayless et al.), che la usava su un core
++MiniSat 2.2. Glucose e' lo stesso core, quindi l'interfaccia passa invariata.
++
++Il motivo per cui serve qui: i vincoli di canonicalita' del POR sono una
++FUNZIONE dello schedule, non una scelta libera. La campagna lo ha misurato --
++con CS-first attivo, `fallback_por = 0` in ogni run: il solver non ha mai
++deciso su una variabile di tag, le ha sempre e solo propagate. Una funzione si
++calcola, non si codifica in clausole: la CNF paga +70% di clausole per
++esprimere quello che una procedura calcola in O(eventi).
++*****************************************************************************/
++
++#ifndef Glucose_Theory_h
++#define Glucose_Theory_h
++
++#include "mtl/Vec.h"
++#include "core/SolverTypes.h"
 +
 +namespace Glucose {
 +
-+    class Clone {
-+        public:
-+          virtual Clone* clone() const = 0;
-+    };
++class Theory {
++public:
++    virtual ~Theory() {}
++
++    /// Il solver e' tornato al livello `level`: scarta lo stato piu' recente.
++    virtual void backtrackTheory(int level) = 0;
++
++    /// Propaga sull'assegnamento corrente. Restituisce false se la teoria e'
++    /// in conflitto, riempiendo `conflict` con una clausola falsificata
++    /// (letterali della teoria, tutti falsi sotto l'assegnamento corrente).
++    virtual bool propagateTheory(vec<Lit> &conflict) = 0;
++
++    /// Controllo finale su un assegnamento totale.
++    virtual bool solveTheory(vec<Lit> &conflict) = 0;
++
++    /// True se questo modulo puo' solo TOGLIERE modelli al master, mai
++    /// aggiungerne. Per un modulo cosi' un modello del master e' gia' una
++    /// soluzione del problema, e non ha senso chiederne conferma: la modifica 2
++    /// di Alg. 3 serve nel caso generale, dove i moduli definiscono INSIEME la
++    /// soddisfacibilita'. La canonicalita' del POR e' di questo tipo -- il
++    /// master da solo e' l'encoding completo, quindi ogni suo modello e' una
++    /// esecuzione reale.
++    virtual bool isPruningOnly() const { return false; }
++
++    /// Costruisce PIGRAMENTE la reason della propagazione di `p`.
++    /// reason[0] deve essere p; il resto sono letterali falsi.
++    /// E' pigra perche' la maggior parte delle reason non viene mai richiesta:
++    /// e' questo che rende la propagazione di teoria piu' economica delle
++    /// clausole che la codificherebbero.
++    virtual void buildTheoryReason(Lit p, vec<Lit> &reason) = 0;
 +};
 +
++} // namespace Glucose
++
 +#endif
-\ No newline at end of file
-diff -rupNw glucose-syrup/mtl/IntTypes.h glucose-syrup-patched/mtl/IntTypes.h
---- glucose-syrup/mtl/IntTypes.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/mtl/IntTypes.h	2018-04-21 16:58:22.950005391 +0200
-@@ -31,7 +31,9 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR
+diff -ruN a/mtl/IntTypes.h b/mtl/IntTypes.h
+--- a/mtl/IntTypes.h	2021-07-15 01:52:10.000000000 +0200
++++ b/mtl/IntTypes.h	2026-09-08 11:44:24.430875734 +0200
+@@ -31,7 +31,9 @@
  #else
  
  #   include <stdint.h>
@@ -86,49 +1145,10 @@ diff -rupNw glucose-syrup/mtl/IntTypes.h glucose-syrup-patched/mtl/IntTypes.h
  
  #endif
  
-diff -rupNw glucose-syrup/mtl/Vec.h glucose-syrup-patched/mtl/Vec.h
---- glucose-syrup/mtl/Vec.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/mtl/Vec.h	2018-04-21 16:58:22.950005391 +0200
-@@ -103,7 +103,7 @@ template<class T>
- void vec<T>::capacity(int min_cap) {
-     if (cap >= min_cap) return;
-     int add = imax((min_cap - cap + 1) & ~1, ((cap >> 1) + 2) & ~1);   // NOTE: grow by approximately 3/2
--    if (add > INT_MAX - cap || ((data = (T*)::realloc(data, (cap += add) * sizeof(T))) == NULL) && errno == ENOMEM)
-+    if (add > INT_MAX - cap || (((data = (T*)::realloc(data, (cap += add) * sizeof(T))) == NULL) && errno == ENOMEM))
-         throw OutOfMemoryException();
-  }
- 
-diff -rupNw glucose-syrup/simp/SimpSolver.cc glucose-syrup-patched/simp/SimpSolver.cc
---- glucose-syrup/simp/SimpSolver.cc	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/simp/SimpSolver.cc	2018-04-21 16:58:22.950005391 +0200
-@@ -319,10 +319,13 @@ bool SimpSolver::merge(const Clause& _ps
-         if (var(qs[i]) != v){
-             for (int j = 0; j < ps.size(); j++)
-                 if (var(ps[j]) == var(qs[i]))
-+                {
-                     if (ps[j] == ~qs[i])
-+
-                         return false;
-                     else
-                         goto next;
-+                }
-             out_clause.push(qs[i]);
-         }
-         next:;
-@@ -353,10 +356,12 @@ bool SimpSolver::merge(const Clause& _ps
-         if (var(__qs[i]) != v){
-             for (int j = 0; j < ps.size(); j++)
-                 if (var(__ps[j]) == var(__qs[i]))
-+                {
-                     if (__ps[j] == ~__qs[i])
-                         return false;
-                     else
-                         goto next;
-+                }
-             size++;
-         }
-         next:;
-@@ -687,11 +692,11 @@ bool SimpSolver::eliminate(bool turn_off
+diff -ruN a/simp/SimpSolver.cc b/simp/SimpSolver.cc
+--- a/simp/SimpSolver.cc	2021-07-15 01:52:10.000000000 +0200
++++ b/simp/SimpSolver.cc	2026-09-08 11:44:24.545416792 +0200
+@@ -713,11 +713,11 @@
      //
  
      int toPerform = clauses.size()<=4800000;
@@ -142,35 +1162,36 @@ diff -rupNw glucose-syrup/simp/SimpSolver.cc glucose-syrup-patched/simp/SimpSolv
      while (toPerform && (n_touched > 0 || bwdsub_assigns < trail.size() || elim_heap.size() > 0)){
  
          gatherTouchedClauses();
-@@ -760,10 +765,11 @@ bool SimpSolver::eliminate(bool turn_off
-         checkGarbage();
-     }
+@@ -840,6 +840,12 @@
+     // Initialize the next region to a size corresponding to the estimated utilization degree. This
+     // is not precise but should avoid some unnecessary reallocations for the new region:
+     ClauseAllocator to(ca.size() - ca.wasted()); 
++    // Stessa ragione di Solver::garbageCollect(): il nuovo allocatore nasce con
++    // marker_refs = CRef_Undef e moveTo() lo ricopia in `ca`. Senza questa riga
++    // l'intervallo dei segnaposto di teoria si perde alla prima GC del
++    // simplifier, e da li' in poi isClause() scambia ogni marker per una
++    // clausola vera.
++    to.marker_refs = ca.marker_refs;
  
-+#if 0
-     if (verbosity >= 0 && elimclauses.size() > 0)
-         printf("c |  Eliminated clauses:     %10.2f Mb                                                                |\n", 
-                double(elimclauses.size() * sizeof(uint32_t)) / (1024*1024));
--
-+#endif
-                
-     return ok;
+     cleanUpClauses();
+     to.extra_clause_field = ca.extra_clause_field; // NOTE: this is important to keep (or lose) the extra fields.
+diff -ruN a/simp/SimpSolver.h b/simp/SimpSolver.h
+--- a/simp/SimpSolver.h	2021-07-15 01:52:10.000000000 +0200
++++ b/simp/SimpSolver.h	2026-09-08 11:44:24.539373303 +0200
+@@ -91,6 +91,9 @@
+     // Variable mode:
+     // 
+     void    setFrozen (Var v, bool b); // If a variable is frozen it will not be eliminated.
++    // Le variabili di interfaccia di una teoria non devono sparire
++    // nell'eliminazione: il modulo dall'altra parte le assegna ancora.
++    void    freezeVar (Var v) override { setFrozen(v, true); }
+     bool    isEliminated(Var v) const;
  
-diff -rupNw glucose-syrup/utils/Options.h glucose-syrup-patched/utils/Options.h
---- glucose-syrup/utils/Options.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/utils/Options.h	2018-04-21 16:58:22.950005391 +0200
-@@ -60,7 +60,7 @@ class Option
-     struct OptionLt {
-         bool operator()(const Option* x, const Option* y) {
-             int test1 = strcmp(x->category, y->category);
--            return test1 < 0 || test1 == 0 && strcmp(x->type_name, y->type_name) < 0;
-+            return test1 < 0 || (test1 == 0 && strcmp(x->type_name, y->type_name) < 0);
-         }
-     };
- 
-diff -rupNw glucose-syrup/utils/ParseUtils.h glucose-syrup-patched/utils/ParseUtils.h
---- glucose-syrup/utils/ParseUtils.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/utils/ParseUtils.h	2018-04-21 16:58:22.950005391 +0200
-@@ -25,7 +25,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR
+     // Solving:
+diff -ruN a/utils/ParseUtils.h b/utils/ParseUtils.h
+--- a/utils/ParseUtils.h	2021-07-15 01:52:10.000000000 +0200
++++ b/utils/ParseUtils.h	2026-09-08 11:44:24.532267883 +0200
+@@ -25,7 +25,7 @@
  #include <stdio.h>
  #include <math.h>
  
@@ -179,7 +1200,7 @@ diff -rupNw glucose-syrup/utils/ParseUtils.h glucose-syrup-patched/utils/ParseUt
  
  namespace Glucose {
  
-@@ -36,7 +36,7 @@ static const int buffer_size = 1048576;
+@@ -36,7 +36,7 @@
  
  
  class StreamBuffer {
@@ -188,7 +1209,7 @@ diff -rupNw glucose-syrup/utils/ParseUtils.h glucose-syrup-patched/utils/ParseUt
      unsigned char buf[buffer_size];
      int           pos;
      int           size;
-@@ -44,10 +44,10 @@ class StreamBuffer {
+@@ -44,10 +44,10 @@
      void assureLookahead() {
          if (pos >= size) {
              pos  = 0;
@@ -201,10 +1222,10 @@ diff -rupNw glucose-syrup/utils/ParseUtils.h glucose-syrup-patched/utils/ParseUt
  
      int  operator *  () const { return (pos >= size) ? EOF : buf[pos]; }
      void operator ++ ()       { pos++; assureLookahead(); }
-diff -rupNw glucose-syrup/utils/System.h glucose-syrup-patched/utils/System.h
---- glucose-syrup/utils/System.h	2014-10-03 11:10:22.000000000 +0200
-+++ glucose-syrup-patched/utils/System.h	2018-04-21 16:58:22.950005391 +0200
-@@ -60,8 +60,11 @@ static inline double Glucose::cpuTime(vo
+diff -ruN a/utils/System.h b/utils/System.h
+--- a/utils/System.h	2021-07-15 01:52:10.000000000 +0200
++++ b/utils/System.h	2026-09-08 11:44:24.524864894 +0200
+@@ -60,8 +60,11 @@
  
  // Laurent: I know that this will not compile directly under Windows... sorry for that
  static inline double Glucose::realTime() {

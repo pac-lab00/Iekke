@@ -64,6 +64,16 @@ protected:
 
   std::unique_ptr<T> solver;
 
+  /// Sink for a converted clause. Base: straight into `solver`. The SMS backend
+  /// (satcheck_glucose_sms.h) overrides this to split clauses between the master
+  /// solver and the canonicality slave module.
+  virtual void add_clause_to_solver(const bvt &bv);
+
+  /// Hooks around the solve() call. Empty in the plain backend; the SMS backend
+  /// uses them to attach the shadow/slave theory and to report its statistics.
+  virtual void before_solve() {}
+  virtual void after_solve(bool /*sat_result*/) {}
+
   void add_variables();
   bvt assumptions;
 };

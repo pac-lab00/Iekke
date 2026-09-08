@@ -112,6 +112,7 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   options.set_option("show-array-constraints", false);
   options.set_option("por", false);
   options.set_option("glucose", false);
+  options.set_option("kissat", false);
 
   // Other default
   options.set_option("arrays-uf", "auto");
@@ -131,6 +132,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
   if(cmdline.isset("glucose"))
     options.set_option("glucose", true);
+
+  if(cmdline.isset("kissat"))
+    options.set_option("kissat", true);
 
   if(cmdline.isset("function"))
     options.set_option("function", cmdline.get_value("function"));

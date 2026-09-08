@@ -18,6 +18,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <util/options.h>
 #include <util/version.h>
 
+#include <cstdlib>
 #include <iostream>
 
 #include "../util/options.h"
@@ -217,6 +218,8 @@ make_satcheck_prop(message_handlert &message_handler, const optionst &options)
 
 #ifdef HAVE_GLUCOSE
 #include "solvers/sat/satcheck_glucose.h"
+#include "solvers/sat/satcheck_glucose_sms.h"
+#include "solvers/sat/satcheck_kissat.h"
 #endif
 
 static std::unique_ptr<propt>
@@ -262,6 +265,20 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_minisat()
 std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
 {
   auto solver = util_make_unique<solvert>();
+#ifdef HAVE_KISSAT
+  // kissat in-process, opt-in e primo nella catena come --glucose. Serve a
+  // separare "solver moderno" da "path esterno": finora un solver con
+  // inprocessing aggressivo era misurabile solo scrivendo il DIMACS su disco,
+  // quindi il suo vantaggio era confuso con il diverso trattamento delle
+  // assumption. kissat non e' incrementale, quindi ignora --no-sat-preprocessor
+  // (non c'e' un SatELite separato da spegnere) e risolve una volta sola.
+  if(options.get_bool_option("kissat"))
+  {
+    solver->set_prop(
+      make_satcheck_prop<satcheck_kissatt>(message_handler, options));
+  }
+  else
+#endif
 #ifdef HAVE_GLUCOSE
   // In-process Glucose, opt-in and first in the chain: the POR decision-tier
   // experiment needs variable provenance, which the external DIMACS path cannot
@@ -269,16 +286,34 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
   // fork enables by default. Without the flag nothing changes.
   if(options.get_bool_option("glucose"))
   {
+    // SAT Modulo SAT (canonicality in a slave module) is a separate backend,
+    // opt-in with LAZYPO_SMS in the environment -- the same switch bmc_util
+    // keys off to route the canonicality clauses. Without it the plain
+    // in-process Glucose backend is used, which knows nothing about SMS.
+    const bool sms = getenv("LAZYPO_SMS") != nullptr;
+
     // Honour --no-sat-preprocessor here too: with the simplifier the freezing
     // that prop_conv_solvert applies to every symbol-bearing literal blocks most
     // of SatELite's work, so being able to switch it off is what makes that cost
     // measurable.
     if(options.get_bool_option("sat-preprocessor"))
-      solver->set_prop(
-        make_satcheck_prop<satcheck_glucose_simplifiert>(message_handler, options));
+    {
+      if(sms)
+        solver->set_prop(make_satcheck_prop<satcheck_glucose_sms_simplifiert>(
+          message_handler, options));
+      else
+        solver->set_prop(make_satcheck_prop<satcheck_glucose_simplifiert>(
+          message_handler, options));
+    }
     else
-      solver->set_prop(
-        make_satcheck_prop<satcheck_glucose_no_simplifiert>(message_handler, options));
+    {
+      if(sms)
+        solver->set_prop(make_satcheck_prop<satcheck_glucose_sms_no_simplifiert>(
+          message_handler, options));
+      else
+        solver->set_prop(make_satcheck_prop<satcheck_glucose_no_simplifiert>(
+          message_handler, options));
+    }
   }
   else
 #endif
