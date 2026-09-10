@@ -465,6 +465,12 @@ std::unique_ptr<goto_symext::statet> goto_symext::initialize_entry_point_state(
     entry_point_id, *start_function);
   state->dirty = &path_storage.dirty;
 
+  // Static thread-exclusivity information, if the caller computed any. It is
+  // only ever computed under --rounds (lazy_po), so the pointer stays null and
+  // this is a complete no-op for default CBMC runs.
+  if(symex_config.lazy_po_rounds > 0 && !thread_exclusive_variables.empty())
+    state->thread_exclusive = &thread_exclusive_variables;
+
   // Only enable loop analysis when complexity is enabled.
   if(symex_config.complexity_limits_active)
   {

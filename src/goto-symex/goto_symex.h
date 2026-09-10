@@ -188,6 +188,14 @@ public:
   std::set<symbol_exprt> dynamic_objects;
   // __SZH_ADD_END__
 
+  /// Shared variables that a static whole-program analysis has proven to be
+  /// accessed by at most one thread (see thread_exclusivity.h). Populated by
+  /// the goto-checker only when the lazy_po/--rounds encoding is active, and
+  /// handed to each symex state so that goto-symex can treat these variables
+  /// like thread-locals (constant propagation, hence early loop-unwinding
+  /// termination). Empty means "behave exactly as before".
+  std::unordered_set<irep_idt> thread_exclusive_variables;
+
   // __WP_ADD_BEGIN__ for deadlock
   bool enable_deadlock = false;
   // void backtracing_for_deadlock(std::vector<symex_target_equationt::event_it>& locks_tuples,
