@@ -1,0 +1,30 @@
+Soundness tests for the static thread-exclusivity analysis
+(src/goto-symex/thread_exclusivity.{h,cpp}).
+
+Each adv_* program is constructed so that a naive "the variable is only
+mentioned in one thread entry point reachable set" scan would wrongly call a
+global thread-exclusive, which would let goto-symex constant-propagate it and
+silently miss the injected bug. Every one of them must report VERIFICATION
+FAILED under --rounds, and LAZYPO_EXCLUSIVITY_DEBUG=1 must show the variable
+being rejected (or the whole analysis bailing out).
+
+  adv_A_function_pointer      t2 writes g only through a function pointer
+  adv_B_address_taken         t2 writes g via a pointer set up in a static
+                              initializer; g itself is never named in t2
+                              (only the dirtyt address-taken bailout saves us)
+  adv_D_same_start_routine    t1 is the start routine of TWO pthread_create
+                              calls, so two threads run it
+  adv_E_spawn_in_loop         one pthread_create call site, inside a loop
+  adv_F_nondet_start_routine  start routine is not a literal function address
+  adv_G_cprover_async         spawn via __CPROVER_ASYNC_1, not pthread_create
+  adv_H_root_also_called      t1 is both a start routine and called by main
+  adv_K_helper_called_twice   one pthread_create call site, but in a helper
+                              that main calls twice
+
+pos_J_unsafe / pos_J_safe are the positive direction: p really is
+thread-exclusive, and folding it must neither invent a bug nor hide one.
+
+Run (with the --rounds encoding, which is the only mode the analysis is
+active in):
+  for f in *.c; do cbmc --allow-pointer-unsoundness --glucose \
+      --rounds 4 --unwind 6 $f; done
