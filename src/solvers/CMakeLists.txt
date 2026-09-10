@@ -17,6 +17,7 @@ set(minisat2_source
 )
 set(glucose_source
     ${CMAKE_CURRENT_SOURCE_DIR}/sat/satcheck_glucose.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/sat/satcheck_glucose_sms.cpp
 )
 set(squolem2_source
     ${CMAKE_CURRENT_SOURCE_DIR}/qbf/qbf_squolem.cpp

@@ -318,6 +318,11 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
   else
 #endif
   // __SZH_ADD_BEGIN__
+  // Deagle-family solvers are only compiled in as part of satcheck_minisat2.cpp,
+  // which is only added to the build for sat_impl=minisat2 (see
+  // solvers/CMakeLists.txt). Guarded locally to unblock building with
+  // sat_impl=glucose, where these classes don't exist.
+#ifdef HAVE_MINISAT2
   if(options.get_bool_option("cat"))
   {
     solver->set_prop(make_satcheck_prop<memory_model_solvert>(message_handler, options));
@@ -338,6 +343,14 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
     solver->set_prop(make_satcheck_prop<deagle_segment_solvert>(message_handler, options));
     std::cout << "Use Deagle's segment solver\n";
   }
+#else
+  if(false)
+  {
+    // Deagle-family solvers unavailable: satcheck_minisat2.cpp (which defines
+    // them) is only compiled for sat_impl=minisat2. Kept as a no-op branch
+    // purely to preserve the surrounding if/else-if chain's syntax.
+  }
+#endif
   // __SZH_ADD_END__
   else if(
     options.get_bool_option("beautify") ||

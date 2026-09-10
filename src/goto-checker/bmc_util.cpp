@@ -579,6 +579,11 @@ std::chrono::duration<double> prepare_property_decider(
     prop_for_sms.finalize_modules();
 
   // __SZH_ADD_BEGIN__
+  // This whole block references Deagle-family solver types that only exist
+  // when built with sat_impl=minisat2 (see solvers/CMakeLists.txt). Guarded
+  // locally to unblock sat_impl=glucose; equation.use_cat/use_deagle_* are
+  // never true in that configuration anyway.
+#ifdef HAVE_MINISAT2
   auto &prop_solver = property_decider.get_solver()->prop();
 
   // memory-model solver (se presente)
@@ -704,6 +709,7 @@ std::chrono::duration<double> prepare_property_decider(
 
     deagle_segment_solver.save_raw_graph(oc_edge_table, oc_guard_map, oc_location_map, equation.oc_result_order);
   }
+#endif
     // __SZH_ADD_END__
 
     auto solver_stop = std::chrono::steady_clock::now();

@@ -6,6 +6,7 @@
 
 #include "symex_target_equation.h"
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -92,6 +93,15 @@ private:
     std::size_t round;
     symbol_exprt symbol;
   };
+  // Order/thermometer encoding of cs: GE(thread,round,i) means
+  // cs(thread,round) >= i. See create_ge_symbol / create_cs_constraint.
+  struct ge
+  {
+    std::size_t thread;
+    std::size_t round;
+    unsigned i;
+    symbol_exprt symbol;
+  };
   struct reach
   {
     unsigned label;
@@ -142,11 +152,13 @@ private:
   std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
   std::vector<cs> cs_vector;
+  std::vector<ge> ge_vector;
   std::vector<reach> reach_vector;
 
   std::unordered_map<uint64_t, symbol_exprt> exec_tot_map;
   std::unordered_map<uint64_t, symbol_exprt> enabled_map;
   std::unordered_map<uint64_t, symbol_exprt> cs_map;
+  std::unordered_map<uint64_t, symbol_exprt> ge_map;
   std::unordered_map<uint64_t, symbol_exprt> reach_map;
   std::vector<std::pair<unsigned, std::pair<std::size_t, std::size_t>>>
     atomic_sections;
@@ -231,6 +243,7 @@ private:
   create_enabled_symbol(unsigned label, unsigned thread, std::size_t round);
 
   symbol_exprt create_cs_symbol(std::size_t thread, std::size_t round);
+  symbol_exprt create_ge_symbol(std::size_t thread, std::size_t round, unsigned i);
 
   symbol_exprt create_reach_symbol(unsigned label, std::size_t thread);
 

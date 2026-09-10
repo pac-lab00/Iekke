@@ -66,7 +66,7 @@ void satcheck_glucose_sms_baset<T>::set_clause_redirect(bool on)
   {
     // Non-simplifying slave: eliminating variables in the lower module would
     // pull the interface variables out from under it.
-    slave = std::make_unique<Glucose::Solver>();
+    slave = util_make_unique<Glucose::Solver>();
     slave->verbosity = 0;
   }
   redirect_to_slave = on;
@@ -115,7 +115,7 @@ void satcheck_glucose_sms_baset<T>::before_solve()
   {
     if(const char *n = getenv("LAZYPO_SMS_SHADOW"))
     {
-      shadow_theory = std::make_unique<Glucose::ShadowTheory>(*this->solver);
+      shadow_theory = util_make_unique<Glucose::ShadowTheory>(*this->solver);
       this->solver->addTheory(shadow_theory.get());
       shadow_theory->setup(atoi(n));
       this->log.statistics()

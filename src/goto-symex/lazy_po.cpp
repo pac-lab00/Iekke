@@ -3,6 +3,8 @@
 
 #include "lazy_po.h"
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 #include <chrono>
 #include <functional>
 #include <thread>
@@ -167,6 +169,19 @@ void lazy_pot::operator()(
   if(por) {
     enumerate_accesses();
 
+    // NOTE: tried making this run unconditionally (before enumerate_accesses,
+    // so it would also cover base mode) on the theory that it only reads
+    // lazy_variables (always populated) and lazy_variables_read (empty
+    // outside --por). That's true for the lex-order checks, but this
+    // function ALSO checks write/read .id uniqueness, and read .id is only
+    // assigned by enumerate_accesses() just above -- calling it earlier
+    // meant every lazy_variable_read entry still had its default/unset id,
+    // producing spurious "duplicate id" invariant failures the moment a
+    // variable had both a write and a read (confirmed: crashed
+    // elimination_backoff_stack --por, which worked fine before). Reverted
+    // to its original, safe position (after enumerate_accesses, --por
+    // only); making the ordering-only half of this check run in base mode
+    // too would need splitting it into two functions, not attempted here.
     validate_access_order();
     phase("enumerate+validate");
 
@@ -198,10 +213,21 @@ void lazy_pot::operator()(
     create_winr_tot_symbol(equation);
     phase("tags-LW-WINR");
 
-    // NRP/LOW on-demand: le catene si materializzano (memoizzate) solo dalle
-    // ancore usate in create_ABW; niente pre-creazione totale.
-    // create_nrp_tot_symbol(equation);
-    // create_low_tot_symbol(equation);
+    // Re-enabled (was on-demand-only): create_NRP_symbol's on-demand
+    // descent walks forward through essentially every read-of-x position
+    // across all rounds before hitting a memo entry, since nothing
+    // pre-populates it bottom-up the way LW/WINR are below -- confirmed
+    // (gdb backtrace: create_NRP_symbol recursing into itself) to
+    // stack-overflow in --por mode on benchmarks with many accesses to one
+    // shared variable at realistic round bounds (the tool's own benchexec
+    // configs use rounds up to 21, well within the crash region). Both
+    // functions already sort in the direction that keeps each on-demand
+    // call landing on a fresh memo entry (create_nrp_tot_symbol
+    // descending like create_winr_tot_symbol; create_low_tot_symbol
+    // ascending like create_lw_tot_symbol already above) -- they just
+    // were never invoked.
+    create_nrp_tot_symbol(equation);
+    create_low_tot_symbol(equation);
 
     create_atomic_canonical(equation);
     phase("canonicality+NRP/LOW");
@@ -344,40 +370,28 @@ std::optional<symbol_exprt> lazy_pot::previous_shared(
   unsigned thread,
   std::size_t round)
 {
+  // Was an O(|lazy_variables[variable]|) linear scan; lazy_variables[variable]
+  // is already sorted lexicographically by (round, thread, label, num) (see
+  // create_write_constraints / validate_access_order), exactly like the POR
+  // path's get_previous_write, so this can use the same lower_bound approach.
+  // Behaviourally identical to the previous linear scan, including its
+  // pre-existing "no update happened" special case below.
   if(lazy_variables.count(variable) == 0)
     return std::nullopt;
-  symbol_exprt previous = lazy_variables.at(variable).front().symbol;
-  for(const auto &lazy_variable : lazy_variables.at(variable))
-  {
-    if(round > lazy_variable.round)
-    {
-      previous = lazy_variable.symbol;
-      continue;
-    }
-    if(round == lazy_variable.round && thread > lazy_variable.thread)
-    {
-      previous = lazy_variable.symbol;
-      continue;
-    }
-    if(
-      round == lazy_variable.round && thread == lazy_variable.thread &&
-      label > lazy_variable.label)
-    {
-      previous = lazy_variable.symbol;
-      continue;
-    }
-    if(
-      round == lazy_variable.round && thread == lazy_variable.thread &&
-      label == lazy_variable.label && num > lazy_variable.num)
-    {
-      previous = lazy_variable.symbol;
-      continue;
-    }
-    if (previous == lazy_variables.at(variable).front().symbol && (label > lazy_variables.at(variable).front().label || (label <= lazy_variables.at(variable).front().label && num > lazy_variables.at(variable).front().num)))
-      return std::nullopt;
-    return previous;
-  }
-  return previous;
+  const auto &v = lazy_variables.at(variable);
+  const auto qk = std::make_tuple(round, thread, label, num);
+  const auto it = std::lower_bound(
+    v.begin(),
+    v.end(),
+    qk,
+    [](const lazy_variable &lv, const std::tuple<std::size_t, unsigned, unsigned, unsigned> &k) {
+      return std::make_tuple(lv.round, lv.thread, lv.label, lv.num) < k;
+    });
+  if(it != v.begin())
+    return std::prev(it)->symbol;
+  if(label > v.front().label || (label <= v.front().label && num > v.front().num))
+    return std::nullopt;
+  return v.front().symbol;
 }
 
 exprt lazy_pot::active_at_turn(
@@ -454,74 +468,70 @@ void lazy_pot::create_cs_constraint(
 {
   for(unsigned thread = 0; thread <= threads; ++thread)
   {
-    exprt previous;
-    unsigned max_num = 0;
+    unsigned max_num = labels[thread];
 
-    max_num = labels[thread];
-
+    // n_bit is no longer used to size cs itself (see below), but is kept
+    // computed/populated since other cs-adjacent call sites historically
+    // relied on it; harmless if unused.
     n_bit[thread] = 0 ? 0 : 32 - __builtin_clz(max_num + 1);
 
-
+    // Order/thermometer encoding of cs(thread,*): GE(thread,round,i) means
+    // cs(thread,round) >= i, for i in 1..max_num+1. Two monotonicity
+    // families replace the old bitvector cs and its monotone-chain/bound
+    // constraints:
+    //   (C1) within a round, GE is monotone in the threshold i:
+    //        GE(t,r,i+1) => GE(t,r,i), for i in 1..max_num.
+    //   (C2) across rounds, GE is monotone in r for a fixed threshold:
+    //        GE(t,r-1,i) => GE(t,r,i), for i in 1..max_num+1.
+    //   (C3) cs^0 = 0: GE(t,0,i) is false for every i in 1..max_num+1.
+    // cs^R <= max_num+1 is now just the encoding's domain bound (there is
+    // no threshold beyond max_num+1), so nothing to assert for it.
     for(size_t round = 0; round <= rounds; ++round)
     {
-      symbol_exprt cs = create_cs_symbol(thread, round);
+      for(unsigned i = 1; i <= max_num; ++i)
+        equation.constraint(
+          implies_exprt{
+            create_ge_symbol(thread, round, i + 1),
+            create_ge_symbol(thread, round, i)},
+          "cs order monotonicity (threshold)",
+          equation.SSA_steps.begin()->source);
 
       if(round == 0)
       {
-        less_than_or_equal_exprt constraint{cs, from_integer({0}, unsignedbv_typet{n_bit[thread]})};
-        equation.constraint(
-          constraint,
-          "cs constraint",
-          equation.SSA_steps.begin()->source);
-        previous = cs;
-      }
-      else {
-          less_than_or_equal_exprt constraint{previous, cs};
+        for(unsigned i = 1; i <= max_num + 1; ++i)
           equation.constraint(
-            constraint,
-            "cs constraint",
+            not_exprt{create_ge_symbol(thread, 0, i)},
+            "cs order initial",
             equation.SSA_steps.begin()->source);
-          previous = cs;
       }
-      if(round == rounds)
+      else
       {
-        exprt max{from_integer({max_num + 1}, unsignedbv_typet{n_bit[thread]})};
-        less_than_or_equal_exprt last_constraint{cs, max};
-        equation.constraint(
-          last_constraint,
-          "cs constraint",
-          equation.SSA_steps.begin()->source);
-        previous = cs;
+        for(unsigned i = 1; i <= max_num + 1; ++i)
+          equation.constraint(
+            implies_exprt{
+              create_ge_symbol(thread, round - 1, i),
+              create_ge_symbol(thread, round, i)},
+            "cs order monotonicity (round)",
+            equation.SSA_steps.begin()->source);
       }
     }
     for (size_t label = 0; label <= labels[thread]; label++)
     {
       for(size_t round = 1; round <= rounds; ++round)
       {
-        exprt label_exp{
-          from_integer({label}, unsignedbv_typet{n_bit[thread]})};
-
         symbol_exprt enabled =
           create_enabled_symbol(label, thread, round);
-
-        symbol_exprt cs_curr =
-          create_cs_symbol(thread, round);
-
-        symbol_exprt cs_prev =
-          create_cs_symbol(thread, round - 1);
 
         exprt active_thread_value = active_at_turn(thread, label, round);
 
         if (label != 0) {
-          greater_than_exprt expr_1{cs_curr, label_exp};
-          exprt expr_2;
-          if(round == 1)
-            expr_2 = true_exprt{};
-          else
-          {
-            expr_2 = less_than_or_equal_exprt{cs_prev, label_exp};
-          }
-          and_exprt expr_3{expr_1, expr_2};
+          // Enabled(l,t,r) = (cs^r > l) & (cs^{r-1} <= l)
+          //                = GE(t,r,l+1) & !GE(t,r-1,l+1)
+          symbol_exprt ge_curr =
+            create_ge_symbol(thread, round, static_cast<unsigned>(label) + 1);
+          symbol_exprt ge_prev =
+            create_ge_symbol(thread, round - 1, static_cast<unsigned>(label) + 1);
+          and_exprt expr_3{ge_curr, not_exprt{ge_prev}};
           equal_exprt enabled_expr{enabled, expr_3};
           simplify(enabled_expr, ns);
           equation.constraint(
@@ -563,6 +573,11 @@ void lazy_pot::create_cs_constraint(
         // traversata dopo la creazione del thread, come la clausola di
         // creazione della canonicalita': senza activity a r-1 lo spostamento
         // e' impossibile e il vincolo taglierebbe schedule legittimi.
+        //
+        // Was `cs^{r-1} == label`; Enabled already conjoins
+        // !GE(t,r-1,label+1), so only the remaining direction,
+        // GE(t,r-1,label) (i.e. cs^{r-1} >= label), needs to be added
+        // here -- together they pin cs^{r-1} == label exactly as before.
         if(label != 0 && round > 1)
         {
           exprt witness = false_exprt{};
@@ -573,7 +588,7 @@ void lazy_pot::create_cs_constraint(
           implies_exprt tightening{
             and_exprt{
               enabled,
-              equal_exprt{cs_prev, label_exp},
+              create_ge_symbol(thread, round - 1, static_cast<unsigned>(label)),
               active_at_turn(thread, label, round - 1)},
             witness};
           simplify(tightening, ns);
@@ -584,25 +599,15 @@ void lazy_pot::create_cs_constraint(
         }
       }
 
-      // At-most-one sui round: gli intervalli [cs^(r-1), cs^(r)) sono disgiunti
-      // perche' cs e' monotona, quindi un blocco e' eleggibile in al piu' un
-      // round. E' gia' implicato dai vincoli su cs -- non toglie modelli -- ma
-      // esplicitarlo lo rende propagabile per unit propagation invece che
-      // derivabile dai confronti su bitvector. Serve a far collassare subito le
-      // entry pass-through delle catene dei tag.
-      if(label != 0 && rounds > 1)
-      {
-        for(std::size_t r1 = 1; r1 <= rounds; ++r1)
-          for(std::size_t r2 = r1 + 1; r2 <= rounds; ++r2)
-            equation.constraint(
-              or_exprt{
-                not_exprt{create_enabled_symbol(
-                  static_cast<unsigned>(label), thread, r1)},
-                not_exprt{create_enabled_symbol(
-                  static_cast<unsigned>(label), thread, r2)}},
-              "enabled at-most-one",
-              equation.SSA_steps.begin()->source);
-      }
+      // At-most-one-round-enabled no longer needs an explicit hint
+      // constraint (previously a pairwise-O(rounds^2), then a
+      // ladder-O(rounds), auxiliary encoding): under the order encoding,
+      // (C1)-(C3) plus the Enabled definition above already give unit
+      // propagation the same power in both directions --
+      // Enabled(l,t,r) forces GE(t,r,l+1) and !GE(t,r-1,l+1), which (C2)
+      // propagates to !GE(t,r'<r,l+1) and (C1)+(C2) to GE(t,r'>r,l+1),
+      // immediately falsifying every other round's Enabled(l,t,r') via
+      // its own definition -- with zero extra variables or clauses.
     }
   }
 }
@@ -618,18 +623,13 @@ void lazy_pot::handling_atomic_sections(
     {
       for(std::size_t round = 1; round <= rounds; round++)
       {
-        symbol_exprt cs = create_cs_symbol(atomic_section.first, round);
+        // Was `cs <= lo OR cs > hi`; order encoding: cs <= lo is
+        // !GE(round,lo+1), cs > hi is GE(round,hi+1).
         constraint = or_exprt{
-          less_than_or_equal_exprt{
-            cs,
-            from_integer(
-              atomic_section.second.first,
-              unsignedbv_typet{n_bit[atomic_section.first]})},
-          greater_than_exprt{
-            cs,
-            from_integer(
-              atomic_section.second.second,
-              unsignedbv_typet{n_bit[atomic_section.first]})}};
+          not_exprt{create_ge_symbol(
+            atomic_section.first, round, atomic_section.second.first + 1)},
+          create_ge_symbol(
+            atomic_section.first, round, atomic_section.second.second + 1)};
 
         equation.constraint(
           constraint, "atomic constraint", equation.SSA_steps.begin()->source);
@@ -641,31 +641,59 @@ void lazy_pot::handling_atomic_sections(
 void lazy_pot::handling_guards(
   symex_target_equationt &equation)
 {
+  // temp_equation only needs equation's non-SSA_steps state (message
+  // handler, oc_edges/oc_guard_map, use_cat/use_deagle_* flags, ...), which
+  // is exactly what survives equation.clear() anyway; copy-constructing from
+  // equation with SSA_steps still fully populated copied the whole
+  // (potentially hundreds-of-thousands-of-elements) list just to immediately
+  // discard it. Swap SSA_steps out for the duration of the copy instead, so
+  // the copy is O(1) rather than O(|SSA_steps|).
+  symex_target_equationt::SSA_stepst original_steps;
+  std::swap(original_steps, equation.SSA_steps);
   symex_target_equationt temp_equation{equation};
-  temp_equation.clear();
-
-  auto ssa_steps = equation.SSA_steps;
+  std::swap(original_steps, equation.SSA_steps);
 
   // Consumo in ordine con un cursore: l'erase(begin()) precedente ricopiava
   // tutta la coda a ogni assert/assume (O(n^2) sui programmi con molti
   // blocking statement). at() sostituisce anche il front() su vettore vuoto,
   // che era UB se gli eventi bloccanti non coprivano tutti gli assert/assume.
+  //
+  // Previously also copied equation.SSA_steps wholesale into a local
+  // 'ssa_steps' just to have something stable to iterate while separately
+  // draining equation.SSA_steps one pop_front() at a time (3-4 copies of
+  // every SSA_stept: into ssa_steps, into the local 'step', and again into
+  // temp_equation.SSA_steps). Splicing the node directly into
+  // temp_equation.SSA_steps is O(1) and needs none of those copies; 'it'
+  // stays a valid reference to the same node afterwards (splice guarantee),
+  // so it can still be read/written in place.
   std::size_t blocking_cursor = 0;
 
-  for(symex_target_equationt::SSA_stepst::const_iterator s_it =
-        ssa_steps.begin();
-      s_it != ssa_steps.end();
-      s_it++)
+  for(auto it = equation.SSA_steps.begin(); it != equation.SSA_steps.end();)
   {
-    exprt guard = s_it->guard;
+    auto next = std::next(it);
 
-    if(s_it->is_assert() || s_it->is_assume())
+    if(it->is_assert() || it->is_assume())
     {
       shared_event blocking_event = blocking_events.at(blocking_cursor++);
-      SSA_stept step{equation.SSA_steps.front()};
-      equation.SSA_steps.pop_front();
+      // blocking_event.s_it aliases equation.SSA_steps.front(), which the
+      // splice below moves out from under it; capture .source first,
+      // otherwise both uses of blocking_event.s_it below are a
+      // use-after-free (found via ASan: heap-use-after-free in
+      // handling_guards).
+      const auto blocking_source = blocking_event.s_it->source;
+
+      temp_equation.SSA_steps.splice(
+        temp_equation.SSA_steps.end(), equation.SSA_steps, it);
+
+      // TEMP-tried-and-reverted: collapsing this to the already-cached
+      // cs(thread,rounds) > label comparator shrank the master formula
+      // (fewer vars/clauses) but made SMS solving dramatically slower
+      // (1800s timeout vs 731s) -- likely friction at the master/slave
+      // routing boundary from embedding a raw cs-comparator directly in
+      // an assert/assume guard instead of a separately-tagged constraint.
+      // Reverted; kept as a named, memoized symbol instead.
       symbol_exprt reach = create_reach_symbol(
-        blocking_event.label, blocking_event.s_it->source.thread_nr);
+        blocking_event.label, blocking_source.thread_nr);
 
       exprt constraint = false_exprt{};
 
@@ -684,25 +712,47 @@ void lazy_pot::handling_guards(
       temp_equation.constraint(
         final_constraint,
         "blocking statement constraint",
-        blocking_event.s_it->source);
+        blocking_source);
 
-      exprt new_guard = reach;
-      step.guard = new_guard;
-      exprt new_cond = s_it->cond_expr;
-      exprt new_expr = implies_exprt{new_guard, new_cond};
+      // Paper (sec:blocking statement): "for every statement other than
+      // assume/assert we keep CBMC's guard unchanged ... to each
+      // assume/assert we CONJOIN the reachability predicate of its program
+      // point" -- the original path guard (the intra-thread branch
+      // condition CBMC already built) must still hold; reach only adds the
+      // round-robin-schedule-reached condition on top of it. This was
+      // replacing it->guard outright, discarding the path guard entirely.
+      // The is_true() short-circuit below skips a functionally-redundant
+      // and_exprt{true, reach} Tseitin gadget when the guard happens to
+      // already be trivial -- NOT always the case in general (assume/join
+      // guards in concurrent programs routinely fold real path
+      // conditions in via symex_assume_l2), just a cheap, always-correct
+      // fast path when it applies.
+      if(it->guard.is_true())
+        it->guard = reach;
+      else
+        it->guard = and_exprt{it->guard, reach};
+      // it->cond_expr already has the form (original_guard => c) --
+      // vcc()/symex_assume_l2 build assert/assume conditions that way
+      // before this function ever sees them. implies_exprt{it->guard,
+      // it->cond_expr} therefore built (original_guard AND reach) =>
+      // (original_guard => c), which is logically just reach =>
+      // (original_guard => c) (the original_guard on the left is
+      // redundant once it also appears on the right of the nested
+      // implication) but re-embeds the full original_guard expression a
+      // second time, doubling its Tseitin/CNF-conversion cost for every
+      // blocking statement with a non-trivial guard. Using 'reach'
+      // (rather than it->guard) here is equivalent and drops the
+      // duplicate.
+      exprt new_expr = implies_exprt{reach, it->cond_expr};
       simplify(new_expr, ns);
-      step.cond_expr = new_expr;
-      step.type = s_it->type;
-      temp_equation.SSA_steps.emplace_back(step);
+      it->cond_expr = new_expr;
     }
     else
     {
-      SSA_stept step{equation.SSA_steps.front()};
-      step.type = equation.SSA_steps.front().type;
-
-      equation.SSA_steps.pop_front();
-      temp_equation.SSA_steps.emplace_back(step);
+      temp_equation.SSA_steps.splice(
+        temp_equation.SSA_steps.end(), equation.SSA_steps, it);
     }
+    it = next;
   }
   equation = temp_equation;
 }
@@ -710,8 +760,12 @@ void lazy_pot::handling_guards(
 void lazy_pot::handling_active_threads(
   symex_target_equationt &equation)
 {
+  // See handling_guards for why this swap-around-the-copy avoids copying
+  // the (potentially huge) SSA_steps list just to immediately discard it.
+  symex_target_equationt::SSA_stepst original_steps;
+  std::swap(original_steps, equation.SSA_steps);
   symex_target_equationt temp_equation{equation};
-  temp_equation.clear();
+  std::swap(original_steps, equation.SSA_steps);
 
   auto ssa_steps = equation.SSA_steps;
 
@@ -756,8 +810,6 @@ void lazy_pot::handling_active_threads(
 
   unsigned thread_created = 1;
   thread_current = 0;
-  bool thread_creating = false;
-  bool thread_id_writing = false;
 
   symex_target_equationt::SSA_stepst::const_iterator prev;
 
@@ -798,41 +850,44 @@ void lazy_pot::handling_active_threads(
       continue;
     }
 
-    if (s_it->source.pc->source_location().get_function() == "pthread_create" && thread_creating && thread_id_writing)
+    // Was: detected thread creation by pattern-matching the source
+    // function name "pthread_create" plus a shared write to
+    // __CPROVER_next_thread_id. That heuristic never fires for threads
+    // spawned via CBMC's native __CPROVER_ASYNC_n: form (no
+    // pthread_create call at all), so such threads' active-thread flag
+    // was never set to true anywhere, making every one of their writes
+    // invisible -- a silent false negative (confirmed: 5 of this repo's
+    // own regression tests using __CPROVER_ASYNC report VERIFICATION
+    // SUCCESSFUL under --rounds where plain CBMC correctly reports
+    // FAILED). CBMC already emits a dedicated SPAWN step for both spawn
+    // forms (is_spawn()), which is exactly what CBMC's own memory models
+    // use for the same purpose -- use that instead of the source-level
+    // pattern match. thread_created increments in spawn order, which is
+    // CBMC's own thread numbering order, so no heuristic is needed for
+    // the target thread index either. Using the spawn step's own
+    // atomic_section_id (rather than a hard-coded 1, which was tuned
+    // specifically for pthread_create's library wrapper) is correct for
+    // both forms: a pthread_create SPAWN sits inside that library's
+    // atomic section, an __CPROVER_ASYNC one does not.
+    if(s_it->is_spawn())
     {
-      thread_creating = false;
-      thread_id_writing = false;
       create_active_thread_statements(
         s_it->source,
         guard,
-        1,
+        s_it->atomic_section_id,
         thread_created,
         temp_equation,
         true_exprt{});
 
       thread_created++;
-
-      SSA_stept step{equation.SSA_steps.front()};
-      step.type = equation.SSA_steps.front().type;
-
-      equation.SSA_steps.pop_front();
-      temp_equation.SSA_steps.emplace_back(step);
     }
 
-    if(s_it->is_function_call() && s_it->called_function == "pthread_create")
-    {
-      thread_creating = true;
-    }
-    else
-    {
-      if (thread_creating && s_it->is_shared_write() && s_it->ssa_lhs.get_l1_object_identifier() == "__CPROVER_next_thread_id")
-        thread_id_writing = true;
-      SSA_stept step{equation.SSA_steps.front()};
-      step.type = equation.SSA_steps.front().type;
+    SSA_stept step{equation.SSA_steps.front()};
+    step.type = equation.SSA_steps.front().type;
 
-      equation.SSA_steps.pop_front();
-      temp_equation.SSA_steps.emplace_back(step);
-    }
+    equation.SSA_steps.pop_front();
+    temp_equation.SSA_steps.emplace_back(step);
+
     prev = s_it;
   }
   for (auto thread_end : thread_ends)
@@ -868,6 +923,21 @@ void lazy_pot::create_active_thread_statements(
   symex_target_equationt &equation,
   const exprt &value)
 {
+  // thread_created (the caller's index into this map) comes from a
+  // heuristic pthread_create-call-site match, independent of
+  // thread_current (the real max thread_nr in the trace, which is what
+  // populates this map up front in handling_active_threads). If that
+  // heuristic ever over-counts, active_threads_vector.at(thread) below
+  // throws an uncaught std::out_of_range and the whole run aborts with no
+  // diagnostic. Register defensively instead: emplace() is a no-op when
+  // thread is already present, so this only changes behaviour on the
+  // mismatch case, and only by warning + continuing instead of crashing.
+  // 'log' (a messaget local to operator()) isn't reachable from this
+  // member function, so this can only register silently rather than warn;
+  // still strictly better than the uncaught std::out_of_range this
+  // replaces.
+  if(active_threads_vector.count(thread) == 0)
+    create_active_thread_symbol(thread);
 
   SSA_stept event_step{source, goto_trace_stept::typet::SHARED_WRITE};
   event_step.guard = guard;
@@ -1145,14 +1215,31 @@ symbol_exprt lazy_pot::no_interf(symex_target_equationt &equation) {
     for (std::size_t round = 1; round <= rounds; round++) {
       exprt exp1r = true_exprt{};
       exprt exp2r = true_exprt{};
+        // cs(t,round) == cs(t,round-1): (C2) already gives
+        // GE(round-1,i) => GE(round,i) for every i, so only the converse
+        // direction needs asserting here for full equality.
+        exprt cs_eq_1 = true_exprt{};
+        for(unsigned i = 1; i <= labels[thread] + 1; ++i)
+          cs_eq_1 = and_exprt{
+            cs_eq_1,
+            implies_exprt{
+              create_ge_symbol(thread, round, i),
+              create_ge_symbol(thread, round - 1, i)}};
         exp1r = implies_exprt{
           equal_exprt{create_dr_round_symbol(1), from_integer({round}, unsignedbv_typet{rounds_bits})},
-          equal_exprt{create_cs_symbol(thread,round), create_cs_symbol(thread,round-1)}
+          cs_eq_1
         };
       if (round > 1) {
+        exprt cs_eq_2 = true_exprt{};
+        for(unsigned i = 1; i <= labels[thread] + 1; ++i)
+          cs_eq_2 = and_exprt{
+            cs_eq_2,
+            implies_exprt{
+              create_ge_symbol(thread, round, i),
+              create_ge_symbol(thread, round - 1, i)}};
         exp2r = implies_exprt{
           equal_exprt{create_dr_round_symbol(2), from_integer({round}, unsignedbv_typet{rounds_bits})},
-          equal_exprt{create_cs_symbol(thread,round), create_cs_symbol(thread,round-1)}
+          cs_eq_2
         };
       }
       exp1 = and_exprt{exp1, exp1r};
@@ -1316,11 +1403,117 @@ void lazy_pot::collect_reads_and_writes(
         annotate_with_position(*next, last_position);
     };
 
+  // Idea: before the first thread is spawned, thread 0 is the only
+  // thread that exists, so no context-switch point placed in that
+  // prologue can ever matter to the schedule space -- and the paper's
+  // own canonicality formula (Enabled/ABR/ABW over the gap) already
+  // forces every such split's fire_cond to false, since a gap with no
+  // other live thread can contain no executed access. Physically
+  // folding thread 0's pre-spawn accesses into a single label (rather
+  // than adding constraints to rule out the extra splits after the
+  // fact) means create_cs_constraint's per-label loop never builds the
+  // GE/Enabled/Exec/tightening machinery for them at all. This is
+  // purely thread 0's own straight-line code, so nothing about
+  // multi-thread scheduling is lost; a blocking statement in that
+  // prologue still gets its own label below (unaffected by this cut),
+  // so the exact set of reachable prologue asserts/assumes is preserved.
+  //
+  // The cut point is the last shared write/read strictly before the
+  // FIRST is_spawn() step -- not the spawn step itself. handling_active_
+  // threads injects the new thread's active-flag write (itself a shared
+  // write) immediately before the spawn step; that flag write must keep
+  // its own label, since active_at_turn/phase_1 use its position to
+  // determine exactly when a thread becomes active relative to other
+  // accesses -- folding it into the merged prologue would make a race
+  // between an initializer and the spawned thread's first access
+  // indistinguishable from one that predates thread creation entirely.
+  symex_target_equationt::SSA_stepst::iterator prologue_end_step =
+    ssa_steps.end();
+  {
+    auto spawn_it = ssa_steps.begin();
+    for(; spawn_it != ssa_steps.end(); ++spawn_it)
+      if(spawn_it->is_spawn())
+        break;
+    if(spawn_it != ssa_steps.end())
+    {
+      auto it = spawn_it;
+      while(it != ssa_steps.begin())
+      {
+        --it;
+        if(it->is_shared_write() || it->is_shared_read())
+        {
+          prologue_end_step = it;
+          break;
+        }
+      }
+    }
+  }
+  // Idea 1 (physical pre-spawn context-switch elimination) is implemented
+  // above but disabled by default: A/B-measured on elimination_backoff_stack,
+  // triangular-longest-2 and safestack_test (base and --por, idea1 vs
+  // noidea1 binaries built from an otherwise-identical tree), it reduces
+  // label count as designed but does NOT reliably translate into a wall-
+  // clock win. Base mode got worse on every benchmark with any real
+  // prologue to fold (elimination_backoff_stack +68%, safestack +109%,
+  // reproduced on repeat); --por is benchmark-dependent, not consistently
+  // either way (elimination_backoff_stack +82% worse, safestack -63%
+  // better). Net: this does not meet a no regression bar, so it stays
+  // off pending a mechanistic explanation (leading hypothesis: as with the
+  // earlier 'reach' OR-chain collapse this session, removing variables/
+  // clauses that looked purely redundant removed propagation structure the
+  // solver -- and possibly --por's canonicality machinery -- was actually
+  // using, rather than being pure overhead). The prologue-detection logic
+  // above is left in place, inert, so this can be flipped back to
+  // '(prologue_end_step != ssa_steps.end())' for further investigation
+  // without re-deriving it.
+  bool in_prologue = false;
+
+  // Idea 7 (thread-exclusive-variable label folding, off critical path of
+  // Idea 1 above -- independent of whether in_prologue is enabled): a
+  // variable touched by at most one thread, once thread 0's own pre-spawn
+  // prologue accesses are set aside (those are already provably harmless
+  // on their own -- see prologue_end_step above, computed regardless of
+  // in_prologue), can never be raced on by any other thread: no other
+  // thread ever executes an instruction that touches it, so a context-
+  // switch point placed at one of its accesses carries no scheduling
+  // information for anyone. Fold such accesses into whichever label
+  // they're adjacent to instead of giving each its own. Needs a full
+  // pre-pass because whether a variable qualifies isn't known until every
+  // access to it in the whole trace has been seen (e.g. fib_unsafe.h's
+  // p/q/cur/prev/next/x: file-scope globals that are, in practice, each
+  // used by exactly one thread for the entire program -- but declaration
+  // scope alone doesn't tell us that, only scanning every access does).
+  std::unordered_set<irep_idt> single_thread_variables;
+  {
+    std::unordered_map<irep_idt, std::unordered_set<std::size_t>>
+      threads_touching;
+    bool scan_in_prologue = (prologue_end_step != ssa_steps.end());
+    for(auto it = ssa_steps.begin(); it != ssa_steps.end(); ++it)
+    {
+      if(scan_in_prologue && it == prologue_end_step)
+        scan_in_prologue = false;
+      if(!(it->is_shared_write() || it->is_shared_read()))
+        continue;
+      if(!can_cast_expr<symbol_exprt>(it->ssa_lhs))
+        continue;
+      if(scan_in_prologue && it->source.thread_nr == 0)
+        continue;
+      threads_touching[it->ssa_lhs.get_l1_object_identifier()].insert(
+        it->source.thread_nr);
+    }
+    for(const auto &entry : threads_touching)
+      if(entry.second.size() <= 1)
+        single_thread_variables.insert(entry.first);
+  }
+
   for(symex_target_equationt::SSA_stepst::iterator s_it =
         ssa_steps.begin();
       s_it != ssa_steps.end();
       s_it++)
   {
+    if(in_prologue && s_it == prologue_end_step)
+      in_prologue = false;
+
     if(this->labels.count(s_it->source.thread_nr) == 0)
     {
       // massimo, non assegnamento: i thread non compaiono necessariamente in
@@ -1366,7 +1559,29 @@ void lazy_pot::collect_reads_and_writes(
 
     if(s_it->is_atomic_begin())
     {
+      if(getenv("LAZYPO_ACCESS_DEBUG") && s_it->source.thread_nr == 1)
+      {
+        exprt g = s_it->guard;
+        simplify(g, ns);
+        std::cerr << "ATOMIC_BEGIN thread=1 guard_false=" << s_it->guard.is_false()
+                  << " simplified_false=" << g.is_false() << "\n";
+      }
       labels[s_it->source.thread_nr]++;
+      // Was not reset here (unlike is_atomic_end below); every new
+      // label needs num reset to 0, otherwise num grows unboundedly
+      // once the prologue-folding above lets several atomic sections
+      // (each bumping labels[thread] once, here) share a smaller label
+      // range than before. This does NOT by itself fix the
+      // independent, still-open issue that atomic_begin's own guard
+      // write below still occupies num 0, leaving a phantom
+      // guards[...][0] entry the real first access (at num 1, since
+      // accesses inside an atomic section only ever num++) never
+      // reuses -- that phantom is what makes create_cs_constraint's
+      // context-boundary tightening witness vacuous for every atomic
+      // block. Fixing that fully needs NOT writing gv[num] here at
+      // all, left as a separate, independently-regression-tested
+      // change (not bundled with this one).
+      num = 0;
       {
         auto &gv = guards[s_it->source.thread_nr][labels[s_it->source.thread_nr]];
         if(gv.size() <= num)
@@ -1391,9 +1606,37 @@ void lazy_pot::collect_reads_and_writes(
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
+        if(getenv("LAZYPO_ACCESS_DEBUG"))
+          std::cerr << "ACCESS_DEBUG W " << s_it->source.thread_nr << " "
+                    << s_it->ssa_lhs.get_l1_object_identifier() << "\n";
+        // Was: merged two non-atomic shared accesses into one block
+        // whenever they shared source location AND guard -- which two
+        // distinct accesses from the SAME GOTO instruction (the common
+        // case: e.g. `c = c + 1` reads then writes c) or the same source
+        // line always do, since location/guard are per-instruction, not
+        // per-access. That silently made the round-robin scheduler unable
+        // to interleave between them, hiding real bugs (confirmed: lost
+        // updates, and the repo's own svcomp13_fib_bench_longer_unsafe
+        // regression test, go undetected under --rounds/--por at every
+        // bound). The paper specifies every non-atomic shared access is
+        // its own singleton block; every non-atomic access must start a
+        // new one, exactly like the assert/assume handling above already
+        // does.
+        // Base mode benefits consistently (fib_unsafe-6 base 168.2s to 36.9s,
+        // elimination_backoff_stack base 60.6s to 28.6s); --por regresses
+        // just as consistently on CAS/elimination-heavy benchmarks
+        // (elimination_backoff_stack POR 129.4s to timeout at 300s,
+        // safestack_test POR 17.5-47.2s to 100.8s) -- same "removed
+        // structure --por's canonicality machinery relied on" pattern as
+        // Idea 1. Gated to base mode only rather than disabled outright,
+        // since unlike Idea 1 the base-mode win here is large and so far
+        // exceptionless.
+        const bool thread_exclusive_var = !this->por && single_thread_variables.count(
+          s_it->ssa_lhs.get_l1_object_identifier()) > 0;
         if (labels[s_it->source.thread_nr] == 0
-              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location())
-              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard))
+              || (s_it->atomic_section_id == 0
+                  && !(s_it->source.thread_nr == 0 && in_prologue)
+                  && !thread_exclusive_var))
         {
           labels[s_it->source.thread_nr]++;
           num = 0;
@@ -1446,12 +1689,40 @@ void lazy_pot::collect_reads_and_writes(
     }
     if(s_it->is_shared_read())
     {
+      if(getenv("LAZYPO_ACCESS_DEBUG") && can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
+        std::cerr << "ACCESS_DEBUG R " << s_it->source.thread_nr << " "
+                  << s_it->ssa_lhs.get_l1_object_identifier() << "\n";
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
+        // Was: merged two non-atomic shared accesses into one block
+        // whenever they shared source location AND guard -- which two
+        // distinct accesses from the SAME GOTO instruction (the common
+        // case: e.g. `c = c + 1` reads then writes c) or the same source
+        // line always do, since location/guard are per-instruction, not
+        // per-access. That silently made the round-robin scheduler unable
+        // to interleave between them, hiding real bugs (confirmed: lost
+        // updates, and the repo's own svcomp13_fib_bench_longer_unsafe
+        // regression test, go undetected under --rounds/--por at every
+        // bound). The paper specifies every non-atomic shared access is
+        // its own singleton block; every non-atomic access must start a
+        // new one, exactly like the assert/assume handling above already
+        // does.
+        // Base mode benefits consistently (fib_unsafe-6 base 168.2s to 36.9s,
+        // elimination_backoff_stack base 60.6s to 28.6s); --por regresses
+        // just as consistently on CAS/elimination-heavy benchmarks
+        // (elimination_backoff_stack POR 129.4s to timeout at 300s,
+        // safestack_test POR 17.5-47.2s to 100.8s) -- same "removed
+        // structure --por's canonicality machinery relied on" pattern as
+        // Idea 1. Gated to base mode only rather than disabled outright,
+        // since unlike Idea 1 the base-mode win here is large and so far
+        // exceptionless.
+        const bool thread_exclusive_var = !this->por && single_thread_variables.count(
+          s_it->ssa_lhs.get_l1_object_identifier()) > 0;
         if (labels[s_it->source.thread_nr] == 0
-              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() != prev->source.pc->source_location())
-              || (s_it->atomic_section_id == 0 && s_it->source.pc->source_location() == prev->source.pc->source_location() && s_it->guard != prev->guard))
+              || (s_it->atomic_section_id == 0
+                  && !(s_it->source.thread_nr == 0 && in_prologue)
+                  && !thread_exclusive_var))
         {
           labels[s_it->source.thread_nr]++;
           num = 0;
@@ -1535,6 +1806,18 @@ void lazy_pot::collect_reads_and_writes(
 
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
+
+  if(getenv("LAZYPO_ACCESS_DEBUG"))
+  {
+    unsigned total_labels = 0;
+    for(const auto &entry : labels)
+    {
+      std::cerr << "LABEL_COUNT thread=" << entry.first
+                << " labels=" << entry.second << "\n";
+      total_labels += entry.second;
+    }
+    std::cerr << "LABEL_COUNT total=" << total_labels << "\n";
+  }
 }
 
 void lazy_pot::annotate_round_robin_trace_event(
@@ -1670,6 +1953,34 @@ symbol_exprt lazy_pot::create_cs_symbol(size_t thread, size_t round)
   cs_map.emplace(cs_key, cs_symbol);
 
   return cs_symbol;
+}
+
+symbol_exprt lazy_pot::create_ge_symbol(size_t thread, size_t round, unsigned i)
+{
+  // GE(thread,round,i) <=> cs(thread,round) >= i, for i in 1..labels[thread]+1.
+  // Order/thermometer encoding of the context-switch counter: replaces
+  // the raw n_bit-wide bitvector cs used to; a threshold comparison that
+  // used to need an O(n_bit)-variable comparator circuit per (label,
+  // round) pair is now a single literal read, and monotonicity in round
+  // and in threshold (asserted once in create_cs_constraint) gives the
+  // solver a direct implication chain instead of bitvector arithmetic to
+  // propagate through. See create_cs_constraint for the (C1)-(C3)
+  // defining constraints.
+  const uint64_t ge_key = chain_key(round, static_cast<unsigned>(thread), i, 1);
+  {
+    auto it = ge_map.find(ge_key);
+    if(it != ge_map.end())
+      return it->second;
+  }
+  irep_idt ge_name = "csge_T" + std::to_string(thread) + "_R" +
+                      std::to_string(round) + "_I" + std::to_string(i);
+  symbol_exprt ge_symbol{ge_name, bool_typet{}};
+
+  ge ge_struct{thread, round, i, ge_symbol};
+  ge_vector.emplace_back(ge_struct);
+  ge_map.emplace(ge_key, ge_symbol);
+
+  return ge_symbol;
 }
 
 symbol_exprt lazy_pot::create_reach_symbol(unsigned label, size_t thread)
@@ -1852,7 +2163,11 @@ void lazy_pot::create_atomic_canonical(
         ? b.reads.begin()->second.front().s_it->source
         : b.writes.begin()->second.front().s_it->source;
       const exprt cs_1 = create_enabled_symbol(b.label, b.thread, round);
-      exprt cs = equal_exprt(create_cs_symbol(b.thread, round-1), from_integer(b.label, unsignedbv_typet(n_bit[b.thread])));
+      // Was `cs^{r-1} == label`; cs_1 (Enabled) already conjoins
+      // !GE(t,r-1,label+1), so only the remaining direction,
+      // GE(t,r-1,label), is needed here (see create_cs_constraint's
+      // boundary tightening for the same reasoning).
+      exprt cs = create_ge_symbol(b.thread, round - 1, b.label);
       exprt fire_cond =
         and_exprt(cs_1, cs, active_at_turn(b.thread, b.label, round - 1));
       exprt abr = b.reads.empty()
@@ -1872,12 +2187,15 @@ symbol_exprt lazy_pot::create_ABR(
   const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round,
   unsigned label, unsigned thread,
   symex_target_equationt &equation) {
+  // reads is already the per-block map (built by build_atomic_blocks); it's
+  // typically far smaller than the full global_variables set, so iterate it
+  // directly instead of scanning every shared variable in the program just
+  // to test membership.
   exprt result = false_exprt{};
   const symex_targett::sourcet *src = nullptr;
-  for(auto global_variable : global_variables){
-    if(reads.count(global_variable) == 0)
-      continue;
-    for(const auto &rd : reads.at(global_variable))
+  for(const auto &read_entry : reads){
+    const irep_idt &global_variable = read_entry.first;
+    for(const auto &rd : read_entry.second)
     {
       if(src == nullptr)
         src = &rd.s_it->source;
@@ -1951,10 +2269,12 @@ symbol_exprt lazy_pot::create_ABW(
   // il blocco non tocca x, quindi quel testimone e' spurio e teneva in vita
   // schedule ridondanti (sound, ma rompe l'unicita' del canonico del teorema).
   // Sui blocchi che scrivono una sola variabile le due forme coincidono.
-  for(auto global_variable : global_variables){
-    if(writes.count(global_variable) == 0)
-      continue;
-    const auto &ws = writes.at(global_variable);
+  // writes is already the per-block map (built by build_atomic_blocks); see
+  // create_ABR for why iterating it directly instead of global_variables is
+  // equivalent and avoids an O(|global_variables|) scan per (block, round).
+  for(const auto &write_entry : writes){
+    const irep_idt &global_variable = write_entry.first;
+    const auto &ws = write_entry.second;
     if(src == nullptr)
       src = &ws.front().s_it->source;
 
