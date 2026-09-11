@@ -677,7 +677,8 @@ bool thread_exclusivity_analysist::root_dispatch_is_exclusive(
             .get_identifier() == irep_idt("pthread_create"))
       {
         const auto &arguments = instruction.call_arguments();
-        bool only_in_start_routine_argument = true;
+        bool only_in_start_routine_argument =
+          !contains_address_of(instruction.call_lhs(), root);
         for(std::size_t a = 0; a < arguments.size(); ++a)
           if(a != 2 && contains_address_of(arguments[a], root))
             only_in_start_routine_argument = false;
