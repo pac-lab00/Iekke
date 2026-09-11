@@ -99,11 +99,42 @@ Author: CBMC/lazy_po work
 ///     point; anything else, including recursion or being callable from
 ///     inside a spawn region, fails).
 ///
+/// (9) Prologue. Step (6) counts the initial thread as touching v if any
+///     function in reach(entry) mentions v. That is too strong for code
+///     that provably runs before *any* thread has been spawned: while it
+///     runs there is only one thread in existence, so its accesses cannot
+///     race with anything and must not be counted as a second toucher.
+///     (Without this, CBMC's own zero-initialisation of every global in
+///     __CPROVER_initialize would make every global look like it is
+///     touched by the initial thread, and nothing would ever qualify.)
+///     So we exclude from reach(entry), when counting, the functions in a
+///     set `prologue`.
+///
+///     Crucially this is a property of *call contexts*, not of functions.
+///     A helper reachable from __CPROVER_initialize (via a C
+///     `__attribute__((constructor))` function or a C++ static
+///     initialiser, say) can also be called from main *after* threads have
+///     been spawned; that second call is a genuine initial-thread access
+///     and must be counted. We therefore admit a function into `prologue`
+///     only if *every* call site of it in the whole program is
+///     prologue-safe -- either directly in the entry function, outside any
+///     loop and spawn region, strictly before the first call there that
+///     can reach a thread spawn, or inside a function already in
+///     `prologue` -- and only if it cannot itself reach a thread spawn and
+///     is neither a start routine nor shared spawn infrastructure. This is
+///     a least fixpoint (see compute_prologue_functions), so recursion
+///     among candidates simply never enters the set. Since the analysis
+///     has bailed out on any indirect call (2), `call_sites` is a complete
+///     record of every way a function can be entered other than being a
+///     start routine, which is excluded; hence every execution of a
+///     `prologue` function finishes before any thread is spawned.
+///
 /// Combining (7) and (8): at most one thread instance ever executes any
-/// function in reach(r), and by (6) no other root's code mentions v, and
-/// by (5) neither the shared spawn infrastructure nor a spawn region
-/// mentions v, and by (1) there is no aliasing path to v. Hence at most
-/// one thread accesses v.
+/// function in reach(r), and by (6) and (9) no other root's code, and no
+/// non-prologue initial-thread code, mentions v, and by (5) neither the
+/// shared spawn infrastructure nor a spawn region mentions v, and by (1)
+/// there is no aliasing path to v. Hence at most one thread accesses v
+/// while any other thread exists.
 ///
 /// Every check above fails "closed": on anything unexpected the variable
 /// (or the whole program) is simply not reported, and the caller keeps
@@ -252,8 +283,7 @@ private:
     const std::unordered_set<irep_idt> &seeds,
     const std::unordered_set<irep_idt> &stop_at) const;
   bool runs_at_most_once(const irep_idt &function_id);
-  void compute_prologue_functions(
-    const std::unordered_set<irep_idt> &entry_reach);
+  void compute_prologue_functions();
   bool root_dispatch_is_exclusive(const irep_idt &root) const;
   bool root_spawned_at_most_once(const irep_idt &root);
 
@@ -512,14 +542,51 @@ bool thread_exclusivity_analysist::runs_at_most_once(
 /// otherwise make every global look like it is touched by the initial thread
 /// as well as by its owning thread.
 ///
-/// The condition checked is deliberately narrow: the function must be unable
-/// to reach pthread_create, and must be called exactly once, directly from the
-/// program entry function, outside any loop or spawn region, at a position
-/// strictly before every call in the entry function that could reach a thread
-/// spawn. In practice this fires for __CPROVER_initialize and nothing else,
-/// which is exactly the intent; anything less obvious is left counted.
-void thread_exclusivity_analysist::compute_prologue_functions(
-  const std::unordered_set<irep_idt> &entry_reach)
+/// Prologue membership is a property of a function's *call contexts*, not of
+/// the function on its own. A helper that __CPROVER_initialize reaches (say
+/// through a C `__attribute__((constructor))` function or a C++ static
+/// initialiser) may perfectly well be called a second time from main *after*
+/// threads have been spawned, and that second call is not prologue-safe at
+/// all. Marking the helper "prologue" wholesale would then silently drop the
+/// initial thread's post-spawn accesses from the root count and wrongly call a
+/// raced variable thread-exclusive. So we must only fold a function when
+/// *every* way of entering it is pre-spawn.
+///
+/// We therefore compute the set P of prologue functions as the least fixpoint
+/// of the rule
+///
+///   q in P  iff  q has at least one call site, q cannot transitively reach a
+///                thread spawn, q is neither the entry point nor a thread
+///                start routine nor shared spawn infrastructure, and *every*
+///                call site of q in the whole program is prologue-safe, where
+///                a call site is prologue-safe if it either
+///                  (a) lies directly in the body of the entry function,
+///                      outside any loop and outside any spawn region, at a
+///                      position strictly before the first call in the entry
+///                      function that can reach a thread spawn (the seed
+///                      case -- in practice the call to __CPROVER_initialize),
+///                      or
+///                  (b) lies in a function that is already in P, outside a
+///                      spawn region.
+///
+/// Justification. For (a): the entry function is a linearly ordered goto
+/// program, the call site is spanned by no backward branch (`in_loop` is
+/// false), and every instruction that can reach a spawn sits at a later
+/// position, so the call completes before any thread exists. For (b): by
+/// induction every execution of the caller's body is entirely pre-spawn, so
+/// in particular so is this call. Since the rule quantifies over *all* call
+/// sites of q, and `call_sites` records every direct call in the program
+/// (the analysis has already bailed out if any call is indirect, and a
+/// function without a body cannot call anything), every execution of q is
+/// pre-spawn.
+///
+/// Starting from the empty set and only ever adding a function all of whose
+/// call sites are *already* justified makes this a least fixpoint. A cycle
+/// among candidates (direct or mutual recursion) is therefore simply never
+/// added, which loses a little precision and is sound. In practice P is
+/// {__CPROVER_initialize} plus whatever it alone calls, which is exactly the
+/// intent; anything less obvious is left counted.
+void thread_exclusivity_analysist::compute_prologue_functions()
 {
   const irep_idt entry = goto_functionst::entry_point();
   const irep_idt pthread_create_id("pthread_create");
@@ -573,24 +640,57 @@ void thread_exclusivity_analysist::compute_prologue_functions(
     }
   }
 
-  for(const auto &function_id : entry_reach)
-  {
-    if(function_id == entry || spawn_reaching.count(function_id) != 0)
-      continue;
+  // Is this one call site guaranteed to be executed only before any thread
+  // has been spawned, given what we already know to be prologue?
+  const auto site_is_prologue_safe = [&](const call_sitet &site) {
+    if(site.in_spawn_region)
+      return false; // executed by the spawned thread, not by this one
+    if(prologue.count(site.caller) != 0)
+      return true; // case (b): the whole caller runs in the prologue
+    // case (a): directly in the entry function, before anything can spawn
+    return site.caller == entry && !site.in_loop &&
+           site.position < first_spawn_reaching_call;
+  };
+
+  // Does every call site of `function_id` satisfy the rule, so that it can be
+  // added to the prologue set?
+  const auto qualifies = [&](const irep_idt &function_id) {
+    if(function_id == entry)
+      return false; // the entry function itself spans the whole execution
+    if(spawn_reaching.count(function_id) != 0)
+      return false; // may itself spawn a thread and then keep running
+    // A start routine is entered by a spawned thread, and the shared spawn
+    // infrastructure is run by every spawned thread. Neither is covered by
+    // the call-site argument, so exclude both explicitly.
+    if(roots.count(function_id) != 0 || infra.count(function_id) != 0)
+      return false;
 
     const auto sites = call_sites.find(function_id);
-    if(sites == call_sites.end() || sites->second.size() != 1)
-      continue;
+    if(sites == call_sites.end() || sites->second.empty())
+      return false; // never called: no call site justifies anything
 
-    const call_sitet &site = sites->second.front();
-    if(site.caller != entry || site.in_loop || site.in_spawn_region)
-      continue;
-    if(site.position >= first_spawn_reaching_call)
-      continue;
+    for(const auto &site : sites->second)
+      if(!site_is_prologue_safe(site))
+        return false;
 
-    // The function and everything it calls run entirely in the prologue.
-    for(const auto &reached : reachable_from({function_id}, {}))
-      prologue.insert(reached);
+    return true;
+  };
+
+  // Least fixpoint: keep adding functions all of whose call sites are already
+  // justified, until nothing changes.
+  bool changed = true;
+  while(changed)
+  {
+    changed = false;
+    for(const auto &info_entry : infos)
+    {
+      const irep_idt &function_id = info_entry.first;
+      if(prologue.count(function_id) == 0 && qualifies(function_id))
+      {
+        prologue.insert(function_id);
+        changed = true;
+      }
+    }
   }
 }
 
@@ -809,7 +909,7 @@ std::unordered_set<irep_idt> thread_exclusivity_analysist::operator()()
     candidates.insert(symbol.name);
   }
 
-  compute_prologue_functions(reach.at(goto_functionst::entry_point()));
+  compute_prologue_functions();
 
   // For each candidate, which roots mention it?
   std::unordered_map<irep_idt, std::unordered_set<irep_idt>> roots_touching;
