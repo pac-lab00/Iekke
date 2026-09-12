@@ -497,7 +497,15 @@ void symex_target_equationt::convert_constraints(
        // fib_unsafe-5 +69483 su 264336).
        && step.comment != "nrp canonical"
        && step.comment != "low canonical"
-       && step.comment != "obs canonical")
+       && step.comment != "obs canonical"
+       // Stessa trappola per l encoding a finestre: i nodi del range-OR e la
+       // catena FR sono canonicalita a tutti gli effetti. Misurato su
+       // safestack --rounds 4 --unwind 3 con LAZYPO_SMS=1: senza queste due
+       // righe il master cresceva di 33k variabili e 101k clausole rispetto
+       // all encoding plain, cioe tutta la struttura delle finestre finiva
+       // dalla parte sbagliata del taglio.
+       && step.comment != "por range"
+       && step.comment != "por first-read")
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
