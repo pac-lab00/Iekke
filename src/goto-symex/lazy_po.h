@@ -151,6 +151,42 @@ private:
   std::vector<atomic_block_round> atomic_block_rounds;
   std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
+  // --- Window encoding of the canonicality tags ------------------------
+  // Per shared variable: the accesses (writes and reads) in id order, the
+  // exec literal of each, the OBS literal of each write, and the FR chain
+  // ("the first executed access with id >= k is a read"). Every comparison
+  // the canonicality clauses make on LW/WINR/NRP/LOW is equivalent to a
+  // disjunction of exec literals over a contiguous id window (see the
+  // soundness argument above create_ABW_windows in lazy_po.cpp); the
+  // windows are materialised through a shared balanced range-OR tree so a
+  // query costs O(log n) literals instead of an n-bit comparator.
+  struct tag_windowt
+  {
+    bool init = false;
+    bool obs_built = false;
+    bool fr_built = false;
+    std::size_t n = 0;                 // |writes| + |reads| for this variable
+    std::vector<unsigned> write_ids;   // ascending
+    std::vector<exprt> write_exec;     // parallel to write_ids
+    std::vector<unsigned> read_ids;    // ascending
+    std::vector<exprt> read_exec;      // parallel to read_ids
+    std::vector<exprt> obs;            // parallel to write_ids
+    std::vector<exprt> fr;             // size n+1, fr[k] = FR(k)
+    // memo dei nodi del range-OR: kind 0 = writes, 1 = reads, 2 = OBS
+    std::unordered_map<uint64_t, exprt> nodes[3];
+  };
+  std::unordered_map<irep_idt, tag_windowt> tag_windows;
+  // A/B switch during development: LAZYPO_TAG_BV=1 restores the original
+  // bitvector tag chains (create_LW_symbol & co.).
+  bool bv_tags = false;
+  // LAZYPO_TAG_XCHECK=1: emette entrambi gli encoding e asserisce che i
+  // testimoni ABR/ABW coincidano (validazione, non produzione).
+  bool xcheck_tags = false;
+  // coppie (finestre, bitvector) da asserire uguali; emesse a fine
+  // costruzione perche' handling_guards assume che ogni assert nella
+  // equazione abbia un blocking event corrispondente.
+  std::vector<std::pair<exprt, exprt>> xcheck_pairs;
+
   std::vector<cs> cs_vector;
   std::vector<ge> ge_vector;
   std::vector<reach> reach_vector;
@@ -287,6 +323,46 @@ private:
     symex_target_equationt &equation);
 
   exprt boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num);
+
+  // --- window encoding helpers ---
+  tag_windowt &tag_data(irep_idt variable);
+
+  // Integer twin of boundary_id: id of the first access of `variable` at or
+  // after (round, thread, label, num), or n if there is none.
+  std::size_t boundary_index(
+    irep_idt variable, std::size_t round, unsigned thread, unsigned label,
+    unsigned num);
+
+  exprt range_node(
+    irep_idt variable, unsigned kind, std::size_t a, std::size_t b,
+    symex_target_equationt &equation);
+
+  exprt range_query(
+    irep_idt variable, unsigned kind, std::size_t a, std::size_t b,
+    std::size_t lo, std::size_t hi, symex_target_equationt &equation);
+
+  // OR of the kind-literals of the accesses whose id lies in [id_lo, id_hi).
+  exprt window_exec(
+    irep_idt variable, unsigned kind, std::size_t id_lo, std::size_t id_hi,
+    symex_target_equationt &equation);
+
+  exprt first_read_atom(
+    irep_idt variable, std::size_t k, symex_target_equationt &equation);
+
+  void build_first_read_chain(
+    irep_idt variable, symex_target_equationt &equation);
+
+  void build_obs_literals(irep_idt variable, symex_target_equationt &equation);
+
+  symbol_exprt create_ABR_windows(
+    const std::map<irep_idt, std::vector<shared_event>> &reads,
+    std::size_t round, unsigned label, unsigned thread,
+    symex_target_equationt &equation);
+
+  symbol_exprt create_ABW_windows(
+    const std::map<irep_idt, std::vector<shared_event>> &writes,
+    std::size_t round, unsigned label, unsigned thread,
+    symex_target_equationt &equation);
 
   void enumerate_accesses();
 

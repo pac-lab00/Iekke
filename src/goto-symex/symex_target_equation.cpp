@@ -528,7 +528,9 @@ void symex_target_equationt::convert_canonical_constraints(
            || step.comment == "winr canonical"
            || step.comment == "nrp canonical"
            || step.comment == "low canonical"
-           || step.comment == "obs canonical"))
+           || step.comment == "obs canonical"
+           || step.comment == "por range"
+           || step.comment == "por first-read"))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
