@@ -14,6 +14,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <functional>
 #include <memory>
+#include <unordered_set>
 
 #include <analyses/guard.h>
 
@@ -211,6 +212,26 @@ public:
   std::stack<bool> record_events;
 
   const incremental_dirtyt *dirty = nullptr;
+
+  /// Shared variables that a static, whole-program analysis has proven to be
+  /// accessed by at most one thread over any execution (see
+  /// thread_exclusivity.h). Such a variable cannot be interfered with by any
+  /// other thread, so it is treated exactly like a thread-local: its value is
+  /// constant-propagated and no shared read/write event is recorded for it.
+  /// This lets goto-symex fold a loop induction variable that happens to be
+  /// declared at file scope, and hence stop unwinding when its guard becomes
+  /// false, just as it already does for a genuine local.
+  ///
+  /// Null unless the lazy_po/--rounds encoding is active; the default
+  /// (non---rounds) CBMC behaviour is therefore completely unaffected.
+  const std::unordered_set<irep_idt> *thread_exclusive = nullptr;
+
+  /// \return true if \p identifier is provably accessed by at most one thread
+  bool is_thread_exclusive(const irep_idt &identifier) const
+  {
+    return thread_exclusive != nullptr &&
+           thread_exclusive->find(identifier) != thread_exclusive->end();
+  }
 
   goto_programt::const_targett saved_target;
 

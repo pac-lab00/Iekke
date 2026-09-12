@@ -1,0 +1,103 @@
+Soundness tests for the static thread-exclusivity analysis
+(src/goto-symex/thread_exclusivity.{h,cpp}).
+
+Each adv_* program is constructed so that a naive version of the analysis
+would wrongly call a global thread-exclusive, which would let goto-symex
+constant-propagate it and silently miss the injected bug. Every one of them
+contains a real, reachable bug and must report VERIFICATION FAILED under
+--rounds, and LAZYPO_EXCLUSIVITY_DEBUG=1 must show the variable being
+rejected (or the whole analysis bailing out). Each file's header comment
+states the expected verdict and the expected debug line.
+
+Root counting / spawn model
+  adv_A_function_pointer      t2 writes g only through a function pointer
+  adv_B_address_taken         t2 writes g via a pointer set up in a static
+                              initializer; g itself is never named in t2
+                              (only the dirtyt address-taken bailout saves us)
+  adv_D_same_start_routine    t1 is the start routine of TWO pthread_create
+                              calls, so two threads run it
+  adv_E_spawn_in_loop         one pthread_create call site, inside a loop
+  adv_F_nondet_start_routine  start routine is not a literal function address
+  adv_G_cprover_async         spawn via __CPROVER_ASYNC_1, not pthread_create
+  adv_H_root_also_called      t1 is both a start routine and called by main
+  adv_K_helper_called_twice   one pthread_create call site, but in a helper
+                              that main calls twice
+  adv_T_goto_loop_spawn       pthread_create in a loop built from a raw
+                              backward goto, not a for/while
+  adv_U_nested_spawn_loop     a spawned thread spawns more threads, in a loop
+  adv_V_nested_spawn_once     a spawned thread spawns two more threads
+  adv_Y_two_sites_same_root   two pthread_create sites name the same root
+  adv_S_infra_nonroot         a void *(void *) function that is NOT a start
+                              routine still lands in the __spawned_thread
+                              dispatch, i.e. in `infra`
+
+Context-sensitive prologue  (see step (9) of the soundness argument)
+  adv_L_prologue_reuse_c      helper h() is reachable from
+                              __CPROVER_initialize via a gcc
+                              __attribute__((constructor)) function AND is
+                              called again from main after both threads have
+                              been spawned. Treating "prologue" as a set of
+                              functions rather than of call contexts dropped
+                              that post-spawn access and reported SUCCESSFUL.
+  adv_M_prologue_reuse_cpp    same, reached through a C++ static constructor
+  adv_AB_prologue_reuse_deep  the reused helper sits TWO levels below
+                              __CPROVER_initialize (myinit -> mid -> h), so
+                              the fixpoint has to propagate non-membership
+                              down the chain, not just reject the direct
+                              callee
+  adv_AC_prologue_reuse_recur the reused helper is self-recursive, so it can
+                              never enter the least fixpoint at all
+
+Call-graph reachability
+  adv_N_mutual_recursion      the second toucher is behind a call-graph cycle
+  adv_O_deep_chain            the second toucher is six calls deep
+
+Which symbol an access belongs to
+  adv_P_static_local          the shared state is a function-local static
+  adv_Q_union                 two threads use different members of a union
+  adv_X_array                 two threads index the same global array
+  adv_AA_retval_global        remove_returns' f#return_value is shared
+  adv_R_intcast_addr          t2 reaches g through an integer-cast address
+                              held in a global; only dirtyt saves us
+  adv_W_atomic                accesses wrapped in CPROVER atomic sections
+
+Front-end bail-out
+  adv_Z_asm_addr              inline asm. The front end refuses the file
+                              ("Deagle does not support asm code") and so
+                              produces NO verdict at all. That is fail-closed
+                              and is the expected outcome today; the file is
+                              kept so that the case gets rechecked if asm
+                              support ever lands.
+
+pos_* are the positive direction: the variable really is thread-exclusive,
+and folding it must neither invent a bug nor hide one.
+  pos_J_safe                  assertion holds -> VERIFICATION SUCCESSFUL
+  pos_J_unsafe                assertion genuinely fails, and is only
+                              reachable once the loop folds -> FAILED
+  pos_L_recursive_root        exclusive variable reached through a
+                              self-recursive helper; the assert(0) is really
+                              reachable -> FAILED
+  pos_M_pure_prologue         a helper reached ONLY through the prologue
+                              chain must still be folded. Guards against the
+                              context-sensitive rule over-tightening and
+                              switching the analysis off entirely.
+
+Run (with the --rounds encoding, which is the only mode the analysis is
+active in):
+  for f in *.c *.cpp; do cbmc --allow-pointer-unsoundness --glucose \
+      --rounds 4 --unwind 6 $f; done
+
+CAVEAT on using the non---rounds ("base") mode as a control. The base
+encoding of this fork produces spurious counterexamples on programs with a
+racing variable: e.g.
+
+  int p, i;
+  void *t1(void *a){ for(p=0;p<3;p++) i++; assert(p<=3); return 0; }
+  void *t2(void *a){ i = 7; return 0; }
+
+reports FAILED in base mode although p<=3 is trivially true, and this is
+independent of the thread-exclusivity analysis (which is not even computed
+without --rounds). So base mode agreeing on FAILED corroborates a --rounds
+FAILED, but a base-mode FAILED against a --rounds SUCCESSFUL (as on
+pos_J_safe) is not by itself evidence of unsoundness -- reason about the
+program directly.

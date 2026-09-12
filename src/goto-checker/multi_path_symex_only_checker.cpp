@@ -15,6 +15,7 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include <goto-symex/show_program.h>
 #include <goto-symex/show_vcc.h>
+#include <goto-symex/thread_exclusivity.h>
 
 #include <chrono>
 #include <iostream>
@@ -85,6 +86,19 @@ void multi_path_symex_only_checkert::generate_equation()
     std::exit(0);
   }
   // __WP_ADD_END__
+
+  // Static, whole-program thread-exclusivity analysis. Gated to the
+  // lazy_po/--rounds encoding: without --rounds nothing is computed, the
+  // symex state's pointer stays null, and CBMC behaves exactly as before.
+  // Also skipped under symex-driven lazy loading, where the full
+  // goto_functionst is not available up front.
+  if(
+    options.get_unsigned_int_option("rounds") > 0 &&
+    !options.get_bool_option("symex-driven-lazy-loading"))
+  {
+    symex.thread_exclusive_variables = compute_thread_exclusive_variables(
+      goto_model.get_goto_functions(), ns);
+  }
 
   // __SZH_ADD_BEGIN__
   // if the program has threads, we need to symex twice

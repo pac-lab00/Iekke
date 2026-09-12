@@ -1,7 +1,9 @@
 file(GLOB_RECURSE sources "*.cpp" "*.h")
 add_library(goto-symex ${sources}
     lazy_po.h
-    lazy_po.cpp)
+    lazy_po.cpp
+    thread_exclusivity.h
+    thread_exclusivity.cpp)
 
 generic_includes(goto-symex)
 

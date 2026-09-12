@@ -417,6 +417,14 @@ bool goto_symex_statet::l2_thread_read_encoding(
     return false;
   }
 
+  // A variable that a static whole-program analysis has proven to be touched
+  // by at most one thread cannot be interfered with, so read it exactly like a
+  // thread-local: no shared_read event, and constant propagation applies (see
+  // rename<L2>, which falls through to the propagation map when this returns
+  // false). Only ever populated under --rounds.
+  if(is_thread_exclusive(obj_identifier))
+    return false;
+
   // only continue if an indivisible object is being accessed
   if(field_sensitivity.is_divisible(expr))
     return false;
@@ -575,6 +583,12 @@ goto_symex_statet::write_is_shared_resultt goto_symex_statet::write_is_shared(
   {
     return write_is_shared_resultt::NOT_SHARED;
   }
+
+  // See l2_thread_read_encoding: a statically proven thread-exclusive variable
+  // is written exactly like a thread-local (no shared_write event, constant
+  // propagation applies). Only ever populated under --rounds.
+  if(is_thread_exclusive(obj_identifier))
+    return write_is_shared_resultt::NOT_SHARED;
 
   // only continue if an indivisible object is being accessed
   if(field_sensitivity.is_divisible(expr))
