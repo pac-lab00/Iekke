@@ -12,6 +12,8 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include "symex_target_equation.h"
 
+#include <cstdlib>
+
 #include <chrono>
 
 #include <util/std_expr.h>
@@ -479,6 +481,17 @@ void symex_target_equationt::convert_goto_instructions(
   }
 }
 
+/// Vero se la costruzione modulare SAT Modulo SAT e attiva. Stesso switch
+/// letto da bmc_util e da solver_factory; qui serve solo a decidere in quale
+/// passo di conversione finiscono i vincoli di supporto della canonicalita,
+/// il che sotto SMS definisce il taglio master/slave e fuori da SMS e solo
+/// ordine di numerazione. Letto una volta: l ambiente non cambia in corsa.
+static bool lazypo_sms_modular()
+{
+  static const bool sms = getenv("LAZYPO_SMS") != nullptr;
+  return sms;
+}
+
 void symex_target_equationt::convert_constraints(
   decision_proceduret &decision_procedure)
 {
@@ -497,7 +510,23 @@ void symex_target_equationt::convert_constraints(
        // fib_unsafe-5 +69483 su 264336).
        && step.comment != "nrp canonical"
        && step.comment != "low canonical"
-       && step.comment != "obs canonical")
+       && step.comment != "obs canonical"
+       // La struttura di supporto dell encoding a finestre (i nodi del
+       // range-OR e la catena FR) va tenuta fuori da questo passo SOLO
+       // quando serve davvero, cioe sotto LAZYPO_SMS: li il taglio fra
+       // master e slave e definito da quale passo converte cosa, e senza
+       // queste due esclusioni il master cresceva di 33k variabili e 101k
+       // clausole rispetto all encoding plain (misurato su safestack
+       // --rounds 4 --unwind 3 --por).
+       //
+       // Fuori da SMS il passo non decide nulla di semantico -- la formula
+       // e la stessa in entrambi i casi -- ma decide la NUMERAZIONE delle
+       // variabili SAT, e Glucose ne risente parecchio. Convertire qui,
+       // accanto ai letterali exec da cui questi nodi dipendono, invece che
+       // nel secondo passo: vedi i numeri nel commit che introduce questa
+       // condizione. Quindi: se SMS non e attivo, non escluderli.
+       && (!lazypo_sms_modular() || (step.comment != "por range"
+                                     && step.comment != "por first-read")))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
@@ -528,7 +557,9 @@ void symex_target_equationt::convert_canonical_constraints(
            || step.comment == "winr canonical"
            || step.comment == "nrp canonical"
            || step.comment == "low canonical"
-           || step.comment == "obs canonical"))
+           || step.comment == "obs canonical"
+           || step.comment == "por range"
+           || step.comment == "por first-read"))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
