@@ -511,12 +511,6 @@ void symex_target_equationt::convert_constraints(
        && step.comment != "nrp canonical"
        && step.comment != "low canonical"
        && step.comment != "obs canonical"
-       // Stessa trappola per l encoding a finestre: i nodi del range-OR e la
-       // catena FR sono canonicalita a tutti gli effetti. Misurato su
-       // safestack --rounds 4 --unwind 3 con LAZYPO_SMS=1: senza queste due
-       // righe il master cresceva di 33k variabili e 101k clausole rispetto
-       // all encoding plain, cioe tutta la struttura delle finestre finiva
-       // dalla parte sbagliata del taglio.
        // La struttura di supporto dell encoding a finestre (i nodi del
        // range-OR e la catena FR) va tenuta fuori da questo passo SOLO
        // quando serve davvero, cioe sotto LAZYPO_SMS: li il taglio fra
