@@ -3180,8 +3180,13 @@ symbol_exprt lazy_pot::create_OBS_symbol(irep_idt variable, const lazy_variable 
     variable, w.thread, w.label + 1, 0, w.round, equation);
   exprt result = equal_exprt{winr_anchor, from_integer(w.id, type)};
 
+  // Sotto LAZYPO_TAG_XCHECK i due encoding convivono e build_obs_literals
+  // battezza i suoi OBS allo stesso modo: due equazioni di definizione sullo
+  // stesso nome renderebbero il confronto vacuo (la formula diventerebbe
+  // insoddisfacibile invece di esibire la differenza).
   irep_idt obs_id = "OBS_T" + std::to_string(w.thread) + "_L" + std::to_string(w.label) +
-    "_N" + std::to_string(w.num) + "_R" + std::to_string(w.round) + "_V" + id2string(variable);
+    "_N" + std::to_string(w.num) + "_R" + std::to_string(w.round) + "_V" + id2string(variable) +
+    (xcheck_tags ? "_BV" : "");
   symbol_exprt sym{obs_id, bool_typet{}};
   register_por_symbol(sym);
   tag_stats().obs++;
