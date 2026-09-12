@@ -506,6 +506,17 @@ void symex_target_equationt::convert_constraints(
        // dalla parte sbagliata del taglio.
        && step.comment != "por range"
        && step.comment != "por first-read")
+       // ATTENZIONE, misurato: spostare un vincolo da questo passo al passo
+       // canonico non cambia la formula ma cambia la NUMERAZIONE delle
+       // variabili SAT, e Glucose ne risente parecchio. Con "por range" e
+       // "por first-read" ancora convertiti qui, cioe col taglio SMS
+       // sbagliato, i tempi non-SMS erano: ebs r8 133s contro 194s,
+       // fib_unsafe r11u23 22s contro 52s, safestack 15s contro 22s, dcas
+       // 12s contro 20s -- ma tri 102s contro 86s. Quattro casi su cinque
+       // preferiscono la conversione nel primo passo. Non e un motivo per
+       // rompere il taglio SMS, ma suggerisce che il two-pass andrebbe
+       // fatto solo quando LAZYPO_SMS e attivo: fuori da SMS non serve a
+       // niente. Non fatto qui, tocca anche la modalita base.
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
