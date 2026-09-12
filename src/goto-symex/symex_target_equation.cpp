@@ -12,6 +12,8 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include "symex_target_equation.h"
 
+#include <cstdlib>
+
 #include <chrono>
 
 #include <util/std_expr.h>
@@ -479,6 +481,17 @@ void symex_target_equationt::convert_goto_instructions(
   }
 }
 
+/// Vero se la costruzione modulare SAT Modulo SAT e attiva. Stesso switch
+/// letto da bmc_util e da solver_factory; qui serve solo a decidere in quale
+/// passo di conversione finiscono i vincoli di supporto della canonicalita,
+/// il che sotto SMS definisce il taglio master/slave e fuori da SMS e solo
+/// ordine di numerazione. Letto una volta: l ambiente non cambia in corsa.
+static bool lazypo_sms_modular()
+{
+  static const bool sms = getenv("LAZYPO_SMS") != nullptr;
+  return sms;
+}
+
 void symex_target_equationt::convert_constraints(
   decision_proceduret &decision_procedure)
 {
@@ -504,19 +517,22 @@ void symex_target_equationt::convert_constraints(
        // righe il master cresceva di 33k variabili e 101k clausole rispetto
        // all encoding plain, cioe tutta la struttura delle finestre finiva
        // dalla parte sbagliata del taglio.
-       && step.comment != "por range"
-       && step.comment != "por first-read")
-       // ATTENZIONE, misurato: spostare un vincolo da questo passo al passo
-       // canonico non cambia la formula ma cambia la NUMERAZIONE delle
-       // variabili SAT, e Glucose ne risente parecchio. Con "por range" e
-       // "por first-read" ancora convertiti qui, cioe col taglio SMS
-       // sbagliato, i tempi non-SMS erano: ebs r8 133s contro 194s,
-       // fib_unsafe r11u23 22s contro 52s, safestack 15s contro 22s, dcas
-       // 12s contro 20s -- ma tri 102s contro 86s. Quattro casi su cinque
-       // preferiscono la conversione nel primo passo. Non e un motivo per
-       // rompere il taglio SMS, ma suggerisce che il two-pass andrebbe
-       // fatto solo quando LAZYPO_SMS e attivo: fuori da SMS non serve a
-       // niente. Non fatto qui, tocca anche la modalita base.
+       // La struttura di supporto dell encoding a finestre (i nodi del
+       // range-OR e la catena FR) va tenuta fuori da questo passo SOLO
+       // quando serve davvero, cioe sotto LAZYPO_SMS: li il taglio fra
+       // master e slave e definito da quale passo converte cosa, e senza
+       // queste due esclusioni il master cresceva di 33k variabili e 101k
+       // clausole rispetto all encoding plain (misurato su safestack
+       // --rounds 4 --unwind 3 --por).
+       //
+       // Fuori da SMS il passo non decide nulla di semantico -- la formula
+       // e la stessa in entrambi i casi -- ma decide la NUMERAZIONE delle
+       // variabili SAT, e Glucose ne risente parecchio. Convertire qui,
+       // accanto ai letterali exec da cui questi nodi dipendono, invece che
+       // nel secondo passo: vedi i numeri nel commit che introduce questa
+       // condizione. Quindi: se SMS non e attivo, non escluderli.
+       && (!lazypo_sms_modular() || (step.comment != "por range"
+                                     && step.comment != "por first-read")))
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
