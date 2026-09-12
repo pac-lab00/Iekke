@@ -40,6 +40,13 @@ Context-sensitive prologue  (see step (9) of the soundness argument)
                               functions rather than of call contexts dropped
                               that post-spawn access and reported SUCCESSFUL.
   adv_M_prologue_reuse_cpp    same, reached through a C++ static constructor
+  adv_AB_prologue_reuse_deep  the reused helper sits TWO levels below
+                              __CPROVER_initialize (myinit -> mid -> h), so
+                              the fixpoint has to propagate non-membership
+                              down the chain, not just reject the direct
+                              callee
+  adv_AC_prologue_reuse_recur the reused helper is self-recursive, so it can
+                              never enter the least fixpoint at all
 
 Call-graph reachability
   adv_N_mutual_recursion      the second toucher is behind a call-graph cycle
@@ -70,6 +77,10 @@ and folding it must neither invent a bug nor hide one.
   pos_L_recursive_root        exclusive variable reached through a
                               self-recursive helper; the assert(0) is really
                               reachable -> FAILED
+  pos_M_pure_prologue         a helper reached ONLY through the prologue
+                              chain must still be folded. Guards against the
+                              context-sensitive rule over-tightening and
+                              switching the analysis off entirely.
 
 Run (with the --rounds encoding, which is the only mode the analysis is
 active in):
