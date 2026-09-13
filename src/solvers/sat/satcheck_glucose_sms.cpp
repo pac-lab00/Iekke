@@ -29,6 +29,29 @@ satcheck_glucose_sms_baset<T>::satcheck_glucose_sms_baset(
   message_handlert &message_handler)
   : satcheck_glucose_baset<T>(message_handler)
 {
+  // CS-first (the POR fallback decision tier) does not apply to this backend.
+  // It exists to keep the search complete when the POR canonicality clauses
+  // live in the same formula as everything else: without the tier the solver
+  // could exhaust the ordinary decision candidates while POR variables are
+  // still unassigned in clauses that are not yet satisfied, and report a
+  // partial model as SAT. Under SAT Modulo SAT that precondition is vacuous:
+  //   - the master formula holds no canonicality clause at all (measured: of
+  //     245682 POR-classified variables on ebs --rounds 8 --unwind 1, exactly
+  //     20 occur in any master clause; 35209/42 on dcas, 7281/3 on tri),
+  //   - the interface is not POR-classified either -- it is made of the base
+  //     encoding literals the canonicality constraints read, so the tier never
+  //     touches the variables the slave actually communicates on,
+  //   - and a master model needs no confirmation anyway, because the slave is
+  //     pruning-only and checkTheoriesOnModel() skips it outright.
+  // What the tier does do here is exile ~10-16% of the master's variables --
+  // the ones that occur in no master clause, because their defining clauses
+  // went to the slave -- into a fallback heap whose activity is never bumped
+  // (they appear in no learnt clause either), so they get decided only at
+  // maximum depth and are thrown away by every restart. On ebs that is 245662
+  // fallback-tier decisions and 270.7s against 82.4s with the tier off.
+  // Master only: the slave never calls pickBranchLit() -- it only ever
+  // enqueues, propagates and backtracks -- so its own flag is dead either way.
+  this->solver->cs_first_enabled = false;
 }
 
 template <typename T>
