@@ -774,9 +774,16 @@ static void merge_names(
   const symbolt &symbol = ns.lookup(obj_identifier);
 
   // shared?
+  // A thread-exclusive variable is read/written as a thread-local
+  // (goto_symex_state.cpp's l2_thread_read_encoding/write_is_shared), so it
+  // must also be merged as a local here -- otherwise a conditional write to
+  // it inside a branch is never phi-merged at the join, and the tool
+  // silently believes the write happened unconditionally (unsound in both
+  // directions: can hide a real assertion violation, or fabricate one).
   if(
     dest_state.atomic_section_id == 0 && dest_state.threads.size() >= 2 &&
-    (symbol.is_shared() || dirty(symbol.name)))
+    (symbol.is_shared() || dirty(symbol.name)) &&
+    !dest_state.is_thread_exclusive(obj_identifier))
   {
     return; // no phi nodes for shared stuff
   }
