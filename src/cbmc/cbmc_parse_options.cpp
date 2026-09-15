@@ -139,6 +139,19 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("function"))
     options.set_option("function", cmdline.get_value("function"));
 
+  // Thread-creation bound: how many iterations of a recognised
+  // thread-management loop (see thread_spawn_loops.h) goto-symex unwinds,
+  // regardless of --unwind. Default 2: two threads of the same role, plus
+  // main, is enough to exhibit the overwhelming majority of concurrency bugs,
+  // and every extra thread costs a full traversal of that thread body in
+  // symex plus another thread dimension in the round-robin encoding. 0
+  // disables the mechanism and restores the previous behaviour exactly.
+  options.set_option(
+    "thread-creation-bound",
+    cmdline.isset("thread-creation-bound")
+      ? cmdline.get_value("thread-creation-bound")
+      : std::string("2"));
+
   if(cmdline.isset("rounds"))
   {
     options.set_option(

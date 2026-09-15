@@ -190,6 +190,7 @@ void run_property_decider(
   "(show-points-to-sets)" \
   "(slice-formula)" \
   "(rounds):" \
+  "(thread-creation-bound):" \
   "(por)" \
   "(glucose)" \
   "(kissat)" \
@@ -239,6 +240,15 @@ void run_property_decider(
   " --rounds {unr}               activate Round Robin concurrency encoding with \n" \
   "                              {unr} rounds\n"   \
   " --por                        activate Partial Order Reduction when --round \n" \
+  " --thread-creation-bound k    unwind a loop whose body does nothing but\n" \
+  "                              pthread_create (or pthread_join) over a\n" \
+  "                              thread-handle array at most k times, leaving\n" \
+  "                              it without the usual infeasibility\n" \
+  "                              assumption, so a program that spawns N\n" \
+  "                              threads is explored with k of them created.\n" \
+  "                              A counterexample found this way is real; the\n" \
+  "                              absence of one only means no violation with\n" \
+  "                              k threads. 0 disables (default 2)\n" \
   "                              is given\n"   \
   HELP_UNWINDSET \
   " --incremental-loop L         check properties after each unwinding\n" \
