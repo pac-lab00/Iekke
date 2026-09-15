@@ -218,6 +218,29 @@ optionalt<management_loopt> classify_loop(
     TML_BAIL("induction variable is live after the loop");
   }
 
+  // the loop must start at index 0. Together with the bound being the same for
+  // every loop over the same handle array, this is what makes "the first k
+  // iterations" mean the same k entries in the spawn loop and in the join
+  // loops: a join then never reads an entry the bounded spawn loop did not
+  // write.
+  {
+    auto init = result.head;
+    while(init != body.instructions.begin())
+    {
+      --init;
+      if(!is_inert(*init))
+        break;
+    }
+
+    if(
+      !init->is_assign() || symbol_id(init->assign_lhs()) != result.counter ||
+      !init->assign_rhs().is_constant() ||
+      !init->assign_rhs().is_zero())
+    {
+      TML_BAIL("loop does not start at index 0");
+    }
+  }
+
   // the handle argument pins down the thread-handle array
   if(result.is_spawn)
   {
