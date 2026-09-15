@@ -317,6 +317,34 @@ void field_sensitivityt::field_assignments_rec(
     if(array_size > max_field_sensitivity_array_size)
       return;
 
+    // A store at a *non-constant* index is lowered by symbolic execution into
+    // read the whole array, write the whole array, with every element other
+    // than the one stored to framed over from the value that was read.  The
+    // split below turns that into one assignment per element, of the shape
+    //   a[[k]] == (index == k ? new_value : a[[k]]#read)
+    // Each of those assignments is an unconditional shared write of element k.
+    // In a concurrent program that is wrong: the storing thread publishes a
+    // write to every element of the array carrying the value it read when the
+    // statement started, so any element another thread updated in between is
+    // reset to that stale value.  The lost update is an artefact of the
+    // lowering -- the program performs a single store -- and it produces
+    // spurious counterexamples, including apparent violations of mutual
+    // exclusion when the array holds per-element mutexes (a store to
+    // a[i].datum frames a[k].mutex back to its pre-lock state).
+    //
+    // Record the element-selection condition so that only the element actually
+    // stored to emits a *visible* write event; the SSA equality defining each
+    // a[[k]] is unaffected, so this thread's own view of the array stays
+    // exactly as before.  Framed-away elements simply keep whatever value the
+    // interleaving gave them.
+    const with_exprt *partial_update = nullptr;
+    if(ssa_rhs.id() == ID_with && ssa_rhs.operands().size() == 3)
+    {
+      const with_exprt &with_expr = to_with_expr(ssa_rhs);
+      if(!with_expr.where().is_constant())
+        partial_update = &with_expr;
+    }
+
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
     for(std::size_t i = 0; i < array_size; ++i)
     {
@@ -324,8 +352,20 @@ void field_sensitivityt::field_assignments_rec(
         index_exprt{ssa_rhs, from_integer(i, type->index_type())}, ns);
       const exprt &index_lhs = *fs_it;
 
-      field_assignments_rec(
-        ns, state, index_lhs, index_rhs, target, allow_pointer_unsoundness);
+      const exprt element_cond =
+        partial_update == nullptr
+          ? static_cast<exprt>(true_exprt{})
+          : static_cast<exprt>(equal_exprt{
+              partial_update->where(),
+              from_integer(i, partial_update->where().type())});
+
+      {
+        const goto_symex_statet::shared_write_condition_scopet write_cond{
+          state, element_cond};
+
+        field_assignments_rec(
+          ns, state, index_lhs, index_rhs, target, allow_pointer_unsoundness);
+      }
       ++fs_it;
     }
   }
