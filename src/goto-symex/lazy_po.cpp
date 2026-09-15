@@ -1701,7 +1701,14 @@ void lazy_pot::collect_reads_and_writes(
       // un atomic_end senza begin corrispondente lascerebbe il vector vuoto
       if(!atomic_sections.empty())
         atomic_sections.back().second.second = labels[s_it->source.thread_nr];
-      num = 0;
+      // Was: num = 0 here too. But is_atomic_end() does NOT bump
+      // labels[thread] (only is_atomic_begin() does), so resetting num
+      // here reuses the same (thread,label) key space an access right
+      // after the atomic section would also use, colliding two distinct
+      // accesses onto one (thread,label,num) key (guards[...] clobbered,
+      // property search terminates one iteration too early). num must
+      // keep counting within the still-open label until the next
+      // is_atomic_begin() legitimately starts a fresh one.
     }
 
     if(s_it->is_shared_write()) {
