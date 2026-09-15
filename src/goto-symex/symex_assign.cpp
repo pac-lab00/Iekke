@@ -168,6 +168,16 @@ void symex_assignt::assign_non_struct_symbol(
   if(symex_config.simplify_opt)
     assignment.rhs = simplify_expr(std::move(assignment.rhs), ns);
 
+  // When the assignment is conditional, the rhs built above frames the old
+  // value of the object back over itself on the branch where the condition
+  // does not hold.  That framing is synthesised here, not written by the
+  // program, so it must not surface as a shared write event: publishing it
+  // would reset whatever another thread stored between the read of the old
+  // value and this write.  Keep the SSA equality as it is (this thread's own
+  // view has to stay correct) and make only the *event* conditional.
+  const goto_symex_statet::shared_write_condition_scopet write_cond{
+    state, guard.empty() ? static_cast<exprt>(true_exprt{}) : conjunction(guard)};
+
   const ssa_exprt l2_lhs = state
                              .assignment(
                                assignment.lhs,

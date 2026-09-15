@@ -606,6 +606,18 @@ bool goto_symex_statet::l2_thread_write_encoding(
   const ssa_exprt &expr,
   const namespacet &ns)
 {
+  // The event guard is the path condition, strengthened by any framing
+  // condition the caller has installed (see shared_write_cond): an element
+  // write that the lowering only emits to carry the *old* value across a
+  // partial update must not be published to the other threads, or it resets
+  // whatever they wrote in the meantime.  Note this affects the event only --
+  // the SSA equality defining the new L2 symbol is emitted unchanged by the
+  // caller, so this thread's own view of the object stays correct.
+  const exprt event_guard = shared_write_cond.is_true()
+                              ? guard.as_expr()
+                              : static_cast<exprt>(
+                                  and_exprt{guard.as_expr(), shared_write_cond});
+
   switch(write_is_shared(expr, ns))
   {
   case write_is_shared_resultt::NOT_SHARED:
@@ -614,7 +626,7 @@ bool goto_symex_statet::l2_thread_write_encoding(
   {
       written_in_atomic_section[remove_level_2(expr)].first.push_back(guard);
       symex_target->shared_write(
-        guard.as_expr(),
+        event_guard,
         expr,
         atomic_section_id,
         source);
@@ -626,7 +638,7 @@ bool goto_symex_statet::l2_thread_write_encoding(
 
   // record a shared write
   symex_target->shared_write(
-    guard.as_expr(),
+    event_guard,
     expr,
     atomic_section_id,
     source);

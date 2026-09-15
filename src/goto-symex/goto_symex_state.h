@@ -211,6 +211,63 @@ public:
 
   std::stack<bool> record_events;
 
+  /// Extra condition conjoined onto the guard of the shared_write events
+  /// emitted by \ref l2_thread_write_encoding (and only onto those: the SSA
+  /// equality defining the new L2 symbol is left alone, as are the read
+  /// events).
+  ///
+  /// Symbolic execution lowers a *partial* update of a composite object -- an
+  /// array store at a non-constant index, or a guarded assignment -- into a
+  /// read of the whole object followed by a write of the whole object, with
+  /// the untouched parts framed over from the read.  Field sensitivity then
+  /// splits that into one assignment per element, of the shape
+  ///     a[[k]] == (i == k ? new_value : a[[k]]#read)
+  /// Each of those is an unconditional *shared write* of element k, so in a
+  /// concurrent program a thread storing to a[i] publishes a write to *every*
+  /// element, carrying the value it read at the start of the statement.  Any
+  /// element another thread updated in between is silently reset to that stale
+  /// value -- a lost update that exists purely as an artefact of the whole-
+  /// object read-modify-write lowering, and which shows up as spurious
+  /// assertion failures (including broken mutual exclusion, since a store to
+  /// a[i].datum frames a[k].mutex back to its pre-lock value).
+  ///
+  /// Setting this to the element-selection condition makes the write event
+  /// itself conditional, so a framed (no-op) element write is not visible to
+  /// the other threads at all and the round-robin write chain keeps whatever
+  /// value was there.  See field_sensitivityt::field_assignments_rec.
+  exprt shared_write_cond = true_exprt{};
+
+  /// RAII helper: conjoins \p cond onto \ref shared_write_cond for its
+  /// lifetime.
+  class shared_write_condition_scopet
+  {
+  public:
+    shared_write_condition_scopet(goto_symex_statet &state, const exprt &cond)
+      : state(state), saved(state.shared_write_cond)
+    {
+      if(!cond.is_true())
+      {
+        state.shared_write_cond = saved.is_true()
+                                    ? cond
+                                    : static_cast<exprt>(and_exprt{saved, cond});
+      }
+    }
+
+    ~shared_write_condition_scopet()
+    {
+      state.shared_write_cond = saved;
+    }
+
+    shared_write_condition_scopet(const shared_write_condition_scopet &) =
+      delete;
+    shared_write_condition_scopet &
+    operator=(const shared_write_condition_scopet &) = delete;
+
+  private:
+    goto_symex_statet &state;
+    exprt saved;
+  };
+
   const incremental_dirtyt *dirty = nullptr;
 
   /// Shared variables that a static, whole-program analysis has proven to be
