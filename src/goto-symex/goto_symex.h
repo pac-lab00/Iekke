@@ -196,6 +196,28 @@ public:
   /// termination). Empty means "behave exactly as before".
   std::unordered_set<irep_idt> thread_exclusive_variables;
 
+  /// Loop identifiers (\c goto_programt::loop_id form) of loops that a static
+  /// pre-symex analysis has shown to do nothing but spawn or join threads over
+  /// a thread-handle array the rest of the program never mentions.  See
+  /// thread_spawn_loops.h.  Empty means "behave exactly as before".
+  std::unordered_set<irep_idt> thread_management_loops;
+
+  /// Maximum number of iterations of a \ref thread_management_loops loop that
+  /// goto-symex will unwind, independently of --unwind/--unwindset; 0 disables
+  /// the mechanism entirely.  The loop is left at that point *without* the
+  /// usual assume(!loop_guard): the truncated execution is kept as a genuine
+  /// execution of the program with that many threads created, rather than
+  /// pruned as infeasible.
+  unsigned thread_creation_bound = 0;
+
+  /// Set once \ref thread_creation_bound has actually cut a loop short, i.e.
+  /// once the exploration became a k-thread under-approximation.  A
+  /// counterexample found in such a run is still a real counterexample (see
+  /// thread_spawn_loops.h); the absence of one only means "no violation with
+  /// that many threads", which is a bound of the same nature as --unwind and
+  /// not a proof.
+  bool thread_creation_bound_hit = false;
+
   // __WP_ADD_BEGIN__ for deadlock
   bool enable_deadlock = false;
   // void backtracing_for_deadlock(std::vector<symex_target_equationt::event_it>& locks_tuples,

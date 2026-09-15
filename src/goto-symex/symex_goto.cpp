@@ -954,6 +954,34 @@ void goto_symext::loop_bound_exceeded(
       state);
   }
 
+  // A loop the thread-management analysis recognised (see thread_spawn_loops.h)
+  // is deliberately left early once the thread-creation bound is reached.  The
+  // whole point is to keep exploring the resulting state, so the usual
+  // unwinding assumption -- which here is assume(false), and would make the
+  // property that follows the loop vacuously true -- must not be emitted.  The
+  // truncated execution is a genuine execution of the program in which only
+  // that many threads have been created and main has performed only the
+  // matching joins; see the header for why nothing downstream can tell.
+  const irep_idt this_loop_id =
+    goto_programt::loop_id(state.source.function_id, *state.source.pc);
+
+  if(
+    thread_creation_bound > 0 &&
+    thread_management_loops.count(this_loop_id) > 0)
+  {
+    thread_creation_bound_hit = true;
+
+    log.statistics()
+      << "Thread-management loop " << this_loop_id
+      << " left early (thread-creation bound " << thread_creation_bound
+      << "): keeping the truncated state instead of assuming it away. The "
+      << "exploration is now bounded in the number of threads created; a "
+      << "counterexample found in it is real, the absence of one is not a "
+      << "proof." << messaget::eom;
+
+    return;
+  }
+
   if(!symex_config.partial_loops)
   {
     // generate unwinding assumption, unless we permit partial loops

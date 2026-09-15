@@ -16,6 +16,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <goto-symex/show_program.h>
 #include <goto-symex/show_vcc.h>
 #include <goto-symex/thread_exclusivity.h>
+#include <goto-symex/thread_spawn_loops.h>
 
 #include <chrono>
 #include <iostream>
@@ -98,6 +99,34 @@ void multi_path_symex_only_checkert::generate_equation()
   {
     symex.thread_exclusive_variables = compute_thread_exclusive_variables(
       goto_model.get_goto_functions(), ns);
+  }
+
+  // Static recognition of "spawn N threads in a loop, join them again in a
+  // loop" (thread_spawn_loops.h), so that goto-symex can bound the number of
+  // threads it actually creates independently of the loop bound the program
+  // itself asks for. Gated exactly like the thread-exclusivity analysis above:
+  // only under the lazy_po/--rounds encoding, and never under symex-driven
+  // lazy loading, where the whole goto_functionst is not available up front.
+  {
+    const unsigned bound =
+      options.get_unsigned_int_option("thread-creation-bound");
+
+    if(
+      bound > 0 && options.get_unsigned_int_option("rounds") > 0 &&
+      !options.get_bool_option("symex-driven-lazy-loading"))
+    {
+      symex.thread_management_loops = compute_thread_management_loops(
+        goto_model.get_goto_functions(), ns);
+
+      if(!symex.thread_management_loops.empty())
+      {
+        symex.thread_creation_bound = bound;
+        log.statistics() << "Thread-management loops recognised: "
+                         << symex.thread_management_loops.size()
+                         << "; bounding thread creation at " << bound
+                         << messaget::eom;
+      }
+    }
   }
 
   // __SZH_ADD_BEGIN__
