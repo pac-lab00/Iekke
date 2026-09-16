@@ -11,12 +11,47 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include "goto_convert_class.h"
 
+#include <util/string_constant.h>
+
 #include <iostream>
 
 void goto_convertt::convert_asm(
   const code_asmt &code,
   goto_programt &dest)
 {
+  // Recognize and skip the GCC empty-instruction compiler-memory-barrier
+  // idiom, __asm__ __volatile__("" ::: "memory"). It corresponds to zero
+  // real CPU instructions -- it is a directive to the compiler's own
+  // optimizer not to reorder memory operations across this point. Under
+  // the sequential-consistency model this tool already assumes (symbolic
+  // execution never reorders memory accesses relative to program order in
+  // the first place), preventing such reordering is already trivially
+  // guaranteed, so this specific construct is provably a complete no-op.
+  // Any other asm -- real instructions, a non-"memory" clobber, or any
+  // input/output/goto-label operand -- is left unsupported exactly as
+  // before.
+  if(code.get_flavor() == ID_gcc)
+  {
+    const auto &code_asm_gcc = to_code_asm_gcc(code);
+
+    const bool empty_text =
+      can_cast_expr<string_constantt>(code_asm_gcc.asm_text()) &&
+      to_string_constant(code_asm_gcc.asm_text()).get_value().empty();
+
+    const bool no_operands = code_asm_gcc.outputs().operands().empty() &&
+                              code_asm_gcc.inputs().operands().empty() &&
+                              code_asm_gcc.labels().operands().empty();
+
+    const auto &clobber_list = code_asm_gcc.clobbers().operands();
+    const bool memory_only_clobber =
+      clobber_list.size() == 1 && clobber_list.front().operands().size() == 1 &&
+      can_cast_expr<string_constantt>(clobber_list.front().op0()) &&
+      to_string_constant(clobber_list.front().op0()).get_value() == "memory";
+
+    if(empty_text && no_operands && memory_only_clobber)
+      return; // compiler memory barrier: sound no-op, nothing to emit
+  }
+
   // __SZH_ADD_BEGIN__ : we do not support asm code for now
   std::cout << "Error: Deagle does not support asm code.\n";
   std::exit(1);
