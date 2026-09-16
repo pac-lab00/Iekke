@@ -320,15 +320,23 @@ void lazy_pot::operator()(
 
   //handling_atomic_sections(equation);
 
+  // handling_guards must run before handling_datarace: it walks
+  // equation.SSA_steps matching every assert/assume against
+  // blocking_events by position, and handling_datarace appends one more
+  // (self-contained, already reachability-guarded) assert step of its own
+  // at the end. Running handling_guards first keeps its assert/assume
+  // count in sync with blocking_events; running it only in the non-datarace
+  // branch left every other built-in-library assert/assume (double-free,
+  // etc.) unguarded by round-robin reachability under --datarace, so
+  // preconditions violated only on schedules the round bound never
+  // reaches were still reported as FAILURE.
+  handling_guards(equation);
+  phase("guards");
+
   if(datarace) {
     log.warning() << "Datarace Enabled " << messaget::eom;
     handling_datarace(equation);
     phase("datarace");
-  }
-  else
-  {
-    handling_guards(equation);
-    phase("guards");
   }
 
   if(xcheck_tags && !xcheck_pairs.empty())
@@ -856,7 +864,19 @@ void lazy_pot::handling_guards(
     }
     it = next;
   }
-  equation = temp_equation;
+  // Move only SSA_steps back, not the whole struct: equation's other
+  // fields (message handler, oc_edges/oc_guard_map, use_cat/use_deagle_*
+  // flags, ...) were never touched by this function and are already
+  // correct on equation itself; a full struct copy-assignment here would
+  // reallocate every SSA_stept node (std::list has no move-assignment on
+  // this class -- the user-declared destructor suppresses it, so even
+  // std::move(temp_equation) would still copy), silently invalidating
+  // every iterator collect_reads_and_writes stored earlier (in
+  // blocking_events/reads/writes/...) for handling_datarace to use right
+  // after this call returns. Moving just the list preserves every node's
+  // identity (found via a segfault when handling_guards started running
+  // before handling_datarace instead of only one of the two ever running).
+  equation.SSA_steps = std::move(temp_equation.SSA_steps);
 }
 
 void lazy_pot::handling_active_threads(
