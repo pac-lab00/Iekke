@@ -1404,6 +1404,307 @@ symbol_exprt lazy_pot::no_interf(symex_target_equationt &equation) {
   return no_interf_symbl;
 }
 
+// __SZH_DR_ADD_BEGIN__
+// Mirror of phase_1, but iterating reads instead of writes, using roles
+// 3/4 (create_dr_thread_symbol(3) etc.) instead of 1/2. phase_1/phase_2
+// (roles 1/2) can only witness a race where the mandatory-write access
+// (role 1) executes in the same round as, or one round before, the
+// second access (role 2) -- same_round's round relationship (tied to
+// which of dr_thread(1)/dr_thread(2) is numerically smaller, encoding
+// the fixed round-robin sweep order within a round) never allows
+// dr_round(2) < dr_round(1). That misses a real race where the
+// chronologically-first access is a READ and a conflicting WRITE happens
+// later: no witness pairing exists in the original encoding for it,
+// regardless of --unwind/--rounds (confirmed by exhaustive offline
+// search: 110+99 unwind/rounds combinations up to unwind=44/rounds=20,
+// none resolved several real SV-COMP benchmarks hitting exactly this
+// pattern). phase_1_swap/phase_2_swap/same_round_swap/no_interf_swap
+// mirror the exact same machinery with the roles reversed (role 3 =
+// read, role 4 = write) and role 3/4's own independent dr_thread/
+// dr_round/dr_atom/dr_loc symbols (create_dr_*_symbol is a generic,
+// num-indexed symbol cache -- roles 3/4 are entirely fresh SAT variables,
+// unrelated to roles 1/2). The final detection ORs both pairings
+// together in handling_datarace, so this is purely additive: it can only
+// add coverage, never remove or alter what roles 1/2 already detect.
+symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v) {
+
+  irep_idt phase_1_name =  as_string(v) + "_phase_1_swap";
+  symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
+
+  exprt phase_1_exp = false_exprt{};
+
+  for (std::size_t thread = 0; thread <= threads; thread++) {
+    irep_idt phase_1_t_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread);
+    symbol_exprt phase_1_t_symbl{phase_1_t_name, bool_typet{}};
+
+    phase_1_exp = or_exprt{phase_1_exp, phase_1_t_symbl};
+
+    exprt phase_1_t_exp = false_exprt{};
+
+    if(this->reads.count(v) != 0) {
+      for (auto read : reads.at(v)) {
+        std::string func = id2string(read.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (read.thread != thread || is_pthread)
+          continue;
+        irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
+        symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
+
+        phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
+
+        int atom = read.s_it->atomic_section_id != 0;
+        exprt phase_1_t_v_exp =
+          and_exprt{
+            equal_exprt{create_dr_thread_symbol(3), from_integer({thread}, unsignedbv_typet{threads_bits})},
+            and_exprt{
+              create_exec_tot_symbol(/*log,*/ equation, read.label, read.num, thread),
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(3), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(3), typecast_exprt(read.where, size_type())}
+                }
+              }
+          };
+
+        exprt exp2 = true_exprt{};
+        for (std::size_t round = 1; round <= rounds; round++) {
+          exprt enabled_exp = true_exprt{};
+          if (read.label < labels[read.thread]) {
+            enabled_exp = not_exprt{create_enabled_symbol(read.label+1,thread,round)};
+          }
+          exprt exp = implies_exprt{
+            create_exec_symbol(read.label,read.num,thread,round),
+            and_exprt{
+              equal_exprt{create_dr_round_symbol(3),from_integer({round}, unsignedbv_typet{rounds_bits})},
+              enabled_exp
+            }};
+          exp2 = and_exprt{exp2, exp};
+        }
+        phase_1_t_v_exp = equal_exprt{
+          phase_1_t_v_symbl,
+          and_exprt{phase_1_t_v_exp, exp2}};
+
+        simplify(phase_1_t_v_exp, ns);
+        equation.constraint(
+          phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+      }
+    }
+    phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
+    simplify(phase_1_t_exp, ns);
+    equation.constraint(
+      phase_1_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+  }
+
+  phase_1_exp = equal_exprt {phase_1_symbl, phase_1_exp};
+  simplify(phase_1_exp, ns);
+  equation.constraint(
+    phase_1_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+
+  return phase_1_symbl;
+}
+
+// Mirror of phase_2, but writes-only (the read-iterating half is
+// dropped, since role 3 already covers the read side for this pairing;
+// a race needs at least one write, and role 3 = read here), using role 4.
+symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v) {
+  irep_idt phase_2_name = as_string(v) + "_phase_2_swap";
+  symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
+
+  exprt phase_2_exp = false_exprt{};
+
+  for (std::size_t thread = 0; thread <= threads; thread++) {
+    irep_idt phase_2_t_name = as_string(v) + "_phase_2_swap_T" + std::to_string(thread);
+    symbol_exprt phase_2_t_symbl{phase_2_t_name, bool_typet{}};
+
+    phase_2_exp = or_exprt{phase_2_exp, phase_2_t_symbl};
+
+    exprt phase_2_t_exp = false_exprt{};
+
+    if(this->writes.count(v) != 0) {
+      for (auto write : writes.at(v)) {
+        std::string func = id2string(write.s_it->source.pc->source_location().get_function());
+        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        if (write.thread != thread || is_pthread)
+          continue;
+        irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_swap_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
+        symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
+
+        phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
+
+        int atom = write.s_it->atomic_section_id != 0;
+        exprt phase_2_t_v_exp =
+          and_exprt{
+            equal_exprt{create_dr_thread_symbol(4), from_integer({thread}, unsignedbv_typet{threads_bits})},
+            and_exprt{
+              create_exec_tot_symbol(/*log,*/ equation, write.label, write.num, thread),
+              and_exprt{
+                equal_exprt{create_dr_atom_symbol(4), from_integer({atom}, bool_typet{})},
+                equal_exprt{create_dr_loc_symbol(4), typecast_exprt(write.where, size_type())}
+              }
+            }
+          };
+
+        exprt exp2 = true_exprt{};
+        for (std::size_t round = 1; round <= rounds; round++) {
+          exprt enabled_exp = true_exprt{};
+          if (write.label > 1) {
+            enabled_exp = not_exprt{create_enabled_symbol(write.label-1,thread,round)};
+          }
+          exprt exp = implies_exprt{
+            create_exec_symbol(write.label,write.num,thread,round),
+            and_exprt{
+              equal_exprt{create_dr_round_symbol(4),from_integer({round}, unsignedbv_typet{rounds_bits})},
+              enabled_exp
+            }};
+          exp2 = and_exprt{exp2, exp};
+        }
+        phase_2_t_v_exp = equal_exprt{
+          phase_2_t_v_symbl,
+          and_exprt{phase_2_t_v_exp, exp2}};
+
+        simplify(phase_2_t_v_exp, ns);
+        equation.constraint(
+          phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+      }
+    }
+    phase_2_t_exp = equal_exprt {phase_2_t_symbl, phase_2_t_exp};
+    simplify(phase_2_t_exp, ns);
+    equation.constraint(
+      phase_2_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+  }
+
+  phase_2_exp = equal_exprt {phase_2_symbl, phase_2_exp};
+  simplify(phase_2_exp, ns);
+  equation.constraint(
+    phase_2_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+
+  return phase_2_symbl;
+}
+
+// Mirror of same_round for roles 3/4 -- identical relational structure
+// (it encodes the fixed round-robin sweep order within a round, which
+// doesn't depend on what kind of access each role represents), just
+// parameterized on the independent role-3/4 symbols.
+symbol_exprt lazy_pot::same_round_swap(symex_target_equationt &equation) {
+  irep_idt same_round_name = "same_round_swap";
+  symbol_exprt same_round_symbl{same_round_name, bool_typet{}};
+
+
+  exprt same_round_exp = and_exprt{
+    notequal_exprt{
+      create_dr_thread_symbol(3),
+      create_dr_thread_symbol(4)
+    },
+    and_exprt{
+      implies_exprt{
+        less_than_exprt{create_dr_thread_symbol(3),
+      create_dr_thread_symbol(4)},
+        equal_exprt{create_dr_round_symbol(3),
+      create_dr_round_symbol(4)}
+      },
+      and_exprt{
+        implies_exprt{
+          less_than_exprt{create_dr_thread_symbol(4),
+          create_dr_thread_symbol(3)},
+            equal_exprt{create_dr_round_symbol(4),
+          plus_exprt{create_dr_round_symbol(3), from_integer({1}, unsignedbv_typet{rounds_bits})}}},
+        and_exprt{
+          or_exprt{not_exprt{create_dr_atom_symbol(3)}, not_exprt{create_dr_atom_symbol(4)}},
+          equal_exprt{create_dr_loc_symbol(3),create_dr_loc_symbol(4)}
+          }
+        }
+    }
+  };
+
+  same_round_exp = equal_exprt{same_round_symbl, same_round_exp};
+  simplify(same_round_exp, ns);
+  equation.constraint(
+    same_round_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+
+  return same_round_symbl;
+}
+
+// Mirror of no_interf for roles 3/4.
+symbol_exprt lazy_pot::no_interf_swap(symex_target_equationt &equation) {
+  irep_idt no_interf_name = "no_interf_swap";
+  symbol_exprt no_interf_symbl{no_interf_name, bool_typet{}};
+
+  exprt no_interf_exp = true_exprt{};
+
+
+  for (std::size_t thread = 0; thread <= threads; thread++) {
+    irep_idt no_interf_t_name = "no_interf_swap_T" + std::to_string(thread);
+    symbol_exprt no_interf_t_symbl{no_interf_t_name, bool_typet{}};
+
+    exprt exp1 = true_exprt{};
+    exprt exp2 = true_exprt{};
+    for (std::size_t round = 1; round <= rounds; round++) {
+      exprt exp1r = true_exprt{};
+      exprt exp2r = true_exprt{};
+        exprt cs_eq_1 = true_exprt{};
+        for(unsigned i = 1; i <= labels[thread] + 1; ++i)
+          cs_eq_1 = and_exprt{
+            cs_eq_1,
+            implies_exprt{
+              create_ge_symbol(thread, round, i),
+              create_ge_symbol(thread, round - 1, i)}};
+        exp1r = implies_exprt{
+          equal_exprt{create_dr_round_symbol(3), from_integer({round}, unsignedbv_typet{rounds_bits})},
+          cs_eq_1
+        };
+      if (round > 1) {
+        exprt cs_eq_2 = true_exprt{};
+        for(unsigned i = 1; i <= labels[thread] + 1; ++i)
+          cs_eq_2 = and_exprt{
+            cs_eq_2,
+            implies_exprt{
+              create_ge_symbol(thread, round, i),
+              create_ge_symbol(thread, round - 1, i)}};
+        exp2r = implies_exprt{
+          equal_exprt{create_dr_round_symbol(4), from_integer({round}, unsignedbv_typet{rounds_bits})},
+          cs_eq_2
+        };
+      }
+      exp1 = and_exprt{exp1, exp1r};
+      exp2 = and_exprt{exp2, exp2r};
+    }
+
+    exprt no_interf_t_exp = and_exprt{
+      and_exprt{
+        implies_exprt{
+          or_exprt{
+            and_exprt{
+              less_than_exprt{create_dr_thread_symbol(3), from_integer({thread}, unsignedbv_typet{threads_bits})},
+              less_than_exprt{from_integer({thread}, unsignedbv_typet{threads_bits}), create_dr_thread_symbol(4)}},
+            and_exprt{
+              less_than_exprt{create_dr_thread_symbol(4),create_dr_thread_symbol(3)},
+              less_than_exprt{create_dr_thread_symbol(3), from_integer({thread}, unsignedbv_typet{threads_bits})}}
+          },
+          exp1
+        },
+        implies_exprt{
+          and_exprt{
+          less_than_exprt{from_integer({thread}, unsignedbv_typet{threads_bits}), create_dr_thread_symbol(4)},
+            less_than_exprt{create_dr_thread_symbol(4), create_dr_thread_symbol(3)}},
+          exp2}
+      }
+    };
+
+    no_interf_t_exp = equal_exprt{no_interf_t_symbl, no_interf_t_exp};
+    simplify(no_interf_t_exp, ns);
+    equation.constraint(
+      no_interf_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+
+    no_interf_exp = and_exprt{no_interf_exp, no_interf_t_symbl};
+  }
+  no_interf_exp = equal_exprt{no_interf_symbl, no_interf_exp};
+  simplify(no_interf_exp, ns);
+  equation.constraint(
+    no_interf_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+
+  return no_interf_symbl;
+}
+// __SZH_DR_ADD_END__
+
 void lazy_pot::handling_datarace(
   symex_target_equationt &equation) {
 
@@ -1411,6 +1712,11 @@ void lazy_pot::handling_datarace(
   irep_idt phases_name = "phases";
   symbol_exprt phases_symbl{phases_name, bool_typet{}};
   exprt phases_exp = false_exprt{};
+  // __SZH_DR_ADD_BEGIN__
+  irep_idt phases_swap_name = "phases_swap";
+  symbol_exprt phases_swap_symbl{phases_swap_name, bool_typet{}};
+  exprt phases_swap_exp = false_exprt{};
+  // __SZH_DR_ADD_END__
   for (auto v : global_variables) {
     if (v.starts_with("__CPROVER"))
       continue;
@@ -1420,17 +1726,46 @@ void lazy_pot::handling_datarace(
     symbol_exprt pha_2 = phase_2(/*log,*/ equation, v);
     exprt pha_1_2 = and_exprt{pha_1, pha_2};
     phases_exp = or_exprt{phases_exp, pha_1_2};
+    // __SZH_DR_ADD_BEGIN__
+    // Read-first/write-second pairing (see phase_1_swap): a race that
+    // phase_1/phase_2 (write-first only) cannot witness.
+    symbol_exprt pha_1_swap = phase_1_swap(equation, v);
+    symbol_exprt pha_2_swap = phase_2_swap(equation, v);
+    exprt pha_1_2_swap = and_exprt{pha_1_swap, pha_2_swap};
+    phases_swap_exp = or_exprt{phases_swap_exp, pha_1_2_swap};
+    // __SZH_DR_ADD_END__
   }
   phases_exp = equal_exprt{phases_symbl, phases_exp};
   simplify(phases_exp, ns);
   equation.constraint(
     phases_exp, "datarace constraint", equation.SSA_steps.begin()->source);
 
+  // __SZH_DR_ADD_BEGIN__
+  phases_swap_exp = equal_exprt{phases_swap_symbl, phases_swap_exp};
+  simplify(phases_swap_exp, ns);
+  equation.constraint(
+    phases_swap_exp, "datarace constraint", equation.SSA_steps.begin()->source);
+  // __SZH_DR_ADD_END__
+
   symbol_exprt same_round_symbl = same_round(/*log,*/ equation);
 
   symbol_exprt no_interf_symbl = no_interf(/*log,*/ equation);
 
+  // __SZH_DR_ADD_BEGIN__
+  symbol_exprt same_round_swap_symbl = same_round_swap(equation);
+
+  symbol_exprt no_interf_swap_symbl = no_interf_swap(equation);
+  // __SZH_DR_ADD_END__
+
   exprt datarace_contraint = and_exprt{phases_symbl, and_exprt{same_round_symbl, no_interf_symbl}};
+  // __SZH_DR_ADD_BEGIN__
+  // Purely additive: OR in the read-first/write-second pairing. Cannot
+  // regress the original (roles 1/2) detection -- it is untouched above
+  // -- only widen it with a witness the original pairing structurally
+  // cannot express.
+  exprt datarace_contraint_swap = and_exprt{phases_swap_symbl, and_exprt{same_round_swap_symbl, no_interf_swap_symbl}};
+  datarace_contraint = or_exprt{datarace_contraint, datarace_contraint_swap};
+  // __SZH_DR_ADD_END__
   simplify(datarace_contraint, ns);
   //equation.constraint(
    // datarace_contraint, "datarace constraint", equation.SSA_steps.begin()->source);
