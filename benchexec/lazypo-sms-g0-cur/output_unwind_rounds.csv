@@ -1122,3 +1122,7 @@ no-data-race,fib_unsafe-5-racy,13,3,0
 no-data-race,fib_unsafe-6-racy,21,3,0
 no-data-race,fib_unsafe-7-racy,21,3,0
 no-data-race,rec_spinlock,3,3,0
+no-data-race,char_pc8736x_gpio_pc8736x_gpio_change_pc8736x_gpio_current-race,100,3,0
+no-data-race,char_pc8736x_gpio_pc8736x_gpio_change_pc8736x_gpio_set-race,100,3,0
+no-data-race,char_pc8736x_gpio_pc8736x_gpio_current_pc8736x_gpio_set-race,100,3,0
+no-data-race,twalock,3,4,0
