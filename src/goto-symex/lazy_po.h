@@ -258,6 +258,12 @@ private:
   symbol_exprt phase_2(symex_target_equationt &equation, irep_idt v);
   symbol_exprt same_round(symex_target_equationt &equation);
   symbol_exprt no_interf(symex_target_equationt &equation);
+  // __SZH_DR_ADD_BEGIN__
+  symbol_exprt phase_1_swap(symex_target_equationt &equation, irep_idt v);
+  symbol_exprt phase_2_swap(symex_target_equationt &equation, irep_idt v);
+  symbol_exprt same_round_swap(symex_target_equationt &equation);
+  symbol_exprt no_interf_swap(symex_target_equationt &equation);
+  // __SZH_DR_ADD_END__
 
   symbol_exprt create_lazy_symbol(
     unsigned label,
