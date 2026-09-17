@@ -273,7 +273,7 @@ unreach-call,mix020.opt,2,3,3.56975
 unreach-call,28_buggy_simple_loop1_vf,2,1,0.506689
 unreach-call,28-race_reach_45-escape_racing,2,2,12.1753
 no-overflow,char_pc8736x_gpio_pc8736x_gpio_get_pc8736x_gpio_set-set_ovfl,100,1,35.3006
-valid-memsafety,bounded_mpmc_check_empty,2,5,
+valid-memsafety,bounded_mpmc_check_empty,3,3,
 unreach-call,28-race_reach_92-evilcollapse_racing,200,2,
 unreach-call,25_stack_longer-1,2,1,56.6714
 unreach-call,mix026_pso.opt_rmo.opt,2,3,1.73456
