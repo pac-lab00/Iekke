@@ -2056,6 +2056,15 @@ void lazy_pot::collect_reads_and_writes(
       if(!it->is_shared_write())
         continue;
 
+      // Skip CBMC's own bookkeeping. malloc's model stores the fresh
+      // object's address into internal globals, which would otherwise date
+      // the publication to the allocation itself and leave every user-level
+      // initialisation of the object unexempted.
+      if(can_cast_expr<symbol_exprt>(it->ssa_lhs) &&
+         has_prefix(
+           id2string(it->ssa_lhs.get_l1_object_identifier()), CPROVER_PREFIX))
+        continue;
+
       // the stored value lives in the assignment step that follows
       auto next = it;
       ++next;
