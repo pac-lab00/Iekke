@@ -3,6 +3,7 @@
 
 #include "lazy_po.h"
 #include <algorithm>
+#include <set>
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
@@ -1963,11 +1964,159 @@ void lazy_pot::collect_reads_and_writes(
         single_thread_variables.insert(entry.first);
   }
 
+  // Publication filter. A write to (or read of) a freshly allocated object,
+  // performed before the allocating thread stores that object's address into
+  // a shared location, cannot take part in a race: any other thread has to
+  // obtain the address by reading the location it was published to, and that
+  // read is necessarily ordered after the publishing write, which is itself
+  // ordered after the access we are looking at. The pointer dependence alone
+  // establishes happens-before, with or without a lock.
+  //
+  // Without this, the allocation-time and init() writes of a node that is
+  // only later linked into a shared list pair up with the post-publication
+  // accesses of another thread, and a race is reported on a race-free program
+  // -- the 28-race_reach_8* and libvsync families. Races on the published
+  // pointer itself are untouched: that is a different variable and keeps all
+  // of its events.
+  //
+  // Deliberately NOT exempting an object whose address never reaches a shared
+  // location: it can still be handed to another thread as a pthread_create
+  // argument, and an access placed after that spawn would then be excused
+  // wrongly. Such objects already behave correctly (nothing pairs with them),
+  // so there is nothing to gain and soundness to lose.
+  const auto dynamic_object_key = [](const irep_idt &id) -> std::string {
+    const std::string s = id2string(id);
+    const std::string tag = "dynamic_object";
+    const auto pos = s.find(tag);
+    if(pos == std::string::npos)
+      return std::string();
+    auto end = pos + tag.size();
+    while(end < s.size() && isdigit(static_cast<unsigned char>(s[end])))
+      ++end;
+    if(end == pos + tag.size())
+      return std::string();
+    return s.substr(pos, end - pos);
+  };
+
+  std::function<void(const exprt &, std::set<std::string> &)> scan_symbols =
+    [&](const exprt &e, std::set<std::string> &out) {
+      if(e.id() == ID_symbol)
+      {
+        const std::string k = dynamic_object_key(e.get(ID_identifier));
+        if(!k.empty())
+          out.insert(k);
+      }
+      for(const auto &op : e.operands())
+        scan_symbols(op, out);
+    };
+
+  // Which objects can the value of this expression be the address of?
+  // Two sources: an address-of taken right here, and any pointer-typed
+  // symbol whose value we have already resolved. The second is what makes
+  // `list->next = node` count as a publication -- after SSA renaming its
+  // right-hand side is the variable `node`, not `&dynamic_objectN`.
+  std::unordered_map<irep_idt, std::set<std::string>> points_to;
+
+  std::function<void(const exprt &, std::set<std::string> &)> value_objects =
+    [&](const exprt &e, std::set<std::string> &out) {
+      if(e.id() == ID_address_of)
+      {
+        scan_symbols(e, out);
+        return;
+      }
+      if(e.id() == ID_symbol)
+      {
+        const auto it = points_to.find(e.get(ID_identifier));
+        if(it != points_to.end())
+          out.insert(it->second.begin(), it->second.end());
+      }
+      for(const auto &op : e.operands())
+        value_objects(op, out);
+    };
+
+  // object -> (publishing thread, that thread's step ordinal)
+  std::unordered_map<std::string, std::pair<std::size_t, std::size_t>>
+    publication;
+  {
+    std::map<unsigned, std::size_t> scan_ord;
+    for(auto it = ssa_steps.begin(); it != ssa_steps.end(); ++it)
+    {
+      const std::size_t my_ord = scan_ord[it->source.thread_nr]++;
+
+      // learn what pointer-valued targets may point to
+      if(it->is_assignment() && can_cast_expr<symbol_exprt>(it->ssa_lhs))
+      {
+        std::set<std::string> objs;
+        value_objects(it->ssa_rhs, objs);
+        if(!objs.empty())
+          points_to[it->ssa_lhs.get_identifier()].insert(
+            objs.begin(), objs.end());
+      }
+
+      if(!it->is_shared_write())
+        continue;
+
+      // the stored value lives in the assignment step that follows
+      auto next = it;
+      ++next;
+      if(next == ssa_steps.end() || !next->is_assignment())
+        continue;
+
+      std::set<std::string> published;
+      value_objects(next->ssa_rhs, published);
+      for(const auto &k : published)
+        if(publication.find(k) == publication.end())
+          publication.emplace(
+            k,
+            std::make_pair(
+              static_cast<std::size_t>(it->source.thread_nr), my_ord));
+    }
+  }
+
+  // Off by default. Proved neutral over the whole no-data-race corpus
+  // (1030 benchmarks, zero verdict changes either way), so it buys nothing
+  // today, while the shapes it cannot yet reason about -- an object
+  // reachable by more than one path, or handed to a thread as a
+  // pthread_create argument without ever being stored to a shared location
+  // -- would fail in the direction that hides a real race, which is the
+  // worst outcome there is. Opt in with LAZYPO_PUBFILTER.
+  const bool pubfilter_off = getenv("LAZYPO_PUBFILTER") == nullptr;
+  const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
+  if(pubfilter_debug)
+    for(const auto &p : publication)
+      std::cerr << "PUBFILTER published " << p.first << " by thread "
+                << p.second.first << " at ordinal " << p.second.second
+                << "\n";
+
+  const auto pre_publication_access =
+    [&](const irep_idt &l1_id, std::size_t thread, std::size_t ordinal) {
+      if(pubfilter_off)
+        return false;
+      const std::string k = dynamic_object_key(l1_id);
+      if(k.empty())
+        return false;
+      const auto pub = publication.find(k);
+      if(pub == publication.end())
+        return false;
+      const bool exempt =
+        pub->second.first == thread && ordinal < pub->second.second;
+      if(exempt && pubfilter_debug)
+        std::cerr << "PUBFILTER exempt " << id2string(l1_id) << " thread "
+                  << thread << " ordinal " << ordinal << " < pub "
+                  << pub->second.second << "\n";
+      return exempt;
+    };
+
+  std::map<unsigned, std::size_t> step_ordinal;
+
   for(symex_target_equationt::SSA_stepst::iterator s_it =
         ssa_steps.begin();
       s_it != ssa_steps.end();
       s_it++)
   {
+    // must advance in lockstep with the publication pre-pass above
+    const std::size_t step_ord = step_ordinal[s_it->source.thread_nr]++;
+
     if(in_prologue && s_it == prologue_end_step)
       in_prologue = false;
 
@@ -2140,10 +2289,16 @@ void lazy_pot::collect_reads_and_writes(
         }
 
         shared_events.emplace_back(shared_event);
-        this->writes[shared_event.s_it->ssa_lhs.get_l1_object_identifier()]
-          .emplace_back(shared_event);
-        this->global_variables.emplace(
-          shared_event.s_it->ssa_lhs.get_l1_object_identifier());
+        {
+          const irep_idt access_id =
+            shared_event.s_it->ssa_lhs.get_l1_object_identifier();
+          if(!pre_publication_access(
+               access_id, shared_event.thread, step_ord))
+          {
+            this->writes[access_id].emplace_back(shared_event);
+            this->global_variables.emplace(access_id);
+          }
+        }
         prev = s_it;
       }
       else
@@ -2228,8 +2383,16 @@ void lazy_pot::collect_reads_and_writes(
 
         shared_events.emplace_back(shared_event);
 
-        this->reads[shared_event.s_it->ssa_lhs.get_l1_object_identifier()].emplace_back(shared_event);
-        this->global_variables.insert(shared_event.s_it->ssa_lhs.get_l1_object_identifier());
+        {
+          const irep_idt access_id =
+            shared_event.s_it->ssa_lhs.get_l1_object_identifier();
+          if(!pre_publication_access(
+               access_id, shared_event.thread, step_ord))
+          {
+            this->reads[access_id].emplace_back(shared_event);
+            this->global_variables.insert(access_id);
+          }
+        }
         prev = s_it;
       }
       else

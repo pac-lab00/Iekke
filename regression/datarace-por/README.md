@@ -99,3 +99,48 @@ never calls the solver, so its output has no `Datarace Enabled` line, no
 `Adding Iekke constraints` line and no `N variables, M clauses` line. Refusing
 to answer "no race" when those are absent would turn this class of wrong
 answers into unknowns.
+
+## The publication filter (opt-in, `LAZYPO_PUBFILTER`)
+
+`collect_reads_and_writes` can exclude one class of the spurious pairs above.
+A write to (or read of) a freshly allocated object, performed before the
+allocating thread stores that object's address into a shared location, cannot
+take part in a race: any other thread has to obtain the address by reading the
+location it was published to, and that read is necessarily ordered after the
+publishing write, which is itself ordered after the access in question. The
+pointer dependence alone establishes happens-before, with or without a lock.
+`never-published-racefree.c` is the degenerate case of the same argument.
+
+Two details cost most of the implementation effort and are worth knowing before
+touching it:
+
+* after SSA renaming the publishing statement `list->next = node` carries the
+  pointer *variable*, not `&dynamic_objectN`, so a small points-to map is
+  needed to resolve pointer-valued symbols to the objects they may address;
+* a `shared_write` SSA step is bookkeeping and carries a **nil** right-hand
+  side — the value actually stored appears in the assignment step that
+  *follows* it. This is the same reason the surrounding code peeks at `next` to
+  recover the `with_expr`. Scanning the shared_write step's own `ssa_rhs` finds
+  nothing at all.
+
+With the filter on, `publish-then-access-racefree.c` is correctly SUCCESSFUL,
+and every racy case here still reports FAILED — including `P3`-style races on
+the published pointer itself, which are a different variable and keep all of
+their events.
+
+**It is off by default, and deliberately so.** Over the whole no-data-race
+corpus (1030 benchmarks) it changes not one verdict in either direction: no
+regressions, but no gains either. It does not rescue the nine remaining false
+alarms, because those have a second, independent spurious pair that this
+argument does not cover — in `28-race_reach_82`, two different `t2_fun` threads
+each take a node from the list and increment `p->datum` while both hold
+`data_mutex`, and that pair is still reported. Closing that needs the
+*identity* of the accessed object tied to the pointer value under the
+interleaving, which is the heart of CBMC issue #305.
+
+So it earns nothing today, while the shapes it cannot yet reason about — an
+object reachable by more than one path, or handed to a thread as a
+`pthread_create` argument without ever being stored to a shared location —
+would fail in the direction that hides a real race. That is the worst outcome
+there is, so it stays opt-in until either those shapes are handled or it
+actually buys something.
