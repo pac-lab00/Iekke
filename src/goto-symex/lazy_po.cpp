@@ -2034,9 +2034,12 @@ void lazy_pot::collect_reads_and_writes(
         value_objects(op, out);
     };
 
+  const bool pubfilter_enabled = getenv("LAZYPO_PUBFILTER") != nullptr;
+
   // object -> (publishing thread, that thread's step ordinal)
   std::unordered_map<std::string, std::pair<std::size_t, std::size_t>>
     publication;
+  if(pubfilter_enabled)
   {
     std::map<unsigned, std::size_t> scan_ord;
     for(auto it = ssa_steps.begin(); it != ssa_steps.end(); ++it)
@@ -2089,7 +2092,7 @@ void lazy_pot::collect_reads_and_writes(
   // pthread_create argument without ever being stored to a shared location
   // -- would fail in the direction that hides a real race, which is the
   // worst outcome there is. Opt in with LAZYPO_PUBFILTER.
-  const bool pubfilter_off = getenv("LAZYPO_PUBFILTER") == nullptr;
+  const bool pubfilter_off = !pubfilter_enabled;
   const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
   if(pubfilter_debug)
     for(const auto &p : publication)
