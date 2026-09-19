@@ -12,6 +12,11 @@ Author: Daniel Kroening
 /// Traces of GOTO Programs
 
 #include "build_goto_trace.h"
+#include <cstdlib>
+#include <iostream>
+#include <set>
+#include <util/prefix.h>
+#include <util/cprover_prefix.h>
 
 #include <util/arith_tools.h>
 #include <util/byte_operators.h>
@@ -233,6 +238,100 @@ static bool get_round_robin_trace_time(
   return false;
 }
 
+/// Report what the model actually blamed for a datarace counterexample.
+/// Enabled with LAZYPO_DR_PAIR=1. The counterexample says only that the
+/// property failed; it never names the two accesses that were paired, so a
+/// genuine pair and an artefact look identical from outside. The step counts
+/// also explain an empty trace: every step with scheduling symbols but none
+/// true in the model is dropped below, so a trace comes out empty exactly
+/// when the constraint was satisfied without any event being scheduled.
+static void report_datarace_pair(
+  const symex_target_equationt &target,
+  const decision_proceduret &decision_procedure)
+{
+  std::size_t steps = 0, guard_true = 0, with_exec = 0, exec_true = 0;
+  std::set<irep_idt> variables;
+
+  for(const auto &step : target.SSA_steps)
+  {
+    ++steps;
+    if(!decision_procedure.get(step.guard_handle).is_true())
+      continue;
+    ++guard_true;
+
+    if(!step.round_robin_exec_symbols.empty())
+    {
+      ++with_exec;
+      for(const auto &e : step.round_robin_exec_symbols)
+        if(decision_procedure.get(e).is_true())
+        {
+          ++exec_true;
+          break;
+        }
+    }
+
+    if(
+      (step.is_shared_read() || step.is_shared_write()) &&
+      can_cast_expr<symbol_exprt>(step.ssa_lhs))
+    {
+      variables.insert(step.ssa_lhs.get_l1_object_identifier());
+    }
+  }
+
+  std::cout << "DR_PAIR steps=" << steps << " guard_true=" << guard_true
+            << " with_exec_symbols=" << with_exec
+            << " exec_true=" << exec_true << "\n";
+
+  // Where does the failing assert sit? The output loop returns as soon as it
+  // reaches it, so an assert that carries no scheduling symbols of its own
+  // sorts to the front and truncates the trace before any event is emitted.
+  std::size_t idx = 0, assert_idx = 0, shared_before = 0, shared_total = 0;
+  bool found_assert = false;
+  for(const auto &step : target.SSA_steps)
+  {
+    ++idx;
+    const bool is_shared = step.is_shared_read() || step.is_shared_write();
+    if(is_shared)
+      ++shared_total;
+    if(
+      !found_assert && step.is_assert() &&
+      decision_procedure.get(step.cond_handle).is_false())
+    {
+      found_assert = true;
+      assert_idx = idx;
+      shared_before = shared_total;
+      std::cout << "DR_PAIR failing_assert at step " << assert_idx << "/"
+                << steps << " exec_symbols="
+                << step.round_robin_exec_symbols.size()
+                << " shared_steps_before=" << shared_before << "\n";
+    }
+  }
+  if(!found_assert)
+    std::cout << "DR_PAIR failing_assert: <none found>\n";
+
+  bool blamed_any = false;
+  for(const auto &v : variables)
+  {
+    if(has_prefix(id2string(v), CPROVER_PREFIX))
+      continue;
+    for(const std::string &suffix : {std::string(""), std::string("_swap")})
+    {
+      const symbol_exprt p1(id2string(v) + "_phase_1" + suffix, bool_typet());
+      const symbol_exprt p2(id2string(v) + "_phase_2" + suffix, bool_typet());
+      if(
+        decision_procedure.get(p1).is_true() &&
+        decision_procedure.get(p2).is_true())
+      {
+        std::cout << "DR_PAIR blamed" << suffix << ": " << v << "\n";
+        blamed_any = true;
+      }
+    }
+  }
+  if(!blamed_any)
+    std::cout << "DR_PAIR blamed: <none> -- no variable has both phases "
+                 "satisfied in the model\n";
+}
+
 void build_goto_trace(
   const symex_target_equationt &target,
   ssa_step_predicatet is_last_step_to_keep,
@@ -240,6 +339,9 @@ void build_goto_trace(
   const namespacet &ns,
   goto_tracet &goto_trace)
 {
+  if(getenv("LAZYPO_DR_PAIR") != nullptr)
+    report_datarace_pair(target, decision_procedure);
+
   // We need to re-sort the steps according to their clock.
   // Furthermore, read-events need to occur before write
   // events with the same clock.
@@ -368,6 +470,11 @@ void build_goto_trace(
     if(it == last_step_to_keep)
     {
       last_step_was_kept = true;
+      if(getenv("LAZYPO_DR_PAIR") != nullptr)
+        std::cout << "DR_PAIR last_step_to_keep key="
+                  << (has_round_robin_time ? round_robin_time : current_time)
+                  << " (has_round_robin_time="
+                  << (has_round_robin_time ? 1 : 0) << ")\n";
     }
 
     if(has_round_robin_time)
@@ -380,6 +487,49 @@ void build_goto_trace(
     last_step_to_keep == target.SSA_steps.end() || last_step_was_kept,
     "last step in SSA trace to keep must not be filtered out as a sync "
     "instruction, not-taken branch, PHI node, or similar");
+
+  // Fold away any leftover atomic-section placeholder slots. A negative key
+  // is the temporary slot atomic_begin creates by negating current_time; it
+  // normally disappears when the section ends, but if the equation finishes
+  // inside one, both the gathered steps and anything placed at current_time
+  // afterwards keep it. Since real event keys are large positives, such a
+  // step would sort ahead of the whole trace -- and because the output loop
+  // stops at last_step_to_keep, a violation assert stranded there truncates
+  // the trace to nothing.
+  {
+    std::vector<mp_integer> negative_keys;
+    for(const auto &entry : time_map)
+      if(entry.first < 0)
+        negative_keys.push_back(entry.first);
+
+    for(const auto &key : negative_keys)
+    {
+      auto moved = time_map.find(key);
+      INVARIANT(moved != time_map.end(), "key just collected must exist");
+      std::vector<ssa_step_iteratort> &target_slot = time_map[-key];
+      target_slot.insert(
+        target_slot.end(), moved->second.begin(), moved->second.end());
+      time_map.erase(moved);
+    }
+  }
+
+  if(getenv("LAZYPO_DR_PAIR") != nullptr)
+  {
+    std::size_t queued = 0;
+    for(const auto &t : time_map)
+      queued += t.second.size();
+    std::cout << "DR_PAIR smallest_key="
+              << (time_map.empty() ? mp_integer(0) : time_map.begin()->first)
+              << " largest_key="
+              << (time_map.empty() ? mp_integer(0) : time_map.rbegin()->first)
+              << "\n";
+    std::cout << "DR_PAIR time_map slots=" << time_map.size()
+              << " queued_steps=" << queued
+              << " last_step_to_keep_found="
+              << (last_step_to_keep != target.SSA_steps.end() ? 1 : 0)
+              << " last_step_was_kept=" << (last_step_was_kept ? 1 : 0)
+              << "\n";
+  }
 
   // Now build the GOTO trace, ordered by time, then by SSA trace order.
 
