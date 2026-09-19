@@ -354,6 +354,7 @@ void build_goto_trace(
 
   ssa_step_iteratort last_step_to_keep = target.SSA_steps.end();
   bool last_step_was_kept = false;
+  ssa_step_iteratort deferred_last_step = target.SSA_steps.end();
 
   // First sort the SSA steps by time, in the process dropping steps
   // we definitely don't want to retain in the final trace:
@@ -475,6 +476,18 @@ void build_goto_trace(
                   << (has_round_robin_time ? round_robin_time : current_time)
                   << " (has_round_robin_time="
                   << (has_round_robin_time ? 1 : 0) << ")\n";
+
+      // A property assert that carries no scheduling symbols belongs to no
+      // thread and no round; the clock it would inherit here is simply
+      // whatever the last shared access left behind. Since the output loop
+      // stops at this step, letting it sort mid-schedule truncates the
+      // counterexample -- for a data race, typically before the second
+      // thread appears at all. Defer it and append it after everything.
+      if(SSA_step.round_robin_exec_symbols.empty())
+      {
+        deferred_last_step = it;
+        continue;
+      }
     }
 
     if(has_round_robin_time)
@@ -511,6 +524,13 @@ void build_goto_trace(
         target_slot.end(), moved->second.begin(), moved->second.end());
       time_map.erase(moved);
     }
+  }
+
+  if(deferred_last_step != target.SSA_steps.end())
+  {
+    const mp_integer after_everything =
+      time_map.empty() ? mp_integer(0) : time_map.rbegin()->first + 1;
+    time_map[after_everything].push_back(deferred_last_step);
   }
 
   if(getenv("LAZYPO_DR_PAIR") != nullptr)
