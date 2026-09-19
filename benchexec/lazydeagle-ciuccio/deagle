@@ -168,7 +168,7 @@ try:
     unwind_val = get_unwind(prop, bm)
     round_val = get_round(prop, bm)
     print(f"Uso unwind={unwind_val}, round={round_val} per {bm}, property={prop}")
-    cmd = "./iekke_exe %s %s --unwind %s --rounds %s --por --verbosity 8 --external-sat-solver /home/andrea/Desktop/lazypo_bench/glucose_simp_wrap.sh > deagle_tmp_output 2>&1" % (program_path, flags, unwind_val, round_val)
+    cmd = "./iekke_exe %s %s --unwind %s --rounds %s --por --verbosity 8 > deagle_tmp_output 2>&1" % (program_path, flags, unwind_val, round_val)
     print(cmd)
     os.system(cmd)
     with open("deagle_tmp_output", "r", encoding="utf-8") as f:
@@ -178,7 +178,7 @@ try:
 except ValueError as e:
     print(e)
     fallback_rounds = 3 if prop == "no-data-race" else 1
-    cmd = "./iekke_exe %s %s --unwind 2 --rounds %s --por --verbosity 8 --external-sat-solver /home/andrea/Desktop/lazypo_bench/glucose_simp_wrap.sh > deagle_tmp_output 2>&1" % (program_path, flags, fallback_rounds)
+    cmd = "./iekke_exe %s %s --unwind 2 --rounds %s --por --verbosity 8 > deagle_tmp_output 2>&1" % (program_path, flags, fallback_rounds)
     print(cmd)
     os.system(cmd)
     with open("deagle_tmp_output", "r", encoding="utf-8") as f:
