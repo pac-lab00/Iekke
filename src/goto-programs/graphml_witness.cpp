@@ -288,15 +288,12 @@ static bool contains_symbol_prefix(const exprt &expr, const std::string &prefix)
 void graphml_witnesst::operator()(const goto_tracet &goto_trace)
 {
   unsigned int max_thread_idx = 0;
-  //bool trace_has_violation = false;
   for(goto_tracet::stepst::const_iterator it = goto_trace.steps.begin();
       it != goto_trace.steps.end();
       ++it)
   {
     if(it->thread_nr > max_thread_idx)
       max_thread_idx = it->thread_nr;
-    // if(it->is_assert() && !it->cond_value)
-    //   trace_has_violation = true;
   }
 
   graphml.key_values["sourcecodelang"]="C";
@@ -305,6 +302,15 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
   graphml[sink].node_name="sink";
   graphml[sink].is_violation=false;
   graphml[sink].has_invariant=false;
+
+  // A property that is not an assertion -- a data race, an overflow, a
+  // memory-safety violation, all of which the wrapper checks with
+  // --no-assertions -- produces no failing ASSERT step, so the loop below
+  // marks no node as the violation and the path used to run off into the
+  // sink. A sink says "stop exploring here", which is not the claim a
+  // violation witness needs to make. Give such traces a real violation node
+  // to end on; assertion properties keep marking their failing assert.
+  bool marked_a_violation_node = false;
 
   // if(max_thread_idx > 0 && trace_has_violation)
   // {
@@ -383,9 +389,27 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     graphml[node].line=source_location.get_line();
     graphml[node].is_violation=
       it->type==goto_trace_stept::typet::ASSERT && !it->cond_value;
+    if(graphml[node].is_violation)
+      marked_a_violation_node = true;
     graphml[node].has_invariant=false;
 
     step_to_node[it->step_nr]=node;
+  }
+
+  // A property that is not an assertion -- a data race, an overflow -- leaves
+  // the loop above with nothing marked: the failing assert step either does
+  // not exist (--no-assertions) or is filtered out of node creation. Such a
+  // trace used to run off into the sink, which says "stop exploring here"
+  // rather than "the violation is here". Give it a real violation node to end
+  // on. Where the loop did mark one, that node is the violation and this
+  // stays a no-op.
+  graphmlt::node_indext violation_node = sink;
+  if(!marked_a_violation_node)
+  {
+    violation_node = graphml.add_node();
+    graphml[violation_node].node_name = "violation";
+    graphml[violation_node].is_violation = true;
+    graphml[violation_node].has_invariant = false;
   }
 
   unsigned thread_id = 0;
@@ -415,7 +439,8 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     }
     const std::size_t to=
       next==goto_trace.steps.end()?
-      sink:step_to_node[next->step_nr];
+      violation_node:
+      step_to_node[next->step_nr];
 
     switch(it->type)
     {
