@@ -408,6 +408,36 @@ void build_goto_trace(
   bool last_step_was_kept = false;
   ssa_step_iteratort deferred_last_step = target.SSA_steps.end();
 
+  // The two accesses the datarace constraint blamed. The encoding names them
+  // per event, so they can be identified exactly instead of inferred; without
+  // this they never reach the trace, because a shared access only carries the
+  // clock, and a race witnessed on the read side leaves no edge at all.
+  std::set<const SSA_stept *> blamed_accesses;
+  for(const auto &step : target.SSA_steps)
+  {
+    if(!(step.is_shared_read() || step.is_shared_write()))
+      continue;
+    if(!can_cast_expr<symbol_exprt>(step.ssa_lhs))
+      continue;
+    const std::string v =
+      id2string(step.ssa_lhs.get_l1_object_identifier());
+    const std::string suffix = "_T" + std::to_string(step.round_robin_thread) +
+                               "_L" + std::to_string(step.round_robin_label) +
+                               "_N" + std::to_string(step.round_robin_num);
+    for(const std::string &role :
+        {std::string("_phase_1"), std::string("_phase_2_w"),
+         std::string("_phase_2_r"), std::string("_phase_1_swap"),
+         std::string("_phase_2_swap_w")})
+    {
+      const symbol_exprt candidate(v + role + suffix, bool_typet());
+      if(decision_procedure.get(candidate).is_true())
+      {
+        blamed_accesses.insert(&step);
+        break;
+      }
+    }
+  }
+
   // First sort the SSA steps by time, in the process dropping steps
   // we definitely don't want to retain in the final trace:
 
@@ -505,6 +535,15 @@ void build_goto_trace(
 
           time_map.erase(time_before_steps_it);
         }
+      }
+
+      // Keep the accesses that constitute the race, so the witness actually
+      // exhibits it. Every other shared access stays out, as before.
+      if(
+        (it->is_shared_read() || it->is_shared_write()) &&
+        blamed_accesses.count(&*it) != 0)
+      {
+        time_map[current_time].push_back(it);
       }
 
       continue;
