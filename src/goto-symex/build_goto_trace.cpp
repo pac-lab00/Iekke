@@ -278,7 +278,7 @@ static void report_datarace_pair(
     }
   }
 
-  std::cout << "DR_PAIR steps=" << steps << " guard_true=" << guard_true
+  std::cerr << "DR_PAIR steps=" << steps << " guard_true=" << guard_true
             << " with_exec_symbols=" << with_exec
             << " exec_true=" << exec_true << "\n";
 
@@ -300,14 +300,14 @@ static void report_datarace_pair(
       found_assert = true;
       assert_idx = idx;
       shared_before = shared_total;
-      std::cout << "DR_PAIR failing_assert at step " << assert_idx << "/"
+      std::cerr << "DR_PAIR failing_assert at step " << assert_idx << "/"
                 << steps << " exec_symbols="
                 << step.round_robin_exec_symbols.size()
                 << " shared_steps_before=" << shared_before << "\n";
     }
   }
   if(!found_assert)
-    std::cout << "DR_PAIR failing_assert: <none found>\n";
+    std::cerr << "DR_PAIR failing_assert: <none found>\n";
 
   // For each blamed variable, show every access the model kept: which thread
   // it belongs to, whether its path guard holds, and whether any of its
@@ -331,7 +331,7 @@ static void report_datarace_pair(
           any_exec = true;
           break;
         }
-      std::cout << "DR_PAIR   access thread=" << step.round_robin_thread
+      std::cerr << "DR_PAIR   access thread=" << step.round_robin_thread
                 << " label=" << step.round_robin_label
                 << " num=" << step.round_robin_num
                 << (step.is_shared_write() ? " W" : " R")
@@ -344,21 +344,21 @@ static void report_datarace_pair(
   const auto show = [&](const char *name) {
     const exprt value =
       decision_procedure.get(symbol_exprt::typeless(irep_idt(name)));
-    std::cout << " " << name << "=";
+    std::cerr << " " << name << "=";
     const auto n = numeric_cast<mp_integer>(value);
     if(n.has_value())
-      std::cout << *n;
+      std::cerr << *n;
     else
-      std::cout << "?";
+      std::cerr << "?";
   };
 
-  std::cout << "DR_PAIR roles:";
+  std::cerr << "DR_PAIR roles:";
   for(const char *s : {"t1", "t2", "r1", "r2"})
     show(s);
-  std::cout << "  swap:";
+  std::cerr << "  swap:";
   for(const char *s : {"t3", "t4", "r3", "r4"})
     show(s);
-  std::cout << "\n";
+  std::cerr << "\n";
 
   bool blamed_any = false;
   for(const auto &v : variables)
@@ -373,14 +373,14 @@ static void report_datarace_pair(
         decision_procedure.get(p1).is_true() &&
         decision_procedure.get(p2).is_true())
       {
-        std::cout << "DR_PAIR blamed" << suffix << ": " << v << "\n";
+        std::cerr << "DR_PAIR blamed" << suffix << ": " << v << "\n";
         dump_accesses(v);
         blamed_any = true;
       }
     }
   }
   if(!blamed_any)
-    std::cout << "DR_PAIR blamed: <none> -- no variable has both phases "
+    std::cerr << "DR_PAIR blamed: <none> -- no variable has both phases "
                  "satisfied in the model\n";
 }
 
@@ -563,7 +563,7 @@ void build_goto_trace(
     {
       last_step_was_kept = true;
       if(getenv("LAZYPO_DR_PAIR") != nullptr)
-        std::cout << "DR_PAIR last_step_to_keep key="
+        std::cerr << "DR_PAIR last_step_to_keep key="
                   << (has_round_robin_time ? round_robin_time : current_time)
                   << " (has_round_robin_time="
                   << (has_round_robin_time ? 1 : 0) << ")\n";
@@ -629,12 +629,12 @@ void build_goto_trace(
     std::size_t queued = 0;
     for(const auto &t : time_map)
       queued += t.second.size();
-    std::cout << "DR_PAIR smallest_key="
+    std::cerr << "DR_PAIR smallest_key="
               << (time_map.empty() ? mp_integer(0) : time_map.begin()->first)
               << " largest_key="
               << (time_map.empty() ? mp_integer(0) : time_map.rbegin()->first)
               << "\n";
-    std::cout << "DR_PAIR time_map slots=" << time_map.size()
+    std::cerr << "DR_PAIR time_map slots=" << time_map.size()
               << " queued_steps=" << queued
               << " last_step_to_keep_found="
               << (last_step_to_keep != target.SSA_steps.end() ? 1 : 0)
