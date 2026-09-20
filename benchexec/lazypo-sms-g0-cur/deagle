@@ -186,6 +186,56 @@ except ValueError as e:
       print(contenuto)
     result = get_result()
 
+
+def witness_thread_count(path="error-witness.graphml"):
+    """How many distinct threads does the emitted witness mention?"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return 0
+    return len(set(re.findall(r'key="threadId">(\d+)', text)))
+
+
+def reemit_witness_without_por(cmd):
+    """A data race needs two threads; a single-thread witness cannot show one.
+
+    --por prunes to canonical schedules, so the events of the other threads
+    need not be scheduled for the race constraint to hold and the witness can
+    come out with one thread. The verdict does not depend on this, so re-run
+    without --por purely to regenerate the witness. Keep the new one only if
+    that run also reports a violation, so the witness can never disagree with
+    the verdict we already printed.
+    """
+    if "--por" not in cmd or witness_thread_count() >= 2:
+        return
+    backup = "error-witness.graphml.por"
+    try:
+        os.replace("error-witness.graphml", backup)
+    except OSError:
+        backup = None
+    replay = cmd.replace(" --por", "")
+    print("witness names fewer than 2 threads; re-emitting it without --por")
+    print(replay)
+    os.system(replay)
+    kept = False
+    try:
+        with open("deagle_tmp_output", "r", encoding="utf-8",
+                  errors="replace") as handle:
+            kept = "VERIFICATION FAILED" in handle.read()
+    except OSError:
+        kept = False
+    if kept:
+        if backup:
+            os.remove(backup)
+    elif backup:
+        os.replace(backup, "error-witness.graphml")
+    os.system("rm -f deagle_tmp_output")
+
+
+if result == "FAILURE":
+    reemit_witness_without_por(cmd)
+
 if result == "SUCCESS":
     print("SUCCESSFUL")
     sys.exit(0)
