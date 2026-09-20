@@ -309,6 +309,57 @@ static void report_datarace_pair(
   if(!found_assert)
     std::cout << "DR_PAIR failing_assert: <none found>\n";
 
+  // For each blamed variable, show every access the model kept: which thread
+  // it belongs to, whether its path guard holds, and whether any of its
+  // per-round Exec symbols is true. A race needs two of these in different
+  // threads; if only one thread shows up here, the pair the solver chose is
+  // not backed by two executing accesses.
+  const auto dump_accesses = [&](const irep_idt &v) {
+    for(const auto &step : target.SSA_steps)
+    {
+      if(!(step.is_shared_read() || step.is_shared_write()))
+        continue;
+      if(!can_cast_expr<symbol_exprt>(step.ssa_lhs))
+        continue;
+      if(step.ssa_lhs.get_l1_object_identifier() != v)
+        continue;
+      const bool guard = decision_procedure.get(step.guard_handle).is_true();
+      bool any_exec = false;
+      for(const auto &e : step.round_robin_exec_symbols)
+        if(decision_procedure.get(e).is_true())
+        {
+          any_exec = true;
+          break;
+        }
+      std::cout << "DR_PAIR   access thread=" << step.round_robin_thread
+                << " label=" << step.round_robin_label
+                << " num=" << step.round_robin_num
+                << (step.is_shared_write() ? " W" : " R")
+                << " guard=" << (guard ? 1 : 0)
+                << " exec_syms=" << step.round_robin_exec_symbols.size()
+                << " exec_true=" << (any_exec ? 1 : 0) << "\n";
+    }
+  };
+
+  const auto show = [&](const char *name) {
+    const exprt value =
+      decision_procedure.get(symbol_exprt::typeless(irep_idt(name)));
+    std::cout << " " << name << "=";
+    const auto n = numeric_cast<mp_integer>(value);
+    if(n.has_value())
+      std::cout << *n;
+    else
+      std::cout << "?";
+  };
+
+  std::cout << "DR_PAIR roles:";
+  for(const char *s : {"t1", "t2", "r1", "r2"})
+    show(s);
+  std::cout << "  swap:";
+  for(const char *s : {"t3", "t4", "r3", "r4"})
+    show(s);
+  std::cout << "\n";
+
   bool blamed_any = false;
   for(const auto &v : variables)
   {
@@ -323,6 +374,7 @@ static void report_datarace_pair(
         decision_procedure.get(p2).is_true())
       {
         std::cout << "DR_PAIR blamed" << suffix << ": " << v << "\n";
+        dump_accesses(v);
         blamed_any = true;
       }
     }
