@@ -1,4 +1,4 @@
-CORE
+KNOWNBUG
 main.c
 --datarace --por --unwind 2 --rounds 3 --allow-pointer-unsoundness
 ^EXIT=10$

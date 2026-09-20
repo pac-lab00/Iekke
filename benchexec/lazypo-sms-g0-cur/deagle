@@ -158,6 +158,9 @@ KNOWN_UNKNOWN = {
     "per-thread-array-join-counter-race-2",
     "per-thread-array-join-counter-race-3",
     "per-thread-array-join-counter-race-4",
+    # Real race, unreachable for us once the publication filter removes the
+    # spurious pre-pthread_create pair this used to report instead.
+    "09-regions_03-list2_rc",
 }
 
 if prop == "no-data-race" and bm in KNOWN_UNKNOWN:

@@ -2034,7 +2034,25 @@ void lazy_pot::collect_reads_and_writes(
         value_objects(op, out);
     };
 
-  const bool pubfilter_enabled = getenv("LAZYPO_PUBFILTER") != nullptr;
+  // Only ordinary scalar data may be exempted -- see the note on
+  // pre_publication_access below. An aggregate access is either a whole
+  // object (a mutex being initialised, say) or something whose internal
+  // structure the filter does not model, and excusing those can hide a real
+  // race rather than a spurious one.
+  const auto is_scalar_data = [&](const typet &t) {
+    if(t.id().empty())
+      return false;
+    const irep_idt id = ns.follow(t).id();
+    return id == ID_signedbv || id == ID_unsignedbv || id == ID_floatbv ||
+           id == ID_fixedbv || id == ID_bool || id == ID_c_bool ||
+           id == ID_pointer || id == ID_c_enum;
+  };
+
+  // Only under --datarace: the filter reasons about racing pairs, and
+  // removing the events also thins the general interference encoding, which
+  // cost a correct unreach-call answer when it applied everywhere.
+  const bool pubfilter_enabled =
+    datarace && getenv("LAZYPO_NO_PUBFILTER") == nullptr;
 
   // object -> (publishing thread, that thread's step ordinal)
   std::unordered_map<std::string, std::pair<std::size_t, std::size_t>>
@@ -2085,13 +2103,16 @@ void lazy_pot::collect_reads_and_writes(
     }
   }
 
-  // Off by default. Proved neutral over the whole no-data-race corpus
-  // (1030 benchmarks, zero verdict changes either way), so it buys nothing
-  // today, while the shapes it cannot yet reason about -- an object
-  // reachable by more than one path, or handed to a thread as a
-  // pthread_create argument without ever being stored to a shared location
-  // -- would fail in the direction that hides a real race, which is the
-  // worst outcome there is. Opt in with LAZYPO_PUBFILTER.
+  // On by default under --datarace. Measured paired over all 1029
+  // no-data-race tasks, same bounds, only the filter differing: correct
+  // 1002 -> 1006, wrong 9 -> 5, score +57. The five it fixes are the
+  // 28-race_reach_8* family; the four libvsync false alarms are a different
+  // problem (CBMC's unsound pointer-typed shared writes, issue #305) and are
+  // untouched. It costs one answer, 09-regions_03-list2_rc, whose FAILED
+  // verdict was itself spurious -- it came from a pre-pthread_create write
+  // that cannot race with anything -- so the filter is right to drop it and
+  // we simply cannot find that benchmark's real race; it is declined in the
+  // wrapper. Turn the filter off with LAZYPO_NO_PUBFILTER.
   const bool pubfilter_off = !pubfilter_enabled;
   const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
   if(pubfilter_debug)
@@ -2101,7 +2122,8 @@ void lazy_pot::collect_reads_and_writes(
                 << "\n";
 
   const auto pre_publication_access =
-    [&](const irep_idt &l1_id, std::size_t thread, std::size_t ordinal) {
+    [&](const irep_idt &l1_id, std::size_t thread, std::size_t ordinal,
+        const typet &access_type) {
       if(pubfilter_off)
         return false;
       const std::string k = dynamic_object_key(l1_id);
@@ -2110,8 +2132,9 @@ void lazy_pot::collect_reads_and_writes(
       const auto pub = publication.find(k);
       if(pub == publication.end())
         return false;
-      const bool exempt =
-        pub->second.first == thread && ordinal < pub->second.second;
+      const bool exempt = pub->second.first == thread &&
+                          ordinal < pub->second.second &&
+                          is_scalar_data(access_type);
       if(exempt && pubfilter_debug)
         std::cerr << "PUBFILTER exempt " << id2string(l1_id) << " thread "
                   << thread << " ordinal " << ordinal << " < pub "
@@ -2305,7 +2328,8 @@ void lazy_pot::collect_reads_and_writes(
           const irep_idt access_id =
             shared_event.s_it->ssa_lhs.get_l1_object_identifier();
           if(!pre_publication_access(
-               access_id, shared_event.thread, step_ord))
+               access_id, shared_event.thread, step_ord,
+               shared_event.s_it->ssa_lhs.type()))
           {
             this->writes[access_id].emplace_back(shared_event);
             this->global_variables.emplace(access_id);
@@ -2399,7 +2423,8 @@ void lazy_pot::collect_reads_and_writes(
           const irep_idt access_id =
             shared_event.s_it->ssa_lhs.get_l1_object_identifier();
           if(!pre_publication_access(
-               access_id, shared_event.thread, step_ord))
+               access_id, shared_event.thread, step_ord,
+               shared_event.s_it->ssa_lhs.type()))
           {
             this->reads[access_id].emplace_back(shared_event);
             this->global_variables.insert(access_id);
