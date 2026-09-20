@@ -235,7 +235,12 @@ static bool filter_out(
      it->pc->assign_rhs().get(ID_statement) != ID_nondet))
     return true;
 
-  if(!it->is_assignment() && !it->is_goto() && !it->is_assert())
+  // A shared access reaches the trace only as one of the two accesses a
+  // datarace counterexample blames, and that is precisely what the witness
+  // has to exhibit, so it belongs here alongside the rest.
+  if(
+    !it->is_assignment() && !it->is_goto() && !it->is_assert() &&
+    !it->is_shared_read() && !it->is_shared_write())
     return true;
 
   // we filter out steps with the same source location
@@ -448,6 +453,11 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     case goto_trace_stept::typet::ASSERT:
     case goto_trace_stept::typet::GOTO:
     case goto_trace_stept::typet::SPAWN:
+    // A shared access reaches the trace only when it is one of the two the
+    // datarace constraint blamed, and then it is precisely what the witness
+    // exists to demonstrate, so give it an edge like any other step.
+    case goto_trace_stept::typet::SHARED_READ:
+    case goto_trace_stept::typet::SHARED_WRITE:
     {
       xmlt edge(
         "edge",
@@ -535,8 +545,6 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     case goto_trace_stept::typet::ASSUME:
     case goto_trace_stept::typet::INPUT:
     case goto_trace_stept::typet::OUTPUT:
-    case goto_trace_stept::typet::SHARED_READ:
-    case goto_trace_stept::typet::SHARED_WRITE:
     case goto_trace_stept::typet::MEMORY_BARRIER:
     case goto_trace_stept::typet::ATOMIC_BEGIN:
     case goto_trace_stept::typet::ATOMIC_END:
