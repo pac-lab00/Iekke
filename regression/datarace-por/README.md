@@ -144,3 +144,33 @@ object reachable by more than one path, or handed to a thread as a
 would fail in the direction that hides a real race. That is the worst outcome
 there is, so it stays opt-in until either those shapes are handled or it
 actually buys something.
+
+## Regression tests
+
+The programs above are wired into the repo's harness, one test per directory
+with a `main.c` and a `test.desc`, run by `regression/test.pl` and registered
+in `regression/CMakeLists.txt`:
+
+    cd regression/datarace-por && make test
+
+Two of them assert on the **counterexample**, not only the verdict:
+`racing-accesses-shown` and `atomic-section-race` require the trace to name
+both racing accesses, via the `Racing read in thread N` /
+`Racing write in thread N` lines that `--trace` emits.
+
+That distinction is the point. Every trace defect found in this area — empty
+counterexamples, counterexamples truncated mid-schedule, counterexamples
+naming a single thread — left the **verdict correct**. A verdict-only test
+passes throughout all of them. Checked directly: on the pre-fix binary both
+tests still report `VERIFICATION FAILED` and produce zero `Racing` lines.
+
+`publish-then-access-racefree` is recorded as `KNOWNBUG` rather than dropped.
+It is race free and still reported as racing, because CBMC cannot soundly
+handle a pointer-typed write to a shared location (`goto_symex_state.cpp`,
+CBMC issue #305) and the wrapper must pass `--allow-pointer-unsoundness`.
+Being a `KNOWNBUG` it is skipped at `CORE`, so it does not break CI, and
+`test.pl -K` reports whether it still reproduces.
+
+Note when writing new descriptors: `test.pl` rewrites a pattern that ends in
+`$`, appending a line-ending suffix, and escapes backslashes — so `\d` does
+not survive. Prefer unanchored patterns, or `[0-9]` over `\d`.
