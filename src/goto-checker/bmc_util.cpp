@@ -456,6 +456,20 @@ void postprocess_equation(
     }
     else
     {
+      // This build's concurrency support is the round-robin encoding, chosen
+      // with --rounds N. Without it we fall back to the stock memory-model
+      // path below, which on this fork reports violations on safe concurrent
+      // programs -- 12 of the 46 regression/cbmc-concurrency tests fail that
+      // way and all of them pass with --rounds 3. Don't let that happen
+      // silently.
+      messaget rounds_log(ui_message_handler);
+      rounds_log.warning()
+        << "no --rounds given for a concurrent program: falling back to the "
+           "memory-model encoding, which is known to report violations on "
+           "race-free programs in this build. Pass --rounds N (e.g. 3) for "
+           "the round-robin encoding this tool is validated with."
+        << messaget::eom;
+
       std::unique_ptr<memory_model_baset> memory_model =
       get_memory_model(options, ns);
 
