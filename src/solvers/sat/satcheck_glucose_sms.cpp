@@ -125,6 +125,19 @@ void satcheck_glucose_sms_baset<T>::finalize_modules()
   slave->setPruningOnly(true);
   slave->attachTo(this->solver.get(), shared);
   slave_attached = true;
+
+  // The master still holds every variable, including those whose clauses all
+  // went to the slave: they constrain nothing here and are not on the
+  // interface, so deciding them is wasted work. Measured over
+  // fib_unsafe-10..15, one solver at a time: 2083s -> 1960s, better on five of
+  // six, never worse. LAZYPO_SMS_KEEP_DEAD restores the old behaviour.
+  if(getenv("LAZYPO_SMS_KEEP_DEAD") == nullptr)
+  {
+    const int dead = this->solver->disableNonModuleDecisions();
+    this->log.statistics() << "SMS: " << dead
+                           << " variabili del master non vincolate, escluse "
+                              "dalle decisioni" << messaget::eom;
+  }
 }
 
 template <typename T>

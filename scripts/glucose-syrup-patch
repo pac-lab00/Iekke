@@ -1,6 +1,6 @@
 diff -ruN a/core/ShadowTheory.h b/core/ShadowTheory.h
 --- a/core/ShadowTheory.h	1970-01-01 01:00:00.000000000 +0100
-+++ b/core/ShadowTheory.h	2026-09-08 11:44:24.557431043 +0200
++++ b/core/ShadowTheory.h	2026-09-21 13:30:58.787178815 +0200
 @@ -0,0 +1,124 @@
 +/*****************************************************************************
 +ShadowTheory.h -- teoria di validazione per l'impalcatura DPLL(T).
@@ -127,8 +127,8 @@ diff -ruN a/core/ShadowTheory.h b/core/ShadowTheory.h
 +
 +#endif
 diff -ruN a/core/Solver.cc b/core/Solver.cc
---- a/core/Solver.cc	2021-07-15 01:52:10.000000000 +0200
-+++ b/core/Solver.cc	2026-09-08 11:44:24.563888761 +0200
+--- a/core/Solver.cc	2026-09-21 13:30:58.794399682 +0200
++++ b/core/Solver.cc	2026-09-21 13:30:58.797334222 +0200
 @@ -51,6 +51,8 @@
  
  #include "utils/System.h"
@@ -344,7 +344,7 @@ diff -ruN a/core/Solver.cc b/core/Solver.cc
  
  }
  
-@@ -1460,6 +1525,371 @@
+@@ -1460,6 +1525,386 @@
  |    all variables are decision variables, this means that the clause set is satisfiable. 'l_False'
  |    if the clause set is unsatisfiable. 'l_Undef' if the bound on number of conflicts is reached.
  |________________________________________________________________________________________________@*/
@@ -713,10 +713,25 @@ diff -ruN a/core/Solver.cc b/core/Solver.cc
 +    return CRef_Undef;
 +}
 +
++int Solver::disableNonModuleDecisions()
++{
++    vec<char> occurs;
++    occurs.growTo(nVars(), 0);
++    for (int i = 0; i < clauses.size(); i++) {
++        const Clause &cl = ca[clauses[i]];
++        for (int j = 0; j < cl.size(); j++) occurs[var(cl[j])] = 1;
++    }
++    for (int i = 0; i < trail.size(); i++) occurs[var(trail[i])] = 1;
++    int disabled = 0;
++    for (Var v = 0; v < nVars(); v++)
++        if (!occurs[v] && decision[v]) { setDecisionVar(v, false); disabled++; }
++    return disabled;
++}
++
  lbool Solver::search(int nof_conflicts) {
      assert(ok);
      int backtrack_level;
-@@ -1478,7 +1908,23 @@
+@@ -1478,7 +1923,23 @@
                  return l_False;
  
          }
@@ -741,7 +756,7 @@ diff -ruN a/core/Solver.cc b/core/Solver.cc
  
          if(confl != CRef_Undef) {
              newDescent = false;
-@@ -1645,6 +2091,15 @@
+@@ -1645,6 +2106,15 @@
                  decisions++;
                  next = pickBranchLit();
                  if(next == lit_Undef) {
@@ -757,7 +772,7 @@ diff -ruN a/core/Solver.cc b/core/Solver.cc
  		  if (verbosity > 0) printf("c last restart ## conflicts  :  %d %d \n", conflictC, decisionLevel());
  		  // Model found:
  		  return l_True;
-@@ -1946,7 +2401,8 @@
+@@ -1946,7 +2416,8 @@
      for(int i = 0; i < trail.size(); i++) {
          Var v = var(trail[i]);
  
@@ -767,7 +782,7 @@ diff -ruN a/core/Solver.cc b/core/Solver.cc
              ca.reloc(vardata[v].reason, to);
      }
  
-@@ -1972,6 +2428,12 @@
+@@ -1972,6 +2443,12 @@
      // Initialize the next region to a size corresponding to the estimated utilization degree. This
      // is not precise but should avoid some unnecessary reallocations for the new region:
      ClauseAllocator to(ca.size() - ca.wasted());
@@ -781,8 +796,8 @@ diff -ruN a/core/Solver.cc b/core/Solver.cc
      if(verbosity >= 2)
          printf("|  Garbage collection:   %12d bytes => %12d bytes             |\n",
 diff -ruN a/core/Solver.h b/core/Solver.h
---- a/core/Solver.h	2021-07-15 01:52:10.000000000 +0200
-+++ b/core/Solver.h	2026-09-08 11:44:24.566885217 +0200
+--- a/core/Solver.h	2026-09-21 13:30:58.803321917 +0200
++++ b/core/Solver.h	2026-09-21 13:30:58.804743751 +0200
 @@ -58,6 +58,7 @@
  #include "core/Constants.h"
  #include "mtl/Clone.h"
@@ -804,10 +819,11 @@ diff -ruN a/core/Solver.h b/core/Solver.h
  
      friend class SolverConfiguration;
  
-@@ -153,6 +158,15 @@
+@@ -153,6 +158,16 @@
      // 
      void    setPolarity    (Var v, bool b); // Declare which polarity the decision heuristic should use for a variable. Requires mode 'polarity_user'.
      void    setDecisionVar (Var v, bool b); // Declare if a variable should be eligible for selection in the decision heuristic.
++    int     disableNonModuleDecisions();   // Master side: stop deciding variables that occur in no clause of this module.
 +    void    setPORVar      (Var v, bool is_por); // Classify a variable as POR-introduced (fallback decision tier).
 +    uint64_t stats_por_fallback_decisions; // Decisions taken from the POR fallback tier.
 +    uint64_t stats_por_decisions;          // Decisions landing on a POR variable, in either tier.
@@ -820,7 +836,7 @@ diff -ruN a/core/Solver.h b/core/Solver.h
  
      // Read state:
      //
-@@ -348,6 +362,13 @@
+@@ -348,6 +363,13 @@
      int64_t             simpDB_props;     // Remaining number of propagations that must be made before next execution of 'simplify()'.
      vec<Lit>            assumptions;      // Current set of assumptions provided to solve by the user.
      Heap<VarOrderLt>    order_heap;       // A priority queue of variables ordered with respect to the variable activity.
@@ -834,7 +850,7 @@ diff -ruN a/core/Solver.h b/core/Solver.h
      double              progress_estimate;// Set by 'search()'.
      bool                remove_satisfied; // Indicates whether possibly inefficient linear scan for satisfied clauses should be performed in 'simplify'.
      vec<unsigned int>   permDiff;           // permDiff[var] contains the current conflict number... Used to count the number of  LBD
-@@ -432,6 +453,7 @@
+@@ -432,6 +454,7 @@
      void     attachClausePurgatory(CRef cr);
      void     removeClause     (CRef cr, bool inPurgatory = false);               // Detach and free a clause.
      bool     locked           (const Clause& c) const; // Returns TRUE if a clause is a reason for some implication in the current state.
@@ -842,7 +858,7 @@ diff -ruN a/core/Solver.h b/core/Solver.h
      bool     satisfied        (const Clause& c) const; // Returns TRUE if a clause is satisfied in the current state.
  
      template <typename T> unsigned int computeLBD(const T & lits,int end=-1);
-@@ -439,6 +461,129 @@
+@@ -439,6 +462,129 @@
  
      virtual void     relocAll         (ClauseAllocator& to);
  
@@ -972,7 +988,7 @@ diff -ruN a/core/Solver.h b/core/Solver.h
      // Misc:
      //
      int      decisionLevel    ()      const; // Gives the current decisionlevel.
-@@ -472,7 +617,19 @@
+@@ -472,7 +618,19 @@
  inline int  Solver::level (Var x) const { return vardata[x].level; }
  
  inline void Solver::insertVarOrder(Var x) {
@@ -993,7 +1009,7 @@ diff -ruN a/core/Solver.h b/core/Solver.h
  
  inline void Solver::varDecayActivity() { var_inc *= (1 / var_decay); }
  inline void Solver::varBumpActivity(Var v) { varBumpActivity(v, var_inc); }
-@@ -483,9 +640,12 @@
+@@ -483,9 +641,12 @@
              activity[i] *= 1e-100;
          var_inc *= 1e-100; }
  
@@ -1009,7 +1025,7 @@ diff -ruN a/core/Solver.h b/core/Solver.h
  
  inline void Solver::claDecayActivity() { cla_inc *= (1 / clause_decay); }
  inline void Solver::claBumpActivity (Clause& c) {
-@@ -507,13 +667,20 @@
+@@ -507,13 +668,20 @@
  inline bool     Solver::addClause       (Lit p)                 { add_tmp.clear(); add_tmp.push(p); return addClause_(add_tmp); }
  inline bool     Solver::addClause       (Lit p, Lit q)          { add_tmp.clear(); add_tmp.push(p); add_tmp.push(q); return addClause_(add_tmp); }
  inline bool     Solver::addClause       (Lit p, Lit q, Lit r)   { add_tmp.clear(); add_tmp.push(p); add_tmp.push(q); add_tmp.push(r); return addClause_(add_tmp); }
@@ -1034,8 +1050,8 @@ diff -ruN a/core/Solver.h b/core/Solver.h
  inline void     Solver::newDecisionLevel()                      { trail_lim.push(trail.size()); }
  
 diff -ruN a/core/SolverTypes.h b/core/SolverTypes.h
---- a/core/SolverTypes.h	2021-07-15 01:52:10.000000000 +0200
-+++ b/core/SolverTypes.h	2026-09-08 11:44:24.573463036 +0200
+--- a/core/SolverTypes.h	2026-09-21 13:30:58.808832595 +0200
++++ b/core/SolverTypes.h	2026-09-21 13:30:58.809963693 +0200
 @@ -53,7 +53,9 @@
  
  #include <assert.h>
@@ -1073,7 +1089,7 @@ diff -ruN a/core/SolverTypes.h b/core/SolverTypes.h
          template<class Lits>
 diff -ruN a/core/Theory.h b/core/Theory.h
 --- a/core/Theory.h	1970-01-01 01:00:00.000000000 +0100
-+++ b/core/Theory.h	2026-09-08 11:44:24.548413420 +0200
++++ b/core/Theory.h	2026-09-21 13:30:58.815158430 +0200
 @@ -0,0 +1,57 @@
 +/*****************************************************************************
 +Theory.h -- interfaccia DPLL(T) minimale per Glucose.
@@ -1133,8 +1149,8 @@ diff -ruN a/core/Theory.h b/core/Theory.h
 +
 +#endif
 diff -ruN a/mtl/IntTypes.h b/mtl/IntTypes.h
---- a/mtl/IntTypes.h	2021-07-15 01:52:10.000000000 +0200
-+++ b/mtl/IntTypes.h	2026-09-08 11:44:24.430875734 +0200
+--- a/mtl/IntTypes.h	2026-09-21 13:30:58.819614905 +0200
++++ b/mtl/IntTypes.h	2026-09-21 13:30:58.822118804 +0200
 @@ -31,7 +31,9 @@
  #else
  
@@ -1146,8 +1162,8 @@ diff -ruN a/mtl/IntTypes.h b/mtl/IntTypes.h
  #endif
  
 diff -ruN a/simp/SimpSolver.cc b/simp/SimpSolver.cc
---- a/simp/SimpSolver.cc	2021-07-15 01:52:10.000000000 +0200
-+++ b/simp/SimpSolver.cc	2026-09-08 11:44:24.545416792 +0200
+--- a/simp/SimpSolver.cc	2026-09-21 13:30:58.828279105 +0200
++++ b/simp/SimpSolver.cc	2026-09-21 13:30:58.830803666 +0200
 @@ -713,11 +713,11 @@
      //
  
@@ -1176,8 +1192,8 @@ diff -ruN a/simp/SimpSolver.cc b/simp/SimpSolver.cc
      cleanUpClauses();
      to.extra_clause_field = ca.extra_clause_field; // NOTE: this is important to keep (or lose) the extra fields.
 diff -ruN a/simp/SimpSolver.h b/simp/SimpSolver.h
---- a/simp/SimpSolver.h	2021-07-15 01:52:10.000000000 +0200
-+++ b/simp/SimpSolver.h	2026-09-08 11:44:24.539373303 +0200
+--- a/simp/SimpSolver.h	2026-09-21 13:30:58.835121115 +0200
++++ b/simp/SimpSolver.h	2026-09-21 13:30:58.836980486 +0200
 @@ -91,6 +91,9 @@
      // Variable mode:
      // 
@@ -1189,8 +1205,8 @@ diff -ruN a/simp/SimpSolver.h b/simp/SimpSolver.h
  
      // Solving:
 diff -ruN a/utils/ParseUtils.h b/utils/ParseUtils.h
---- a/utils/ParseUtils.h	2021-07-15 01:52:10.000000000 +0200
-+++ b/utils/ParseUtils.h	2026-09-08 11:44:24.532267883 +0200
+--- a/utils/ParseUtils.h	2026-09-21 13:30:58.843226874 +0200
++++ b/utils/ParseUtils.h	2026-09-21 13:30:58.844964566 +0200
 @@ -25,7 +25,7 @@
  #include <stdio.h>
  #include <math.h>
@@ -1223,8 +1239,8 @@ diff -ruN a/utils/ParseUtils.h b/utils/ParseUtils.h
      int  operator *  () const { return (pos >= size) ? EOF : buf[pos]; }
      void operator ++ ()       { pos++; assureLookahead(); }
 diff -ruN a/utils/System.h b/utils/System.h
---- a/utils/System.h	2021-07-15 01:52:10.000000000 +0200
-+++ b/utils/System.h	2026-09-08 11:44:24.524864894 +0200
+--- a/utils/System.h	2026-09-21 13:30:58.850238187 +0200
++++ b/utils/System.h	2026-09-21 13:30:58.851484662 +0200
 @@ -60,8 +60,11 @@
  
  // Laurent: I know that this will not compile directly under Windows... sorry for that
