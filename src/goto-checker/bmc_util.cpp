@@ -9,6 +9,7 @@ Author: Daniel Kroening, Peter Schrammel
 /// \file
 /// Bounded Model Checking Utilities
 
+#include <string>
 #include "bmc_util.h"
 
 #include <util/json_stream.h>
@@ -563,20 +564,64 @@ std::chrono::duration<double> prepare_property_decider(
   };
   auto &prop_for_sms = property_decider.get_solver()->prop();
 
-  convert_symex_target_equation(
-    equation, property_decider.get_decision_procedure(), ui_message_handler);
+  // Which half goes to the slave. By default the canonicality constraints do,
+  // leaving the master with the program encoding -- which makes the master
+  // carry essentially the whole problem and the slave almost nothing.
+  // LAZYPO_SMS_INVERT swaps them: the base encoding becomes the slave and the
+  // master keeps canonicality and the goal, so the master searches over the
+  // scheduling variables and the slave answers "is there data consistent with
+  // this schedule". The interface is the same set either way -- it is the
+  // variables occurring on both sides -- and it is small: 2.3% of variables on
+  // elimination_backoff_stack, 4.2% on fib_unsafe-12.
+  // Which constraint classes go to the slave. See the note on
+  // convert_datarace_assertion: `goal` always stays with the master.
+  std::string slave_spec;
+  if(const char *s = getenv("LAZYPO_SMS_SLAVE"))
+    slave_spec = s;
+  else if(const char *inv = getenv("LAZYPO_SMS_INVERT"))
+    slave_spec = (inv[0] != '\0' && atoi(inv) >= 2) ? "data" : "data,conc";
+  else
+    slave_spec = "canon";
 
-  cnf_mark("m0-base");
+  const auto in_slave = [&slave_spec](const char *cls) {
+    return ("," + slave_spec + ",").find(std::string(",") + cls + ",") !=
+           std::string::npos;
+  };
+  const bool data_slave = sms_modular && in_slave("data");
+  const bool conc_slave = sms_modular && in_slave("conc");
+  const bool canon_slave = sms_modular && in_slave("canon");
 
   if(sms_modular)
-    prop_for_sms.set_clause_redirect(true);
+    log.statistics() << "SMS: slave = {" << slave_spec << "}" << messaget::eom;
 
-  equation.convert_canonical_constraints(
+  const auto redirect = [&](bool on) {
+    if(sms_modular)
+      prop_for_sms.set_clause_redirect(on);
+  };
+
+  // The property first, always master-side, so the catch-all pass below
+  // cannot claim it.
+  equation.convert_datarace_assertion(
     property_decider.get_decision_procedure());
 
-  if(sms_modular)
-    prop_for_sms.set_clause_redirect(false);
+  // Then each class whose home is not the catch-all.
+  redirect(conc_slave);
+  equation.convert_concurrency_constraints(
+    property_decider.get_decision_procedure());
+  redirect(false);
 
+  redirect(canon_slave);
+  equation.convert_canonical_constraints(
+    property_decider.get_decision_procedure());
+  redirect(false);
+
+  // Everything left is the data encoding.
+  redirect(data_slave);
+  convert_symex_target_equation(
+    equation, property_decider.get_decision_procedure(), ui_message_handler);
+  redirect(false);
+
+  cnf_mark("m0-base");
   cnf_mark("m1-canonicalita");
 
   property_decider.update_properties_goals_from_symex_target_equation(

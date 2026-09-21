@@ -121,8 +121,28 @@ void satcheck_glucose_sms_baset<T>::finalize_modules()
                          << messaget::eom;
 
   // Canonicality can only remove models from the master, never add: a master
-  // model is already a real counterexample and need not be confirmed.
-  slave->setPruningOnly(true);
+  // model is already a real counterexample and need not be confirmed. That
+  // holds only for the default placement. Inverted, the slave holds the
+  // program encoding and the master keeps just canonicality and the goal, so
+  // a master model is a proposed schedule that the slave must confirm.
+  // Pruning-only holds exactly when the slave carries canonicality and
+  // nothing else: canonicality can only remove models, so a master model is
+  // already a real execution. Any other class in there makes the slave
+  // semantically necessary and its confirmation of each model mandatory.
+  std::string slave_spec;
+  if(const char *s = getenv("LAZYPO_SMS_SLAVE"))
+    slave_spec = s;
+  else if(const char *inv = getenv("LAZYPO_SMS_INVERT"))
+    slave_spec = (inv[0] != '\0' && atoi(inv) >= 2) ? "data" : "data,conc";
+  else
+    slave_spec = "canon";
+  const bool only_canon = (slave_spec == "canon");
+  slave->setPruningOnly(only_canon);
+  this->log.statistics()
+    << "SMS: slave = {" << slave_spec << "}, "
+    << (only_canon ? "pruning-only (models need no confirmation)"
+                   : "semantically necessary (every model is confirmed)")
+    << messaget::eom;
   slave->attachTo(this->solver.get(), shared);
   slave_attached = true;
 
