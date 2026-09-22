@@ -934,7 +934,39 @@ void lazy_pot::handling_active_threads(
   unsigned thread_created = 1;
   thread_current = 0;
 
-  symex_target_equationt::SSA_stepst::const_iterator prev;
+  // Was: a thread was deemed to have ended as soon as a step with a larger
+  // source.thread_nr appeared, and __CPROVER_active_thread_T<t> was set to
+  // false at that point. That assumes symex emits each thread's steps in one
+  // contiguous, monotonically increasing block. It does not. When a spawned
+  // function is passed the address of a local of the spawning function,
+  //
+  //   unsigned loc = 7; __CPROVER_ASYNC_0: f(&loc);
+  //
+  // symex emits the copy of that local into the *new* thread's frame -- a
+  // step whose source.thread_nr is the new thread's -- while the spawning
+  // thread still has steps to come. The old test fired on that copy and
+  // marked the spawning thread inactive at its own spawn statement, so that
+  // thread was never scheduled again: every later statement of it, including
+  // any further spawns and the final assertion, became unreachable, and the
+  // run reported VERIFICATION SUCCESSFUL vacuously. That is what made the
+  // whole verify-treercu benchmark vacuous under --rounds -- main never got
+  // past its first __CPROVER_ASYNC spawn, so the second thread was never
+  // created and __CPROVER_assume(__unbuffered_cnt == NUM_THREADS) was
+  // unsatisfiable, "proving" the safe case and all seven injected bugs alike.
+  //
+  // A thread ends at the *last* step that belongs to it, which is what is
+  // computed here. On a trace whose steps really are contiguous that is
+  // exactly the step the old test fired on, and the thread owning the very
+  // last step of the trace is still left to the thread_ends sweep below, so
+  // the equation this emits is unchanged for such traces.
+  std::unordered_map<unsigned, const SSA_stept *> last_step_of_thread;
+  for(const auto &trace_step : ssa_steps)
+    last_step_of_thread[trace_step.source.thread_nr] = &trace_step;
+
+  const symex_target_equationt::SSA_stepst::const_iterator trace_last =
+    ssa_steps.empty() ? ssa_steps.end() : std::prev(ssa_steps.end());
+
+  symex_target_equationt::SSA_stepst::const_iterator prev = ssa_steps.begin();
 
   for(symex_target_equationt::SSA_stepst::const_iterator s_it =
         ssa_steps.begin();
@@ -944,34 +976,7 @@ void lazy_pot::handling_active_threads(
     guard = s_it->guard;
 
     if(s_it->source.thread_nr > thread_current)
-    {
-      thread_ends[thread_current] = true;
-      exprt prev_guard = prev->guard;
-
-      unsigned int atomic_section_id = prev->atomic_section_id;
-
-      if(prev->is_atomic_begin())
-        atomic_section_id = 1;
-
-      create_active_thread_statements(
-        prev->source,
-        prev_guard,
-        atomic_section_id,
-        thread_current,
-        temp_equation,
-        false_exprt{});
-
       thread_current = s_it->source.thread_nr;
-
-      SSA_stept step{equation.SSA_steps.front()};
-      step.type = equation.SSA_steps.front().type;
-
-      equation.SSA_steps.pop_front();
-      temp_equation.SSA_steps.emplace_back(step);
-
-      prev = s_it;
-      continue;
-    }
 
     // Was: detected thread creation by pattern-matching the source
     // function name "pthread_create" plus a shared write to
@@ -1012,6 +1017,32 @@ void lazy_pot::handling_active_threads(
     temp_equation.SSA_steps.emplace_back(step);
 
     prev = s_it;
+
+    // A thread ends at its own last step (see above). The thread that owns
+    // the very last step of the whole trace is deliberately left to the
+    // thread_ends sweep below, which marks it with an unconditional guard --
+    // that is what the previous code did for it, and leaving it there is what
+    // keeps this change a no-op on contiguous traces.
+    const unsigned step_thread = s_it->source.thread_nr;
+    if(s_it != trace_last && last_step_of_thread[step_thread] == &*s_it)
+    {
+      thread_ends[step_thread] = true;
+
+      exprt end_guard = s_it->guard;
+      unsigned int atomic_section_id = s_it->atomic_section_id;
+
+      if(s_it->is_atomic_begin())
+        atomic_section_id = 1;
+
+      unsigned ending_thread = step_thread;
+      create_active_thread_statements(
+        s_it->source,
+        end_guard,
+        atomic_section_id,
+        ending_thread,
+        temp_equation,
+        false_exprt{});
+    }
   }
   for (auto thread_end : thread_ends)
   {
