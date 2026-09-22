@@ -599,34 +599,60 @@ std::chrono::duration<double> prepare_property_decider(
       prop_for_sms.set_clause_redirect(on);
   };
 
-  // The property first, always master-side, so the catch-all pass below
-  // cannot claim it.
-  equation.convert_datarace_assertion(
-    property_decider.get_decision_procedure());
+  // Order matters even though the formula does not: the sequence fixes SAT
+  // variable numbering, and Glucose is markedly sensitive to it (see the note
+  // in convert_constraints). Reordering unconditionally cost
+  // elimination_backoff_stack 264s -> timeout at 600s under plain monolithic
+  // solving. So a class is pre-converted only when the split actually
+  // separates it from the catch-all; otherwise everything keeps its original
+  // position.
 
-  // Then each class whose home is not the catch-all.
-  redirect(conc_slave);
-  equation.convert_concurrency_constraints(
-    property_decider.get_decision_procedure());
-  redirect(false);
+  // Concurrency only needs its own pass when it parts company with the data
+  // encoding.
+  if(conc_slave != data_slave)
+  {
+    redirect(conc_slave);
+    equation.convert_concurrency_constraints(
+      property_decider.get_decision_procedure());
+    redirect(false);
+  }
 
-  redirect(canon_slave);
-  equation.convert_canonical_constraints(
-    property_decider.get_decision_procedure());
-  redirect(false);
+  // The property must stay with the master. Under --datarace it is an assert
+  // inside the equation, so the catch-all would carry it off to the slave --
+  // but only if the data encoding is going there. Convert the goals early in
+  // that case: goal conversion marks those steps converted, so the catch-all
+  // leaves them where they belong. Asserting the property by hand instead was
+  // wrong in both directions at once -- it removed the property from the goal
+  // set and asserted it -- and produced 43 false alarms on no-data-race.
+  bool goals_converted_early = false;
+  if(data_slave)
+  {
+    property_decider.update_properties_goals_from_symex_target_equation(
+      properties);
+    property_decider.convert_goals();
+    goals_converted_early = true;
+  }
 
-  // Everything left is the data encoding.
   redirect(data_slave);
   convert_symex_target_equation(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
   redirect(false);
 
   cnf_mark("m0-base");
+
+  redirect(canon_slave);
+  equation.convert_canonical_constraints(
+    property_decider.get_decision_procedure());
+  redirect(false);
+
   cnf_mark("m1-canonicalita");
 
-  property_decider.update_properties_goals_from_symex_target_equation(
-    properties);
-  property_decider.convert_goals();
+  if(!goals_converted_early)
+  {
+    property_decider.update_properties_goals_from_symex_target_equation(
+      properties);
+    property_decider.convert_goals();
+  }
 
   cnf_mark("m2-goal");
 

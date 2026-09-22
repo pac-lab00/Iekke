@@ -264,11 +264,6 @@ public:
   /// slave.
   void convert_concurrency_constraints(decision_proceduret &decision_procedure);
 
-  /// Converts the data-race property assertion that lazy_po appends to the
-  /// equation. It is the goal under --datarace, so an SMS split must keep it
-  /// with the master however the rest is assigned.
-  void convert_datarace_assertion(decision_proceduret &decision_procedure);
-
   /// Converts goto instructions: convert the expression representing the
   /// condition of this goto.
   /// \param decision_procedure: A handle to a decision procedure interface

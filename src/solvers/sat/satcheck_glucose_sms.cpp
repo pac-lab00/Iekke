@@ -4,6 +4,7 @@ Module: SAT Modulo SAT backend for Glucose (opt-in, LAZYPO_SMS=1)
 
 \*******************************************************************/
 
+#include <util/exception_utils.h>
 #include "satcheck_glucose_sms.h"
 
 #include <algorithm>
@@ -137,6 +138,19 @@ void satcheck_glucose_sms_baset<T>::finalize_modules()
   else
     slave_spec = "canon";
   const bool only_canon = (slave_spec == "canon");
+  if(!only_canon && getenv("LAZYPO_SMS_EXPERIMENTAL") == nullptr)
+  {
+    throw invalid_command_line_argument_exceptiont(
+      "slave = {" + slave_spec +
+        "} needs the slave to confirm every model, and that path is known to "
+        "crash: a solve on the slave can move its clause arena while the "
+        "master still holds references into it (SIGSEGV on "
+        "25_stack_longest-2-race, 26_stack_cas_longest-1-race). It is also "
+        "slower than monolithic solving where it is correct -- 1.56x on the "
+        "unreach-call benchmarks with real runtime. Set "
+        "LAZYPO_SMS_EXPERIMENTAL=1 to run it anyway.",
+      "LAZYPO_SMS_SLAVE");
+  }
   slave->setPruningOnly(only_canon);
   this->log.statistics()
     << "SMS: slave = {" << slave_spec << "}, "

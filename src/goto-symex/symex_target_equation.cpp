@@ -543,20 +543,6 @@ void symex_target_equationt::convert_constraints(
   }
 }
 
-void symex_target_equationt::convert_datarace_assertion(
-  decision_proceduret &decision_procedure)
-{
-  for(auto &step : SSA_steps)
-  {
-    if(step.is_assert() && !step.ignore && !step.converted
-       && step.comment == "datarace")
-    {
-      decision_procedure.set_to_true(
-        or_exprt{not_exprt{step.guard}, step.cond_expr});
-      step.converted = true;
-    }
-  }
-}
 
 void symex_target_equationt::convert_concurrency_constraints(
   decision_proceduret &decision_procedure)
