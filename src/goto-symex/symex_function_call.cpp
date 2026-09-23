@@ -252,6 +252,11 @@ void goto_symext::symex_function_call_post_clean(
     {
       // Rule out this path:
       symex_assume_l2(state, false_exprt());
+
+      // Same under-approximation as a truncated loop, for the same reason;
+      // see goto_symext::unwinding_incomplete.
+      unwinding_incomplete = true;
+      ++unwinding_truncated;
     }
 
     symex_transition(state);

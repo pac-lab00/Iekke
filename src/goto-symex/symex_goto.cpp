@@ -986,6 +986,14 @@ void goto_symext::loop_bound_exceeded(
   {
     // generate unwinding assumption, unless we permit partial loops
     symex_assume_l2(state, negated_cond);
+
+    // That assumption rules out every execution that would have needed
+    // another iteration of this loop, so what is left is an
+    // under-approximation: a counterexample found in it is still real, but
+    // finding none no longer means the property holds.  Record it -- see
+    // goto_symext::unwinding_incomplete.
+    unwinding_incomplete = true;
+    ++unwinding_truncated;
   }
 }
 

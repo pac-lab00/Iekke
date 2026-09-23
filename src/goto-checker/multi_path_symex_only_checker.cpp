@@ -135,7 +135,6 @@ void multi_path_symex_only_checkert::generate_equation()
   symex.symex_from_entry_point_of(
     goto_symext::get_goto_function(goto_model), symex_symbol_table);
 
-  std::cout << "Unwinding successfully\n";
 
   if(options.get_bool_option("refined-pointer-analysis") && symex.target.has_threads())
   {
@@ -147,6 +146,21 @@ void multi_path_symex_only_checkert::generate_equation()
     symex.symex_from_entry_point_of(
       goto_symext::get_goto_function(goto_model), symex_symbol_table);
   }
+
+  // Was: an unconditional "Unwinding successfully", printed here before
+  // the optional second symex pass and regardless of whether any loop had
+  // actually been unwound to completion -- so it announced success just as
+  // readily when a bound had been hit and the run had silently become an
+  // under-approximation.  Report what actually happened instead, after the
+  // last pass, so a caller can tell a proof from "ran out of bound".
+  if(symex.unwinding_incomplete)
+  {
+    std::cout << "Unwinding incomplete: " << symex.unwinding_truncated
+              << " loop/recursion bound(s) hit; a counterexample is still"
+                 " real, but VERIFICATION SUCCESSFUL is not a proof\n";
+  }
+  else
+    std::cout << "Unwinding successfully\n";
   // __SZH_ADD_END__
 
   symex.remove_dummy_accesses();

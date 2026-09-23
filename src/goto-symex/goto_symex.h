@@ -218,6 +218,26 @@ public:
   /// not a proof.
   bool thread_creation_bound_hit = false;
 
+  /// Set once an unwinding assumption has actually cut a loop or a
+  /// recursion short, i.e. once the exploration became an
+  /// under-approximation of the program.  A counterexample found in such a
+  /// run is still real; the absence of one is NOT a proof, because every
+  /// execution that needed another iteration was assumed away.
+  ///
+  /// This exists because nothing downstream could tell those two apart.
+  /// The line printed at the end of symex used to be an unconditional
+  /// "Unwinding successfully", which said only that symex had run -- it
+  /// reported success just as happily when a bound had been hit.  A caller
+  /// that reads it (the SV-COMP wrapper's ensure_successful_unwind() does)
+  /// could therefore never distinguish a proof from "ran out of bound",
+  /// and an under-approximate run that found nothing was reported as
+  /// VERIFICATION SUCCESSFUL.
+  bool unwinding_incomplete = false;
+
+  /// How many times a loop or recursion bound was hit (see
+  /// \ref unwinding_incomplete).
+  std::size_t unwinding_truncated = 0;
+
   // __WP_ADD_BEGIN__ for deadlock
   bool enable_deadlock = false;
   // void backtracing_for_deadlock(std::vector<symex_target_equationt::event_it>& locks_tuples,
