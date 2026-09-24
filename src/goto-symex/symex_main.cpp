@@ -493,6 +493,11 @@ void goto_symext::symex_from_entry_point_of(
 {
   auto state = initialize_entry_point_state(get_goto_function);
 
+  // See goto_symext::seed_value_set_from_overall.  Only ever set under
+  // --refined-pointer-analysis, so the default configuration is unaffected.
+  if(seed_value_set_from_overall)
+    state->value_set.make_union(overall_value_set);
+
   symex_with_state(*state, get_goto_function, new_symbol_table);
 }
 
@@ -615,7 +620,24 @@ void goto_symext::symex_step(
 {
   // __SZH_ADD_BEGIN__
   if(try_finding_value_set)
-    overall_value_set.make_union(state.value_set);
+  {
+    // make_union reports whether it actually added anything; remember that
+    // so the caller can iterate to a fixpoint (see
+    // goto_symext::overall_value_set_changed).
+    if(overall_value_set.make_union(state.value_set))
+      overall_value_set_changed = true;
+  }
+
+  // Seeding only the entry-point state is not enough.  __CPROVER_initialize
+  // runs the global initialisers before any thread exists, so the initialiser
+  // of a global pointer is not a *shared* write: it replaces that pointer's
+  // points-to set rather than accumulating into it, wiping the seeded targets
+  // straight back out.  Top the state up at every step instead, so a target
+  // published by another thread survives initialisation and is still there
+  // when a thread-local is assigned from that pointer.  Only ever active under
+  // --refined-pointer-analysis.
+  if(seed_value_set_from_overall)
+    state.value_set.make_union(overall_value_set);
   // __SZH_ADD_END__
 
   // Print debug statements if they've been enabled.
