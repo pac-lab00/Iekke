@@ -138,9 +138,50 @@ void multi_path_symex_only_checkert::generate_equation()
 
   if(options.get_bool_option("refined-pointer-analysis") && symex.target.has_threads())
   {
+    // Was: exactly one further pass with try_finding_value_set off.  That is
+    // not enough.  The collection pass above unions state.value_set into
+    // overall_value_set as it goes, which repairs a *shared* pointer that is
+    // published late -- but a thread-local assigned from it earlier keeps the
+    // points-to entry it was given before the publication was symexed, and
+    // nothing revisits it.  The dereference then resolves against that stale
+    // local, so the interleaving is never encoded and the bug is missed
+    // (CBMC #305; 12-line reproduction in ~/bench-minrepro/p305.c, where the
+    // reading thread is spawned first and the SSA reads only the pre-
+    // publication object instead of building a case split over both).
+    //
+    // Run further *collection* passes instead, each seeded with the union
+    // collected so far, until a whole pass adds nothing -- so the local is
+    // re-derived from a pointer that already carries every published target.
+    // Then do the final pass, which builds the equation.
+    const std::size_t max_refinement_rounds = 8;
+
+    for(std::size_t round = 0; round < max_refinement_rounds; ++round)
+    {
+      symex.path_storage.clear();
+      symex.target.clear();
+      symex.dynamic_counter = 0;
+      symex.try_finding_value_set = true;
+      symex.seed_value_set_from_overall = true;
+      symex.overall_value_set_changed = false;
+
+      symex.symex_from_entry_point_of(
+        goto_symext::get_goto_function(goto_model), symex_symbol_table);
+
+      if(!symex.overall_value_set_changed)
+        break;   // fixpoint: nothing new to learn
+    }
+
+    if(getenv("IEKKE_DUMP_VALUE_SET") != nullptr)
+    {
+      std::cout << "=== overall_value_set after refinement ===\n";
+      symex.overall_value_set.output(std::cout);
+      std::cout << "=== end overall_value_set ===\n";
+    }
+
     symex.path_storage.clear();
     symex.target.clear();
     symex.try_finding_value_set = false;
+    symex.seed_value_set_from_overall = true;
     symex.dynamic_counter = 0;
 
     symex.symex_from_entry_point_of(

@@ -185,6 +185,25 @@ public:
 
   bool try_finding_value_set = false;
   value_sett overall_value_set;
+
+  /// Keep each state's value set topped up from \ref overall_value_set, at
+  /// the entry point and at every step thereafter.
+  ///
+  /// Needed to reach a fixpoint under --refined-pointer-analysis.  Unioning
+  /// state.value_set into overall_value_set as symex goes repairs the *shared*
+  /// pointer that was published late, but not a thread-local that was assigned
+  /// from it earlier: that local's points-to entry was fixed before the
+  /// publication had been symexed, and nothing revisits it.  The dereference
+  /// then resolves against the stale local and the interleaving is never
+  /// encoded -- a missed bug, CBMC issue #305.  Running further collection
+  /// passes with the union already in place lets the local pick the published
+  /// target up.  Reproduction: ~/bench-minrepro/p305.c.
+  bool seed_value_set_from_overall = false;
+
+  /// Set whenever a union into \ref overall_value_set actually changed it.
+  /// The caller clears it before a collection pass and stops iterating once
+  /// a whole pass leaves it false, i.e. at the fixpoint.
+  bool overall_value_set_changed = false;
   std::set<symbol_exprt> dynamic_objects;
   // __SZH_ADD_END__
 
