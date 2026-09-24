@@ -196,9 +196,14 @@ void multi_path_symex_only_checkert::generate_equation()
   // last pass, so a caller can tell a proof from "ran out of bound".
   if(symex.unwinding_incomplete)
   {
+    // NB: this message must not contain the literal strings that callers
+    // grep for to read the verdict. It used to say "... but VERIFICATION
+    // SUCCESSFUL is not a proof", which every such grep matched -- so a run
+    // that errored, crashed or timed out and produced no verdict of its own
+    // was read as a successful verification.
     std::cout << "Unwinding incomplete: " << symex.unwinding_truncated
               << " loop/recursion bound(s) hit; a counterexample is still"
-                 " real, but VERIFICATION SUCCESSFUL is not a proof\n";
+                 " real, but a safe result here is not a proof\n";
   }
   else
     std::cout << "Unwinding successfully\n";
