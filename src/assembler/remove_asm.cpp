@@ -15,10 +15,8 @@ Date:   December 2014
 
 #include "remove_asm.h"
 
-#include <cstdlib>
-#include <iostream>
-
 #include <util/c_types.h>
+#include <util/exception_utils.h>
 #include <util/pointer_expr.h>
 #include <util/prefix.h>
 #include <util/range.h>
@@ -421,9 +419,10 @@ bool remove_asmt::process_instruction_gcc(
         output.operands().size() == 2 &&
         to_binary_expr(output).op1().type().id() == ID_pointer)
       {
-        std::cout << "Error: unsupported inline asm writes a pointer operand; "
-                     "refusing rather than risk a missed bug\n";
-        std::exit(1);
+        throw unsupported_operation_exceptiont(
+          "inline asm writing a pointer operand: havocking it would lose the "
+          "addresses the asm was given, so a later dereference could miss a "
+          "genuine race");
       }
     }
 

@@ -561,14 +561,21 @@ void arrayst::add_array_constraints(
   }
   else
   {
-    std::string detail = expr.id_string();
-    if(expr.id() == ID_member)
-      detail += " over '" + to_member_expr(expr).struct_op().id_string() + "'";
-    else if(expr.id() == ID_index)
-      detail += " over '" + to_index_expr(expr).array().id_string() + "'";
+    // Naming only the outer id is not enough to tell a case that is safe to
+    // treat as an independent array from one that is not, which is the whole
+    // difficulty with member expressions here.
+    const auto operand_id = [&expr]() -> std::string {
+      if(expr.id() == ID_member)
+        return " over '" + to_member_expr(expr).struct_op().id_string() + "'";
+      else if(expr.id() == ID_index)
+        return " over '" + to_index_expr(expr).array().id_string() + "'";
+      else
+        return {};
+    };
     DATA_INVARIANT(
       false,
-      "unexpected array expression (add_array_constraints): '" + detail + "'");
+      "unexpected array expression (add_array_constraints): '" +
+        expr.id_string() + "'" + operand_id());
   }
 }
 
