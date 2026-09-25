@@ -499,6 +499,35 @@ void arrayst::add_array_constraints(
      to_member_expr(expr).struct_op().id() == ID_nondet_symbol))
   {
   }
+  else if(
+    expr.id() == ID_member &&
+    to_member_expr(expr).struct_op().id() == ID_struct)
+  {
+    // The member of a struct value is that value's corresponding component, so
+    // unlike the member-of-symbol case above this is NOT an independent array:
+    // leaving it unconstrained would let the solver pick contents the
+    // component does not have. Relate the two elementwise, as the typecast
+    // case below does.
+    const member_exprt &member_expr = to_member_expr(expr);
+    const exprt &component = to_struct_expr(member_expr.struct_op())
+                               .component(member_expr.get_component_name(), ns);
+
+    for(const auto &index : index_set)
+    {
+      const typet &element_type = to_array_type(expr.type()).element_type();
+      index_exprt index_expr1(expr, index, element_type);
+      index_exprt index_expr2(component, index, element_type);
+
+      DATA_INVARIANT(
+        index_expr1.type() == index_expr2.type(),
+        "array elements should all have same type");
+
+      lazy_constraintt lazy(
+        lazy_typet::ARRAY_TYPECAST, equal_exprt(index_expr1, index_expr2));
+      add_array_constraint(lazy, false); // added immediately
+      array_constraint_count[constraint_typet::ARRAY_TYPECAST]++;
+    }
+  }
   else if(expr.id()==ID_byte_update_little_endian ||
           expr.id()==ID_byte_update_big_endian)
   {
@@ -532,10 +561,14 @@ void arrayst::add_array_constraints(
   }
   else
   {
+    std::string detail = expr.id_string();
+    if(expr.id() == ID_member)
+      detail += " over '" + to_member_expr(expr).struct_op().id_string() + "'";
+    else if(expr.id() == ID_index)
+      detail += " over '" + to_index_expr(expr).array().id_string() + "'";
     DATA_INVARIANT(
       false,
-      "unexpected array expression (add_array_constraints): '" +
-        expr.id_string() + "'");
+      "unexpected array expression (add_array_constraints): '" + detail + "'");
   }
 }
 
