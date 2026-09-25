@@ -52,10 +52,16 @@ void goto_convertt::convert_asm(
       return; // compiler memory barrier: sound no-op, nothing to emit
   }
 
-  // __SZH_ADD_BEGIN__ : we do not support asm code for now
-  std::cout << "Error: Deagle does not support asm code.\n";
-  std::exit(1);
-  // __SZH_ADD_END__
+  // Was: print "Error: Deagle does not support asm code." and exit(1), which
+  // discarded the whole benchmark at the first inline asm -- on the
+  // ldv-linux-3.14 family that is every task, for asm as ordinary as Linux's
+  // this_cpu_read, `movl %%gs:%P1,%0`.
+  //
+  // CBMC already has a pass for this. Keep the statement as OTHER so the goto
+  // model is built; remove_asm(), run from
+  // cbmc_parse_optionst::process_goto_program, then translates the asm it
+  // recognises and havocs the outputs of the asm it does not. Exiting here
+  // meant that pass was never reached.
 
   // copy as OTHER
   copy(code, OTHER, dest);
