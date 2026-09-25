@@ -42,7 +42,15 @@ void dirtyt::search_other(const goto_programt::instructiont &instruction)
       statement == ID_expression || statement == ID_array_set ||
       statement == ID_array_equal || statement == ID_array_copy ||
       statement == ID_array_replace || statement == ID_havoc_object ||
-      statement == ID_input || statement == ID_output)
+      statement == ID_input || statement == ID_output ||
+      // An address appearing in an asm operand is address-taken like any
+      // other. This was listed below as a case we do not look at, which was
+      // harmless only while remove_asm turned every asm into a SKIP; now that
+      // untranslated asm is preserved so its operands survive, missing it
+      // makes an object that is address-taken *only* inside asm look
+      // thread-exclusive, and another thread's write through that pointer
+      // invisible. See regression/thread-exclusivity/adv_Z_asm_addr.c.
+      statement == ID_asm)
     {
       forall_operands(it, code)
         find_dirty(*it);
@@ -53,7 +61,7 @@ void dirtyt::search_other(const goto_programt::instructiont &instruction)
     // statement == ID_user_specified_predicate ||
     // statement == ID_user_specified_parameter_predicates ||
     // statement == ID_user_specified_return_predicates ||
-    // statement == ID_decl || statement == ID_nondet || statement == ID_asm)
+    // statement == ID_decl || statement == ID_nondet)
   }
 }
 
