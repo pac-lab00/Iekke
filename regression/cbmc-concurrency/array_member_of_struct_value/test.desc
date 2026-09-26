@@ -1,0 +1,8 @@
+CORE
+main.c
+--ILP32 --no-assertions --pointer-check --alloc-check --memory-leak-check --unwind 12 --rounds 1 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
