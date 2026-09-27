@@ -16,6 +16,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <goto-symex/show_program.h>
 #include <goto-symex/show_vcc.h>
 #include <goto-symex/thread_exclusivity.h>
+#include <goto-symex/symmetric_arrays.h>
 #include <goto-symex/thread_spawn_loops.h>
 
 #include <chrono>
@@ -115,6 +116,23 @@ void multi_path_symex_only_checkert::generate_equation()
       bound > 0 && options.get_unsigned_int_option("rounds") > 0 &&
       !options.get_bool_option("symex-driven-lazy-loading"))
     {
+      // Report recognised symmetric array families. No consumer yet: the
+      // reduction itself has to rewrite array types in the symbol table, not
+      // just constants in the goto program, because leaving the declarations
+      // at their original size still times out (measured). Gated on an
+      // environment variable so it costs nothing until then.
+      if(getenv("LAZYPO_SHOW_SYMMETRIC_ARRAYS") != nullptr)
+      {
+        for(const auto &fam : compute_symmetric_array_families(
+              goto_model.get_goto_functions(), ns))
+        {
+          std::cout << "symmetric-array-family size=" << fam.size;
+          for(const auto &a : fam.arrays)
+            std::cout << " " << a;
+          std::cout << "\n";
+        }
+      }
+
       symex.thread_management_loops = compute_thread_management_loops(
         goto_model.get_goto_functions(), ns);
 
