@@ -27,6 +27,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <goto-symex/memory_model_pso.h>
 #include <goto-symex/memory_model_general.h>
 #include <goto-symex/slice.h>
+#include <goto-symex/thread_aware_slice.h>
 #include <goto-symex/symex_target_equation.h>
 
 #include <linking/static_lifetime_init.h>
@@ -326,8 +327,28 @@ void slice(
   // any properties to check at all?
   if(symex_target_equation.has_threads())
   {
-    // we should build a thread-aware SSA slicer
-    msg.statistics() << "no slicing due to threads" << messaget::eom;
+    // The sequential slicers are not safe here. ::slice follows intra-thread
+    // data dependence only, and --full-slice runs on the goto program before
+    // symex with no thread awareness at all -- on
+    // 28-race_reach_81-list_racing it turns a two-second FAILED into
+    // SUCCESSFUL, because a write whose only reader is another thread has no
+    // local use and looks dead. So this used to decline to slice, which left
+    // --slice-formula a silent no-op on every concurrent benchmark.
+    //
+    // thread_aware_slice keeps the property, every shared access, and
+    // everything feeding one; see its header for why that is exactly what the
+    // round-robin encoding requires, lazy_po having already emitted
+    // constraints that name those symbols.
+    if(options.get_bool_option("slice-formula"))
+    {
+      const std::size_t removed = thread_aware_slice(symex_target_equation);
+      msg.statistics() << "thread-aware slicing removed " << removed
+                       << " assignments" << messaget::eom;
+    }
+    else
+    {
+      msg.statistics() << "no slicing due to threads" << messaget::eom;
+    }
   }
   else
   {

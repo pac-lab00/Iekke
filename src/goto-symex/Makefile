@@ -42,6 +42,7 @@ SRC = auto_objects.cpp \
       symex_throw.cpp \
       thread_exclusivity.cpp \
       symmetric_arrays.cpp \
+      thread_aware_slice.cpp \
       thread_spawn_loops.cpp \
       complexity_limiter.cpp \
       # Empty last line
