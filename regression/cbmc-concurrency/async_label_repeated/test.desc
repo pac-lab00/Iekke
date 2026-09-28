@@ -1,0 +1,16 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+duplicate label
+CONVERSION ERROR
+--
+The disallowed patterns are the point of this test. Repeating
+__CPROVER_ASYNC_1 within a function is well defined -- convert_label matches
+the prefix and turns the labelled statement into a thread block, never a goto
+target -- but typecheck_label rejected it as a duplicate label, so the program
+failed with CONVERSION ERROR before any verification happened. Seven tests in
+this directory are written this way.
