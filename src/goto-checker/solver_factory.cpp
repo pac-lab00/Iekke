@@ -713,6 +713,16 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
   }
 
   // __SZH_ADD_BEGIN__ : default
+  // Gated on the same condition as the solvers themselves in get_default():
+  // these options do two things, and only one of them survives without
+  // HAVE_MINISAT2. They select Deagle's ordering-consistency solver, and they
+  // set memory_model->use_deagle, which makes memory_model_sct skip from_read
+  // because that solver derives fr from rf and ws during search. With the
+  // solver family compiled out, enabling them drops from_read and leaves
+  // nothing to derive it, so the memory-model path reports violations on
+  // race-free programs -- mutex1, sc4-sc6 and
+  // svcomp13_read_write_lock_safe among them.
+#ifdef HAVE_MINISAT2
   if(cmdline.isset("deagle-closure") || (!cmdline.isset("deagle-segment") && !cmdline.isset("deagle-icd") && !solver_set))
     options.set_option("deagle-closure", true);
 
@@ -721,6 +731,7 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
 
   if(cmdline.isset("deagle-segment"))
     options.set_option("deagle-segment", true);
+#endif
 
   if(cmdline.isset("datarace"))
     options.set_option("datarace", true);
