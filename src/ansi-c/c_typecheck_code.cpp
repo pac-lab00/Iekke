@@ -10,6 +10,8 @@ Author: Daniel Kroening, kroening@kroening.com
 /// C Language Type Checking
 
 #include "c_typecheck_base.h"
+#include <util/prefix.h>
+#include <util/cprover_prefix.h>
 
 #include <util/arith_tools.h>
 #include <util/c_types.h>
@@ -518,9 +520,19 @@ void c_typecheck_baset::typecheck_label(code_labelt &code)
   // record the label
   if(!labels_defined.emplace(code.get_label(), code.source_location()).second)
   {
-    error().source_location = code.source_location();
-    error() << "duplicate label '" << code.get_label() << "'" << eom;
-    throw 0;
+    // __CPROVER_ASYNC_n is not an ordinary label. goto_convertt::convert_label
+    // recognises it by prefix, so the suffix carries no meaning, and it
+    // replaces the labelled statement with a thread block rather than
+    // registering a goto target -- nothing can jump to it, so a repeat cannot
+    // be ambiguous. Writing __CPROVER_ASYNC_1 before each of several spawns in
+    // one function is the documented idiom and appears throughout the
+    // concurrency tests; rejecting it turned those into CONVERSION ERROR.
+    if(!has_prefix(id2string(code.get_label()), CPROVER_PREFIX "ASYNC_"))
+    {
+      error().source_location = code.source_location();
+      error() << "duplicate label '" << code.get_label() << "'" << eom;
+      throw 0;
+    }
   }
 
   typecheck_code(code.code());
