@@ -1955,6 +1955,32 @@ void lazy_pot::collect_reads_and_writes(
   // above is left in place, inert, so this can be flipped back to
   // '(prologue_end_step != ssa_steps.end())' for further investigation
   // without re-deriving it.
+  //
+  // Re-measured 2026-09-28 against the current tree, which has since gained
+  // the _Atomic RMW fix, the publication filter and arrays-uf: 44 tasks of
+  // the lazypo-mono-cur configuration under --por, four binaries one flip
+  // apart, run one at a time, with the headline cases repeated three times in
+  // isolation (spread under 1%, so these are not noise). The conclusion
+  // stands, but the --por figure above is stale. elimination_backoff_stack is
+  // now 1.72x *better* with folding on (260.9/260.8/260.3s becomes
+  // 151.5/152.4/151.4s) and fib_unsafe-10 1.40x better, while
+  // per-thread-array-join-counter is 3.13x worse (4.38s becomes 13.68s).
+  // Geometric mean over the 16 tasks taking more than a second is 0.959x --
+  // slightly worse than leaving it off -- with per-task ratios from 0.32x to
+  // 1.40x. No mode produced a wrong answer, so both folds are sound; what
+  // they are not is reliable.
+  //
+  // The mechanism the hypothesis above was reaching for: folding labels
+  // barely touches the formula at all. Cutting 20.5% of the labels buys 0.07%
+  // of the clauses, because the cs encoding is a thermometer over boolean GE
+  // symbols -- numerous and nearly free -- while the clause mass sits in the
+  // wide-bitvector read-from and SSA terms. Label folding can therefore only
+  // act on the solver's search, never on the problem's size, and which way it
+  // acts turns out to be structural rather than proportional to the labels
+  // removed: elimination_backoff_stack gains 1.72x from a 0.9% label
+  // reduction (7474 to 7409), while per-thread-array-join-counter loses 3.13x
+  // from a 15% one (272 to 230). That asymmetry, not the label count, is what
+  // any future attempt here has to predict.
   bool in_prologue = false;
 
   // Idea 7 (thread-exclusive-variable label folding, off critical path of
@@ -1972,6 +1998,14 @@ void lazy_pot::collect_reads_and_writes(
   // p/q/cur/prev/next/x: file-scope globals that are, in practice, each
   // used by exactly one thread for the entire program -- but declaration
   // scope alone doesn't tell us that, only scanning every access does).
+  //
+  // Re-measured 2026-09-28 under --por: the !this->por gate at the use sites
+  // below is still the right call. elimination_backoff_stack goes from 260.9s
+  // to 514.5s with the gate removed (1.97x worse, three reps, spread under
+  // 1%) -- worse than the A/B could show, since it simply timed out at the
+  // competition's 300s cap, and it was the only task in the sample to lose an
+  // answer. Geometric mean over the tasks taking more than a second is
+  // 1.004x, so there is nothing on average to buy that risk with.
   std::unordered_set<irep_idt> single_thread_variables;
   {
     std::unordered_map<irep_idt, std::unordered_set<std::size_t>>
