@@ -52,11 +52,7 @@ bvt boolbvt::convert_index(const index_exprt &expr)
         if(
           final_array.id() == ID_symbol || final_array.id() == ID_nondet_symbol)
         {
-          const auto &array_width_opt = bv_width.get_width_opt(array_type);
-          (void)map.get_literals(
-            final_array.get(ID_identifier),
-            array_type,
-            array_width_opt.value_or(0));
+          map.record_type(final_array.get(ID_identifier), array_type);
         }
 
         // make sure we have the index in the cache
@@ -72,9 +68,7 @@ bvt boolbvt::convert_index(const index_exprt &expr)
         // record type if array is a symbol
         if(array.id() == ID_symbol || array.id() == ID_nondet_symbol)
         {
-          const auto &array_width_opt = bv_width.get_width_opt(array_type);
-          (void)map.get_literals(
-            array.get(ID_identifier), array_type, array_width_opt.value_or(0));
+          map.record_type(array.get(ID_identifier), array_type);
         }
 
         // make sure we have the index in the cache

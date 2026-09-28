@@ -44,6 +44,17 @@ public:
     const typet &type,
     std::size_t width);
 
+  /// Record \p identifier's type without allocating any literals for it.
+  ///
+  /// For an array the decision procedure handles itself, the map is only
+  /// needed to remember the type: \ref boolbvt::bv_get_unbounded_array
+  /// rebuilds the value from the recorded indices, and never looks at the
+  /// literal map. Going through get_literals there would allocate one SAT
+  /// variable per bit, which for a large array is millions of variables that
+  /// never reach a clause. If a later caller does need the literals,
+  /// get_literals fills them in then.
+  void record_type(const irep_idt &identifier, const typet &type);
+
   void set_literals(
     const irep_idt &identifier,
     const typet &type,
