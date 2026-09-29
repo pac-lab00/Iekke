@@ -770,7 +770,17 @@ int cbmc_parse_optionst::get_goto_program(
       return CPROVER_EXIT_USAGE_ERROR;
     }
 
-    shrink_symmetric_array_families(goto_model, *instance, ui_message_handler);
+    // A bound chosen for the reduced program is unsafe on the unreduced one:
+    // the setup loop would be cut rather than completed, and a cut setup loop
+    // yields a vacuous safe result. Refuse rather than answer from it.
+    if(!shrink_symmetric_array_families(goto_model, *instance, ui_message_handler))
+    {
+      log.error() << "--symmetric-instance was requested but no family could be "
+                     "instantiated; refusing to continue, because a bound chosen "
+                     "for the reduced program is not sound on the original"
+                  << messaget::eom;
+      return CPROVER_EXIT_INTERNAL_ERROR;
+    }
   }
 
   if(cbmc_parse_optionst::process_goto_program(goto_model, options, log))

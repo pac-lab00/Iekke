@@ -1,0 +1,24 @@
+CORE
+main.c
+--no-assertions --datarace --unwind 4 --rounds 2 --por --allow-pointer-unsoundness --symmetric-instance 2 --verbosity 9
+^EXIT=6$
+^SIGNAL=0$
+^.*refusing to continue.*$
+--
+^VERIFICATION SUCCESSFUL$
+^VERIFICATION FAILED$
+--
+This program has no symmetric array family, so --symmetric-instance 2 cannot be
+applied. cbmc must produce no verdict at all rather than fall back to the
+unreduced program.
+
+The reason is that the flag never travels alone: it is set in the competition
+tuning table only alongside an --unwind chosen for the reduced program. On the
+unreduced program that bound cuts the setup loop rather than completing it, the
+unwinding assumption prunes every path, and the run reports success having
+generated nothing to check -- a wrong answer on a task whose expected verdict
+is false, and one scored far worse than the timeout it would replace.
+
+So both verdict lines are forbidden here, not just the wrong one: the failure
+has to be an exit with a diagnostic, and EXIT=6 is CPROVER_EXIT_INTERNAL_ERROR.
+Checking only for the absence of SUCCESSFUL would let a crash pass.
