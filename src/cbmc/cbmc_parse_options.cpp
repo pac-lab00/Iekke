@@ -54,6 +54,8 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <goto-programs/link_to_library.h>
 #include <goto-programs/loop_ids.h>
 #include <goto-programs/process_goto_program.h>
+#include <util/string2int.h>
+#include <goto-symex/symmetric_arrays.h>
 #include <goto-programs/read_goto_binary.h>
 #include <goto-programs/remove_skip.h>
 #include <goto-programs/remove_unused_functions.h>
@@ -743,6 +745,32 @@ int cbmc_parse_optionst::get_goto_program(
   {
     show_symbol_table(goto_model, ui_message_handler);
     return CPROVER_EXIT_SUCCESS;
+  }
+
+  // Instantiate recognised symmetric array families at a small size, before
+  // process_goto_program instruments the model.
+  //
+  // The order matters and was measured: 28-race_reach_86-lists_racing-deref is
+  // recognised as symmetric when analysed plainly and is not recognised once
+  // the memory-safety checks have been inserted, because those relate distinct
+  // slots through same-object and bounds conditions. Running afterwards would
+  // silently decline exactly the benchmarks this is for.
+  //
+  // An under-approximation: only a reported violation may be believed, so this
+  // is opt-in and never a default.
+  if(cmdline.isset("symmetric-instance"))
+  {
+    const auto instance =
+      string2optional<std::size_t>(cmdline.get_value("symmetric-instance"));
+
+    if(!instance.has_value() || *instance == 0)
+    {
+      log.error() << "--symmetric-instance takes a positive number of slots"
+                  << messaget::eom;
+      return CPROVER_EXIT_USAGE_ERROR;
+    }
+
+    shrink_symmetric_array_families(goto_model, *instance, ui_message_handler);
   }
 
   if(cbmc_parse_optionst::process_goto_program(goto_model, options, log))

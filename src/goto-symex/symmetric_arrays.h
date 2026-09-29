@@ -146,4 +146,30 @@ std::vector<symmetric_array_familyt> compute_symmetric_array_families(
   const goto_functionst &goto_functions,
   const namespacet &ns);
 
+class goto_modelt;
+class message_handlert;
+
+/// Instantiate every recognised symmetric array family at \p instance_size
+/// slots instead of its declared size.
+///
+/// This is an under-approximation: it keeps the violations that can be
+/// exhibited with that many slots and may lose others, so **only a reported
+/// violation may be believed**. A safe result at a reduced instance proves
+/// nothing, exactly as for a reduced unwinding bound.
+///
+/// Why this and not a smaller unwinding bound. The loops that build these
+/// families are setup loops: cutting one with an unwinding assumption prunes
+/// every path through it, the threads are never spawned, and the run reports
+/// success having generated no verification conditions at all. Shrinking the
+/// family instead lets the setup loop run to completion, over fewer elements.
+///
+/// \param goto_model: model to rewrite in place
+/// \param instance_size: slots to keep, typically small
+/// \param message_handler: for reporting what was rewritten
+/// \return true if any family was rewritten
+bool shrink_symmetric_array_families(
+  goto_modelt &goto_model,
+  std::size_t instance_size,
+  message_handlert &message_handler);
+
 #endif // CPROVER_GOTO_SYMEX_SYMMETRIC_ARRAYS_H
