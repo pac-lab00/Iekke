@@ -1,17 +1,19 @@
 CORE
 main.c
---unwind 2 --rounds 4 --por --allow-pointer-unsoundness --read-implication
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness
 ^EXIT=0$
 ^SIGNAL=0$
 ^VERIFICATION SUCCESSFUL$
 --
 ^VERIFICATION FAILED$
 --
---read-implication states each read's round selection as one implication per
+The read-implication form, on by default, states each read's round selection as one implication per
 round instead of a mux nested `rounds` deep. The two forms must agree, and this
 is the direction that can actually catch a mistake: dropping or weakening a
 read's constraint leaves the read free, the solver invents a value, and a safe
 program reports a violation it does not have.
+
+Runs with no flag on purpose: this is the default path.
 
 Verified discriminating by mutation: with the per-round loop made to emit
 nothing, this test reports VERIFICATION FAILED while the default encoding still
