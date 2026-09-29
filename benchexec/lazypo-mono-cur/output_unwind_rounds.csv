@@ -14,7 +14,7 @@ unreach-call,28-race_reach_86-lists_racing,400,2,
 unreach-call,mix026.oepc,2,3,2.07569
 unreach-call,linux-3.14--drivers--usb--misc--adutux.ko.cil,2,1,
 unreach-call,safe012_rmo.oepc,2,2,0.769405
-unreach-call,safestack_relacy,6,2,3616.97
+unreach-call,safestack_relacy,3,4,3616.97
 unreach-call,rfi005,2,1,1497
 unreach-call,mix019_tso.oepc,2,3,1.62117
 unreach-call,mix003.oepc,2,3,1.63302
