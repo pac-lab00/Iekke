@@ -34,6 +34,7 @@ class optionst;
 // clang-format off
 #define CBMC_OPTIONS \
   "(deagle-closure)(deagle-icd)(deagle-segment)(datarace)(goblint)(locksmith)(deadlock)" \
+  "(symmetric-instance):" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \
   OPT_FUNCTIONS \
