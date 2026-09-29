@@ -113,6 +113,7 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   options.set_option("show-points-to-sets", false);
   options.set_option("show-array-constraints", false);
   options.set_option("por", false);
+  options.set_option("read-implication", false);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 
@@ -168,6 +169,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
       log.warning() << "Enabling Partial Order Reduction"
                   << messaget::eom;
     }
+
+    if(cmdline.isset("read-implication"))
+      options.set_option("read-implication", true);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))

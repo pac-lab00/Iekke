@@ -445,8 +445,39 @@ void lazy_pot::create_read_constraints(
   {
     if(this->reads.count(global_variable) == 0)
       continue;
+    const bool implication_form = read_implication;
+
     for(const auto &read : this->reads.at(global_variable))
     {
+      if(implication_form)
+      {
+        // One-hot selection stated directly. At most one round is enabled for
+        // a given access, so at most one of these is active and it names the
+        // same write the mux would have selected.
+        for(std::size_t round = 1; round <= rounds; ++round)
+        {
+          // still created unconditionally: registering the symbol is what the
+          // rest of the encoding looks it up by
+          const symbol_exprt exec =
+            create_exec_symbol(read.label, read.num, read.thread, round);
+
+          std::optional<symbol_exprt> previous = previous_shared(
+            global_variable, read.label, read.num, read.thread, round);
+          if(!previous.has_value())
+            continue; // that branch reads `read = read`, which constrains nothing
+
+          implies_exprt constraint{
+            exec,
+            equal_exprt{
+              read.s_it->ssa_lhs,
+              typecast_exprt::conditional_cast(
+                previous.value(), read.s_it->ssa_lhs.type())}};
+          equation.constraint(
+            constraint, "read constraint", read.s_it->source);
+        }
+        continue;
+      }
+
       exprt temp_constraint = read.s_it->ssa_lhs;
       for(std::size_t round = rounds; round >= 1; --round)
       {

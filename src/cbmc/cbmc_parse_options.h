@@ -35,6 +35,7 @@ class optionst;
 #define CBMC_OPTIONS \
   "(deagle-closure)(deagle-icd)(deagle-segment)(datarace)(goblint)(locksmith)(deadlock)" \
   "(symmetric-instance):" \
+  "(read-implication)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \
   OPT_FUNCTIONS \
