@@ -1,0 +1,22 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --read-implication
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The companion to read_implication_safe, in the opposite direction: that test
+catches a read-from constraint that is too weak, this one catches a rewrite
+that is too strong.
+
+x = 2 is reachable only if a value travels from one thread to the other and
+back, so the violation needs reads taking their values from writes in different
+rounds in both directions. An implication form that lost a round, or pointed a
+round at the wrong write, would make the assumptions unsatisfiable here and
+report SUCCESSFUL having proved nothing.
+
+Note a failing verdict cannot detect a constraint that is merely missing --
+dropping constraints only adds behaviours, so the violation stays reachable.
+That is what read_implication_safe is for.

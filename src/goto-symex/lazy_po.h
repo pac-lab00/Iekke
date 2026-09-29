@@ -20,8 +20,9 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por)
-    : ns(ns), rounds(rounds), datarace(datarace), por(por)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false)
+    : ns(ns), rounds(rounds), datarace(datarace), por(por),
+      read_implication(read_implication)
   {
   }
 
@@ -31,6 +32,9 @@ private:
   const namespacet &ns;
   const std::size_t rounds;
   const bool datarace;
+  /// state each read's one-hot round selection directly instead of as a mux
+  /// nested `rounds` deep; see create_read_constraints
+  const bool read_implication = false;
   const bool por;
 
   struct shared_event
