@@ -11,6 +11,10 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include <string>
 #include "bmc_util.h"
+#include <util/pointer_expr.h>
+#include <functional>
+#include <unordered_set>
+#include <util/config.h>
 
 #include <util/json_stream.h>
 #include <util/cprover_prefix.h>
@@ -459,6 +463,109 @@ void output_coverage_report(
   }
 }
 
+
+/// Number of distinct objects the pointer encoding will have to register.
+///
+/// \ref pointer_logict::add_object strips index and member expressions and
+/// numbers what is left, so the objects are the distinct bases of the
+/// address-of expressions occurring in the equation. Counting them here, before
+/// flattening, is what lets object_bits be sized to the program rather than
+/// left at the language default.
+///
+/// Iterative rather than recursive, and keyed on the irep hash rather than a
+/// rendered string: this runs over the whole equation, which on the benchmarks
+/// that actually need it is upwards of 180000 steps.
+static std::size_t count_addressed_objects(const symex_target_equationt &equation)
+{
+  std::unordered_set<exprt, irep_hash> objects;
+  std::vector<const exprt *> work;
+
+  const auto walk = [&](const exprt &root) {
+    work.push_back(&root);
+    while(!work.empty())
+    {
+      const exprt &expr = *work.back();
+      work.pop_back();
+
+      if(expr.id() == ID_address_of && expr.operands().size() == 1)
+      {
+        // strip index/member exactly as pointer_logict::add_object does
+        const exprt *base = &expr.operands().front();
+        while(
+          (base->id() == ID_index || base->id() == ID_member) &&
+          !base->operands().empty())
+        {
+          base = &base->operands().front();
+        }
+        objects.insert(*base);
+      }
+
+      for(const auto &op : expr.operands())
+        work.push_back(&op);
+    }
+  };
+
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(step.ignore)
+      continue;
+    if(step.cond_expr.is_not_nil())
+      walk(step.cond_expr);
+    if(step.ssa_rhs.is_not_nil())
+      walk(step.ssa_rhs);
+    if(step.ssa_lhs.is_not_nil())
+      walk(step.ssa_lhs);
+    walk(step.guard);
+  }
+
+  return objects.size();
+}
+
+/// Raise object_bits to the smallest value that fits this program's objects.
+static void size_object_bits(
+  const symex_target_equationt &equation,
+  messaget &log)
+{
+  // An explicit --object-bits is the user's decision; leave it alone.
+  if(!config.bv_encoding.is_object_bits_default)
+    return;
+
+  const std::size_t needed = count_addressed_objects(equation);
+
+  // NULL and the invalid object are registered too, plus a little slack for
+  // objects the flattener introduces that are not visible as address-of here.
+  const std::size_t with_slack = needed + 8;
+
+  std::size_t bits = 1;
+  while((std::size_t(1) << bits) < with_slack &&
+        bits + 1 < config.ansi_c.pointer_width)
+  {
+    ++bits;
+  }
+
+  if(bits <= config.bv_encoding.object_bits)
+    return; // the default already fits
+
+  if(bits >= config.ansi_c.pointer_width)
+  {
+    log.warning() << "program addresses " << needed
+                  << " objects, which does not fit in a "
+                  << config.ansi_c.pointer_width << "-bit pointer"
+                  << messaget::eom;
+    return;
+  }
+
+  log.statistics() << "object bits: " << needed
+                   << " addressed objects need " << bits << " bits, raising from "
+                   << config.bv_encoding.object_bits << " (offset bits "
+                   << config.ansi_c.pointer_width - config.bv_encoding.object_bits
+                   << " -> " << config.ansi_c.pointer_width - bits << ")"
+                   << messaget::eom;
+
+  config.bv_encoding.object_bits = bits;
+}
+
+
 void postprocess_equation(
   symex_bmct &symex,
   symex_target_equationt &equation,
@@ -653,6 +760,10 @@ std::chrono::duration<double> prepare_property_decider(
     property_decider.convert_goals();
     goals_converted_early = true;
   }
+
+  // bv_pointerst reads config.bv_encoding.object_bits while flattening, so
+  // sizing it here -- after symex, before conversion -- is what takes effect.
+  size_object_bits(equation, log);
 
   redirect(data_slave);
   convert_symex_target_equation(
