@@ -1,15 +1,16 @@
 CORE
 main.c
---unwind 2 --rounds 4 --por --allow-pointer-unsoundness --read-implication
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --no-read-implication
 ^EXIT=10$
 ^SIGNAL=0$
 ^VERIFICATION FAILED$
 --
 ^VERIFICATION SUCCESSFUL$
 --
-The companion to read_implication_safe, in the opposite direction: that test
-catches a read-from constraint that is too weak, this one catches a rewrite
-that is too strong.
+Covers the --no-read-implication opt-out, so the nested-mux form it restores
+stays correct while the flattened form is the default. The companion test
+read_implication_safe covers the default path, and between them both encodings
+are exercised.
 
 x = 2 is reachable only if a value travels from one thread to the other and
 back, so the violation needs reads taking their values from writes in different

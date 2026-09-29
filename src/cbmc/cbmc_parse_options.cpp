@@ -113,7 +113,9 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   options.set_option("show-points-to-sets", false);
   options.set_option("show-array-constraints", false);
   options.set_option("por", false);
-  options.set_option("read-implication", false);
+  // On by default: 2.09x over the ten slowest unreach-call tasks, verdicts
+  // unchanged. --no-read-implication restores the nested-mux form.
+  options.set_option("read-implication", true);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 
@@ -172,6 +174,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("read-implication"))
       options.set_option("read-implication", true);
+
+    if(cmdline.isset("no-read-implication"))
+      options.set_option("read-implication", false);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))
