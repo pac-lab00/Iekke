@@ -116,12 +116,20 @@ CSV_FILE = os.path.join(os.path.dirname(__file__), "output_unwind_rounds.csv")
 
 unwind_map = {}
 round_map = {}
+# Benchmarks whose array family is instantiated at a reduced size. This is an
+# under-approximation, so it is only set where a reduced instance still exhibits
+# the violation; it travels with the reduced unwind in the same row, because
+# neither is sound for this benchmark without the other.
+instance_map = {}
 with open(CSV_FILE, newline="") as csvfile:
     reader = csv.DictReader(csvfile)
     for row in reader:
         key = (row["property"].strip(), row["benchmark"].strip())
         unwind_map[key] = int(row["unwind"])
         round_map[key] = int(row["rounds"])
+        instance = (row.get("symmetric_instance") or "").strip()
+        if instance:
+            instance_map[key] = int(instance)
 
 def get_unwind(property_name, benchmark_name):
     key = (property_name, benchmark_name)
@@ -171,7 +179,9 @@ try:
     unwind_val = get_unwind(prop, bm)
     round_val = get_round(prop, bm)
     print(f"Uso unwind={unwind_val}, round={round_val} per {bm}, property={prop}")
-    cmd = "./iekke_exe %s %s --unwind %s --rounds %s --por --verbosity 8 --glucose > deagle_tmp_output 2>&1" % (program_path, flags, unwind_val, round_val)
+    sym = instance_map.get((prop, bm))
+    sym_flag = (" --symmetric-instance %d" % sym) if sym else ""
+    cmd = "./iekke_exe %s %s --unwind %s --rounds %s%s --por --verbosity 8 --glucose > deagle_tmp_output 2>&1" % (program_path, flags, unwind_val, round_val, sym_flag)
     print(cmd)
     os.system(cmd)
     with open("deagle_tmp_output", "r", encoding="utf-8") as f:
