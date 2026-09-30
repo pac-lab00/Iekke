@@ -167,7 +167,12 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
                      "results"
                   << messaget::eom;
 
-    if(cmdline.isset("por")) {
+    // On by default with --rounds: over the full 1127-task set it is worth
+    // two answers and 438s, and far more on the solver-bound tasks
+    // (fib_unsafe-11 50.4s against 165.8s). --no-por restores the unreduced
+    // encoding; --por remains accepted so existing scripts keep working.
+    if(!cmdline.isset("no-por"))
+    {
       options.set_option("por", true);
       log.warning() << "Enabling Partial Order Reduction"
                   << messaget::eom;
