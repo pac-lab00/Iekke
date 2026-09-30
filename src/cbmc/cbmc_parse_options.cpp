@@ -117,6 +117,7 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // unchanged. --no-read-implication restores the nested-mux form.
   options.set_option("read-implication", true);
   options.set_option("glucose", false);
+  options.set_option("glucose-parallel", false);
   options.set_option("kissat", false);
 
   // Other default
@@ -177,6 +178,19 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-read-implication"))
       options.set_option("read-implication", false);
+
+    // Portfolio Glucose implies the in-process Glucose path it is a variant of.
+    if(cmdline.isset("glucose-parallel"))
+    {
+      options.set_option("glucose-parallel", true);
+      options.set_option("glucose", true);
+    }
+
+    // 0 keeps MultiSolvers' own choice, which caps at 4.
+    options.set_option(
+      "glucose-threads",
+      cmdline.isset("glucose-threads") ? cmdline.get_value("glucose-threads")
+                                       : std::string("0"));
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))

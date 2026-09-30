@@ -27,6 +27,11 @@ class Solver; // NOLINT(readability/identifiers)
 class SimpSolver; // NOLINT(readability/identifiers)
 }
 
+/// Glucose Syrup's portfolio solver, adapted to the member set
+/// \ref satcheck_glucose_baset expects. Defined in the .cpp, where the
+/// Glucose headers are available.
+class glucose_parallelt;
+
 template <typename T>
 class satcheck_glucose_baset : public cnf_solvert, public hardness_collectort
 {
@@ -94,6 +99,21 @@ public:
   const std::string solver_text() override;
   void set_frozen(literalt a) override;
   bool is_eliminated(literalt a) const;
+};
+
+/// Portfolio backend: several Glucose threads on one formula, sharing learnt
+/// clauses. Wall-clock oriented -- it spends cores to shorten elapsed time and
+/// does not reduce total CPU work, so it is only useful where cores are free.
+class satcheck_glucose_parallelt:
+  public satcheck_glucose_baset<glucose_parallelt>
+{
+public:
+  using satcheck_glucose_baset<glucose_parallelt>::satcheck_glucose_baset;
+  const std::string solver_text() override;
+
+  /// Number of portfolio threads. Left unset, MultiSolvers chooses from
+  /// available memory and caps at four.
+  void set_threads(int n);
 };
 
 #endif // CPROVER_SOLVERS_SAT_SATCHECK_GLUCOSE_H

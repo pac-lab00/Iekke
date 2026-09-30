@@ -1,0 +1,25 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --glucose --glucose-parallel --glucose-threads 2
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^Solving with Glucose Syrup (portfolio, in process)$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The portfolio backend must agree with the sequential one. A portfolio solver is
+nondeterministic in which thread answers and in the model returned, but
+satisfiability is not, so asserting the verdict is sound even though the search
+is not reproducible.
+
+The solver_text line is required as well, so the test cannot pass by silently
+falling back to the sequential backend -- which is exactly what would happen if
+the option stopped being plumbed through to solver_factory.
+
+Two threads rather than the default, so the test does not take four cores on a
+machine running the rest of the suite.
+
+The portfolio carries neither the POR decision tier (setPORVar is a no-op
+there) nor setPolarity, and it refuses assumptions rather than ignoring them,
+so agreement with --glucose is a real property to check and not a formality.

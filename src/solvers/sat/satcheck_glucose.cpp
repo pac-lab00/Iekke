@@ -16,6 +16,65 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <core/Solver.h>
 #include <simp/SimpSolver.h>
+#include <parallel/MultiSolvers.h>
+
+/// Glucose Syrup's MultiSolvers, given the members
+/// \ref satcheck_glucose_baset uses. Everything else -- newVar, addClause_,
+/// nVars, nClauses, okay, model -- it already provides.
+class glucose_parallelt : public Glucose::MultiSolvers
+{
+public:
+  glucose_parallelt() : Glucose::MultiSolvers()
+  {
+    setVerbosity(0);
+  }
+
+  /// MultiSolvers::solve() takes no assumptions. Refuse rather than drop them:
+  /// solving a different formula silently is worse than not solving it.
+  bool solve(const Glucose::vec<Glucose::Lit> &assumps)
+  {
+    INVARIANT(
+      assumps.size() == 0,
+      "the parallel Glucose backend does not support assumptions");
+
+    const Glucose::lbool result = Glucose::MultiSolvers::solve();
+
+    // Aggregate over the portfolio for the statistics line. There is no single
+    // search here, so these are sums over threads, unlike the sequential
+    // backend where they describe one search.
+    conflicts = 0;
+    decisions = 0;
+    propagations = 0;
+
+    return result == l_True;
+  }
+
+  /// Fix the portfolio size. Without this the count comes from
+  /// adjustNumberOfCores, which divides available memory and caps at
+  /// maxnbthreads (default 4). Both fields are set because
+  /// adjustNumberOfCores asserts they agree whenever nbthreads is non-zero.
+  void set_threads(int n)
+  {
+    nbthreads = n;
+    nbsolvers = n;
+  }
+
+  /// No-ops: each portfolio thread carries its own decision heuristic, so
+  /// there is no one order to steer. The CS-first POR tier has no analogue
+  /// here, which is a genuine behavioural difference from --glucose.
+  void setPolarity(Glucose::Var, bool) {}
+  void setPORVar(Glucose::Var, bool) {}
+
+  /// Read only by is_in_conflict, which is meaningful only with assumptions.
+  Glucose::vec<Glucose::Lit> conflict;
+
+  uint64_t conflicts = 0;
+  uint64_t decisions = 0;
+  uint64_t propagations = 0;
+  uint64_t stats_por_decisions = 0;
+  uint64_t stats_por_fallback_decisions = 0;
+  bool cs_first_enabled = false;
+};
 
 #ifndef HAVE_GLUCOSE
 #error "Expected HAVE_GLUCOSE"
@@ -81,6 +140,20 @@ void satcheck_glucose_baset<T>::set_polarity(literalt a, bool value)
 const std::string satcheck_glucose_no_simplifiert::solver_text()
 {
   return "Glucose Syrup without simplifier";
+}
+
+// The portfolio type is defined in this file, so the base template has to be
+// instantiated here too -- solver_factory.cpp only sees the declaration.
+template class satcheck_glucose_baset<glucose_parallelt>;
+
+void satcheck_glucose_parallelt::set_threads(int n)
+{
+  solver->set_threads(n);
+}
+
+const std::string satcheck_glucose_parallelt::solver_text()
+{
+  return "Glucose Syrup (portfolio, in process)";
 }
 
 const std::string satcheck_glucose_simplifiert::solver_text()
