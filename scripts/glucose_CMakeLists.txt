@@ -4,13 +4,6 @@
 add_library(glucose-condensed
     simp/SimpSolver.cc
     core/Solver.cc
-    parallel/MultiSolvers.cc
-    parallel/ParallelSolver.cc
-    parallel/SolverCompanion.cc
-    parallel/SharedCompanion.cc
-    parallel/ClausesBuffer.cc
-    parallel/SolverConfiguration.cc
-    utils/System.cc
 )
 
 set_target_properties(
@@ -26,4 +19,4 @@ target_include_directories(glucose-condensed
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(glucose-condensed util pthread)
+target_link_libraries(glucose-condensed util)

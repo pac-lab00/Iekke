@@ -294,19 +294,6 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
     // in-process Glucose backend is used, which knows nothing about SMS.
     const bool sms = getenv("LAZYPO_SMS") != nullptr;
 
-    // Portfolio: several Glucose threads on one formula, sharing learnt
-    // clauses. Shortens elapsed time by spending cores; it does not reduce
-    // total CPU work, and it carries neither the POR decision tier nor SMS.
-    if(options.get_bool_option("glucose-parallel"))
-    {
-      auto prop = util_make_unique<satcheck_glucose_parallelt>(message_handler);
-      const auto threads = options.get_unsigned_int_option("glucose-threads");
-      if(threads > 0)
-        prop->set_threads(static_cast<int>(threads));
-      solver->set_prop(std::move(prop));
-    }
-    else
-
     // Honour --no-sat-preprocessor here too: with the simplifier the freezing
     // that prop_conv_solvert applies to every symbol-bearing literal blocks most
     // of SatELite's work, so being able to switch it off is what makes that cost

@@ -36,7 +36,6 @@ class optionst;
   "(deagle-closure)(deagle-icd)(deagle-segment)(datarace)(goblint)(locksmith)(deadlock)" \
   "(symmetric-instance):" \
   "(read-implication)(no-read-implication)" \
-  "(glucose-parallel)(glucose-threads):" \
   "(no-por)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \
