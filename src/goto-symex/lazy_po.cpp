@@ -681,6 +681,59 @@ void lazy_pot::check_shared_event(
 void lazy_pot::create_cs_constraint(
   symex_target_equationt &equation)
 {
+  std::set<irep_idt> hoisted_guards;
+
+  if(getenv("LAZYPO_GUARD_STATS") != nullptr)
+  {
+    const auto nodes = [](const exprt &e) {
+      std::size_t n = 0;
+      std::vector<const exprt *> st{&e};
+      while(!st.empty())
+      {
+        const exprt *cur = st.back();
+        st.pop_back();
+        ++n;
+        for(const auto &op : cur->operands())
+          st.push_back(&op);
+      }
+      return n;
+    };
+
+    std::size_t slots = 0, trivial = 0, tree = 0, biggest = 0;
+    std::unordered_set<std::size_t> distinct;
+    std::size_t distinct_tree = 0;
+    for(const auto &per_thread : guards)
+    {
+      for(const auto &per_label : per_thread.second)
+      {
+        for(const auto &g : per_label.second)
+        {
+          ++slots;
+          if(g.is_true() || g.is_false())
+          {
+            ++trivial;
+            continue;
+          }
+          const std::size_t n = nodes(g);
+          tree += n;
+          if(n > biggest)
+            biggest = n;
+          if(distinct.insert(g.hash()).second)
+            distinct_tree += n;
+        }
+      }
+    }
+    std::cerr << "GUARDS slots=" << slots << " trivial=" << trivial
+              << " distinct=" << distinct.size() << " rounds=" << rounds
+              << "\n";
+    std::cerr << "GUARDS nodes_over_slots=" << tree
+              << " nodes_over_distinct=" << distinct_tree
+              << " biggest=" << biggest << "\n";
+    // Each non-trivial guard is conjoined once per round, so this is what the
+    // constraint tree carries for guards before any sharing is accounted for.
+    std::cerr << "GUARDS tree_cost_in_cs=" << (tree * rounds) << "\n";
+  }
+
   for(unsigned thread = 0; thread <= threads; ++thread)
   {
     unsigned max_num = labels[thread];
@@ -762,6 +815,9 @@ void lazy_pot::create_cs_constraint(
             enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
         }
 
+        static const bool hoist_guards =
+          getenv("LAZYPO_GUARD_HOIST") != nullptr;
+
         const auto git = guards[thread].find(label);
         const bool has_guards = (label > 0 && git != guards[thread].end());
         unsigned nmax =
@@ -770,7 +826,27 @@ void lazy_pot::create_cs_constraint(
         {
           exprt expr_5;
           if (has_guards) {
-            expr_5 = and_exprt{enabled, git->second.at(num)};
+            exprt g = git->second.at(num);
+            if(hoist_guards && !g.is_true() && !g.is_false())
+            {
+              // Define the guard once and refer to it by name afterwards, so
+              // the round loop conjoins a literal rather than re-embedding the
+              // whole path condition. The definition itself costs no clauses:
+              // a top-level `fresh symbol = expr` is bound to the expression's
+              // literal rather than asserted.
+              const irep_idt gname = "guard_T" + std::to_string(thread) + "_L" +
+                                     std::to_string(label) + "_N" +
+                                     std::to_string(num);
+              const symbol_exprt gsym{gname, bool_typet{}};
+              if(hoisted_guards.insert(gname).second)
+              {
+                equation.constraint(
+                  equal_exprt{gsym, g}, "guard definition",
+                  equation.SSA_steps.begin()->source);
+              }
+              g = gsym;
+            }
+            expr_5 = and_exprt{enabled, g};
           }
           else {
             expr_5 = enabled;
