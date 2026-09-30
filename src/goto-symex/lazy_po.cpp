@@ -364,6 +364,79 @@ void lazy_pot::operator()(
   }
   phase("pointer-alignment");
 
+  if(getenv("LAZYPO_CONSTRAINT_TALLY") != nullptr)
+  {
+    // Iterative: these expressions have overflowed the stack here before.
+    const auto node_count = [](const exprt &e) {
+      std::size_t n = 0;
+      std::vector<const exprt *> stack{&e};
+      while(!stack.empty())
+      {
+        const exprt *cur = stack.back();
+        stack.pop_back();
+        ++n;
+        for(const auto &op : cur->operands())
+          stack.push_back(&op);
+      }
+      return n;
+    };
+
+    // Tree nodes count a shared subexpression once per occurrence; ireps are
+    // shared, so that over-states anything that reuses structure -- a guard
+    // conjoined once per round is one object, not R. Count distinct nodes by
+    // hash as well, and the gap between the two IS the sharing.
+    std::map<std::string, std::pair<std::size_t, std::size_t>> by_kind;
+    std::map<std::string, std::unordered_set<std::size_t>> uniq_by_kind;
+    std::size_t total_nodes = 0, total_constraints = 0;
+    for(const auto &step : equation.SSA_steps)
+    {
+      if(!step.is_constraint())
+        continue;
+      const std::size_t n = node_count(step.cond_expr);
+      {
+        auto &u = uniq_by_kind[id2string(step.comment)];
+        std::vector<const exprt *> st{&step.cond_expr};
+        while(!st.empty())
+        {
+          const exprt *cur = st.back();
+          st.pop_back();
+          if(!u.insert(cur->hash()).second)
+            continue; // already seen this subterm: shared, not a new node
+          for(const auto &op : cur->operands())
+            st.push_back(&op);
+        }
+      }
+      auto &slot = by_kind[id2string(step.comment)];
+      ++slot.first;
+      slot.second += n;
+      ++total_constraints;
+      total_nodes += n;
+    }
+
+    std::vector<std::pair<std::string, std::pair<std::size_t, std::size_t>>>
+      sorted(by_kind.begin(), by_kind.end());
+    std::sort(
+      sorted.begin(), sorted.end(),
+      [](const std::pair<std::string, std::pair<std::size_t, std::size_t>> &a,
+         const std::pair<std::string, std::pair<std::size_t, std::size_t>> &b) {
+        return a.second.second > b.second.second;
+      });
+
+    std::cerr << "TALLY total constraints=" << total_constraints
+              << " nodes=" << total_nodes << "\n";
+    for(const auto &e : sorted)
+    {
+      const double pct =
+        total_nodes > 0 ? 100.0 * static_cast<double>(e.second.second) /
+                            static_cast<double>(total_nodes)
+                        : 0.0;
+      std::cerr << "TALLY " << e.first << " count=" << e.second.first
+                << " nodes=" << e.second.second << " (" << pct << "%)"
+                << " distinct=" << uniq_by_kind[e.first].size() << "\n";
+    }
+  }
+
+
   log.statistics()
     << "lazy_po total: "
     << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -720,7 +793,11 @@ void lazy_pot::create_cs_constraint(
         // !GE(t,r-1,label+1), so only the remaining direction,
         // GE(t,r-1,label) (i.e. cs^{r-1} >= label), needs to be added
         // here -- together they pin cs^{r-1} == label exactly as before.
-        if(label != 0 && round > 1)
+        // An optional strengthening, not part of the definition of the
+        // schedule: gated so its ~10% of the encoding can be priced.
+        static const bool no_tighten =
+          getenv("LAZYPO_NO_CS_TIGHTEN") != nullptr;
+        if(label != 0 && round > 1 && !no_tighten)
         {
           exprt witness = false_exprt{};
           for(unsigned num = 0; num < nmax; ++num)
