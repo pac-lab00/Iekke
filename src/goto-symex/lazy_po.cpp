@@ -267,7 +267,12 @@ void lazy_pot::operator()(
       create_low_tot_symbol(equation);
     }
 
-    create_atomic_canonical(equation);
+    // POR's pruning, not part of the definition of a schedule: dropping it
+    // admits more schedules, so verdicts must not change. Gated so the ~40% of
+    // the encoding it and its feeder symbols occupy can be priced, the way the
+    // context-boundary tightening was.
+    if(getenv("LAZYPO_NO_ATOMIC_CANON") == nullptr)
+      create_atomic_canonical(equation);
     phase("canonicality+NRP/LOW");
 
     if(getenv("LAZYPO_TAG_DEBUG"))
