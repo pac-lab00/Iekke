@@ -1,0 +1,16 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --no-narrow-shared
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+The same program as narrow_shared_mutex with the narrowing turned off. The two
+encodings have to agree; this is the arm that says so.
+
+--no-narrow-shared reproduces the pre-narrowing formula to the digit on the
+benchmarks it was measured on (28-race_reach_81-list_racing: 184325 variables,
+695392 clauses either way), so it is also the control for showing that the
+change is confined to the narrowed path.

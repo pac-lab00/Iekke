@@ -2,6 +2,10 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_po.h"
+#include <util/pointer_offset_size.h>
+#include <util/byte_operators.h>
+#include <string>
+#include <map>
 #include <algorithm>
 #include <set>
 #include <cstdlib>
@@ -450,19 +454,286 @@ void lazy_pot::operator()(
     << "ms" << messaget::eom;
 }
 
+
+/// Drop the L2 counter so every version of an object maps to one name. The L1
+/// frame suffix stays: that is what global_variables is keyed on.
+static irep_idt narrowing_base(const exprt &expr)
+{
+  if(expr.id() != ID_symbol)
+    return irep_idt{};
+  std::string id = id2string(to_symbol_expr(expr).get_identifier());
+  const std::size_t hash = id.find('#');
+  if(hash != std::string::npos)
+    id.erase(hash);
+  return irep_idt{id};
+}
+
+namespace
+{
+/// What the equation does to one shared object, as far as narrowing cares.
+struct object_usaget
+{
+  bool read_seen = false;
+  bool unusable = false;  ///< a use that would observe bits outside the range
+  std::size_t lo = 0;
+  std::size_t hi = 0;
+
+  void read(std::size_t offset_bits, std::size_t width_bits)
+  {
+    if(!read_seen)
+    {
+      lo = offset_bits;
+      hi = offset_bits + width_bits;
+      read_seen = true;
+    }
+    else
+    {
+      lo = std::min(lo, offset_bits);
+      hi = std::max(hi, offset_bits + width_bits);
+    }
+  }
+};
+} // namespace
+
+/// Can an assignment producing `base` with this right-hand side be narrowed?
+/// Only shapes whose bits outside the read range are the object's own previous
+/// bits, fresh nondeterminism, or a constant -- none of which a read can
+/// distinguish once the bare-use check below has passed.
+static bool narrowing_rhs_ok(const exprt &expr, const irep_idt &base)
+{
+  if(expr.id() == ID_nondet_symbol || expr.is_constant())
+    return true;
+  if(expr.id() == ID_symbol)
+    return narrowing_base(expr) == base; // a copy between versions
+  if(
+    expr.id() == ID_byte_update_little_endian ||
+    expr.id() == ID_byte_update_big_endian)
+  {
+    return narrowing_rhs_ok(expr.operands()[0], base);
+  }
+  if(expr.id() == ID_if) // a phi over two acceptable versions
+  {
+    return narrowing_rhs_ok(expr.operands()[1], base) &&
+           narrowing_rhs_ok(expr.operands()[2], base);
+  }
+  if(expr.id() == ID_typecast)
+    return narrowing_rhs_ok(expr.operands()[0], base);
+  return false;
+}
+
+static void narrowing_scan(
+  const exprt &,
+  const namespacet &,
+  const std::set<irep_idt> &,
+  std::map<irep_idt, object_usaget> &);
+
+/// Walk a right-hand side narrowing_rhs_ok accepted. Its shape is understood,
+/// so the object's own symbols in it are not bare uses; the values written and
+/// the phi conditions still go through the general scan.
+static void narrowing_scan_accepted(
+  const exprt &expr,
+  const irep_idt &base,
+  const namespacet &ns,
+  const std::set<irep_idt> &tracked,
+  std::map<irep_idt, object_usaget> &usage)
+{
+  if(expr.id() == ID_if)
+  {
+    narrowing_scan(expr.operands()[0], ns, tracked, usage);
+    narrowing_scan_accepted(expr.operands()[1], base, ns, tracked, usage);
+    narrowing_scan_accepted(expr.operands()[2], base, ns, tracked, usage);
+  }
+  else if(expr.id() == ID_typecast)
+  {
+    narrowing_scan_accepted(expr.operands()[0], base, ns, tracked, usage);
+  }
+  else if(
+    expr.id() == ID_byte_update_little_endian ||
+    expr.id() == ID_byte_update_big_endian)
+  {
+    // a write does not widen the chain -- see the file comment
+    narrowing_scan_accepted(expr.operands()[0], base, ns, tracked, usage);
+    narrowing_scan(expr.operands()[1], ns, tracked, usage);
+    narrowing_scan(expr.operands()[2], ns, tracked, usage);
+  }
+  // symbol / nondet_symbol / constant: nothing to record
+}
+
+/// Record the byte ranges reads take out of each tracked object, and flag any
+/// use that would observe it some other way.
+static void narrowing_scan(
+  const exprt &expr,
+  const namespacet &ns,
+  const std::set<irep_idt> &tracked,
+  std::map<irep_idt, object_usaget> &usage)
+{
+  // Taking an object's address does not observe its value; by the time symex
+  // has produced this equation every dereference has already been resolved
+  // into the byte_extract/byte_update forms handled here. field_sensitivityt
+  // skips ID_address_of for the same reason.
+  if(expr.id() == ID_address_of)
+    return;
+
+  const bool is_extract = expr.id() == ID_byte_extract_little_endian ||
+                          expr.id() == ID_byte_extract_big_endian;
+  const bool is_update = expr.id() == ID_byte_update_little_endian ||
+                         expr.id() == ID_byte_update_big_endian;
+
+  if(is_extract || is_update)
+  {
+    const irep_idt base = narrowing_base(expr.operands()[0]);
+    if(!base.empty() && tracked.count(base) != 0)
+    {
+      auto &u = usage[base];
+      const auto offset = numeric_cast<mp_integer>(expr.operands()[1]);
+      const typet &accessed_type =
+        is_extract ? expr.type() : expr.operands()[2].type();
+      const auto width = pointer_offset_bits(accessed_type, ns);
+      if(!offset.has_value() || !width.has_value() || *offset < 0)
+        u.unusable = true;
+      else if(is_extract)
+      {
+        u.read(
+          numeric_cast_v<std::size_t>(*offset) * 8,
+          numeric_cast_v<std::size_t>(*width));
+      }
+
+      // operand 0 is accounted for; the rest can still hold other uses
+      for(std::size_t i = 1; i < expr.operands().size(); ++i)
+        narrowing_scan(expr.operands()[i], ns, tracked, usage);
+      return;
+    }
+  }
+
+  const irep_idt base = narrowing_base(expr);
+  if(!base.empty() && tracked.count(base) != 0)
+  {
+    // a bare occurrence: a whole-object copy, comparison or argument. The
+    // chain has to keep every bit this could observe.
+    usage[base].unusable = true;
+  }
+
+  for(const auto &op : expr.operands())
+    narrowing_scan(op, ns, tracked, usage);
+}
+
+void lazy_pot::compute_narrowings(const symex_target_equationt &equation)
+{
+  narrowings.clear();
+  if(!narrow_shared)
+    return;
+
+  std::set<irep_idt> tracked;
+  for(const auto &v : global_variables)
+    if(writes.count(v) != 0)
+      tracked.insert(v);
+  if(tracked.empty())
+    return;
+
+  std::map<irep_idt, object_usaget> usage;
+  for(const auto &step : equation.SSA_steps)
+  {
+    bool lhs_handled = false;
+    if(!step.ssa_lhs.is_nil() && step.is_assignment())
+    {
+      const irep_idt lhs_base = narrowing_base(step.ssa_lhs);
+      if(!lhs_base.empty() && tracked.count(lhs_base) != 0)
+      {
+        if(narrowing_rhs_ok(step.ssa_rhs, lhs_base))
+        {
+          narrowing_scan_accepted(step.ssa_rhs, lhs_base, ns, tracked, usage);
+          lhs_handled = true;
+        }
+        else
+          usage[lhs_base].unusable = true;
+      }
+    }
+
+    if(!step.ssa_rhs.is_nil() && !lhs_handled)
+      narrowing_scan(step.ssa_rhs, ns, tracked, usage);
+    // for an assignment or a decl cond_expr is just `ssa_lhs == ssa_rhs`, so
+    // scanning it would re-read the target as a bare use of itself
+    if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
+      narrowing_scan(step.cond_expr, ns, tracked, usage);
+    if(!step.guard.is_nil())
+      narrowing_scan(step.guard, ns, tracked, usage);
+  }
+
+  for(const auto &v : tracked)
+  {
+    const auto it = usage.find(v);
+    if(it == usage.end() || it->second.unusable || !it->second.read_seen)
+      continue;
+    const auto full =
+      pointer_offset_bits(writes.at(v).front().s_it->ssa_lhs.type(), ns);
+    if(!full.has_value() || *full <= 0)
+      continue;
+    const std::size_t lo = it->second.lo;
+    const std::size_t hi = it->second.hi;
+    // byte_extract addresses bytes, so only a byte-aligned slice can be named
+    if(lo % 8 != 0 || (hi - lo) % 8 != 0)
+      continue;
+    if(hi - lo >= numeric_cast_v<std::size_t>(*full))
+      continue;
+    narrowings.emplace(v, narrowingt{lo, hi - lo});
+  }
+}
+
+exprt lazy_pot::narrowed_value(const irep_idt &variable, const exprt &value) const
+{
+  const auto it = narrowings.find(variable);
+  if(it == narrowings.end())
+    return value;
+  return make_byte_extract(
+    value,
+    from_integer(it->second.offset_bits / 8, c_index_type()),
+    unsignedbv_typet(it->second.width_bits));
+}
+
+typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
+{
+  const auto it = narrowings.find(variable);
+  if(it == narrowings.end())
+    return type;
+  return unsignedbv_typet(it->second.width_bits);
+}
+
 void lazy_pot::create_write_constraints(
   symex_target_equationt &equation)
 {
+  // Both this chain and create_read_constraints, which runs straight after,
+  // are built from it.
+  compute_narrowings(equation);
+
   for(auto global_variable : global_variables)
   {
     if(this->writes.count(global_variable) == 0)
       continue;
-    exprt previous = this->writes.at(global_variable).front().s_it->ssa_lhs;
+    const ssa_exprt &initial =
+      this->writes.at(global_variable).front().s_it->ssa_lhs;
+    const typet chain_type = narrowed_type(global_variable, initial.type());
+
+    // The chain's round-0 element is the object's value before the first
+    // write. Unnarrowed that is the SSA symbol itself; narrowed it has to be a
+    // symbol of the slice's type, since the chain is typed symbol_exprt, so
+    // name one and tie it to the slice.
+    symbol_exprt sentinel = initial;
+    exprt previous = initial;
+    if(narrowings.count(global_variable) != 0)
+    {
+      sentinel = symbol_exprt{
+        id2string(initial.get_identifier()) + "_T0_L0_R0", chain_type};
+      equation.constraint(
+        equal_exprt{sentinel, narrowed_value(global_variable, initial)},
+        "write constraint " + id2string(global_variable),
+        this->writes.at(global_variable).front().s_it->source);
+      previous = sentinel;
+    }
 
     irep_idt sentinel_id_name = "id_T0_L0_N0_R0_V"+id2string(global_variable);
     symbol_exprt sentinel_id_symbol{sentinel_id_name, unsignedbv_typet(bit_writes[global_variable])};
     lazy_variable first_lazy_struct = lazy_variable{
-      0, 0, 0, 0, 0, this->writes.at(global_variable).front().s_it->ssa_lhs, sentinel_id_symbol};
+      0, 0, 0, 0, 0, sentinel, sentinel_id_symbol};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
 
     for(std::size_t round = 1; round <= rounds; ++round)
@@ -474,7 +745,7 @@ void lazy_pot::create_write_constraints(
           write.thread,
           round,
           write.s_it->ssa_lhs,
-          write.s_it->ssa_lhs.type());
+          chain_type);
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
                              std::to_string(write.label) + "_N" + std::to_string(write.num) +
                              "_R" + std::to_string(round)+ "_V"+id2string(global_variable);
@@ -489,11 +760,14 @@ void lazy_pot::create_write_constraints(
 
         equal_exprt constraint{
           lazy_variable_exprt,
-          if_exprt{exec, write.s_it->ssa_lhs,
-                   typecast_exprt::conditional_cast(
-                     previous, write.s_it->ssa_lhs.type())}};
+          if_exprt{exec,
+                   narrowed_value(global_variable, write.s_it->ssa_lhs),
+                   typecast_exprt::conditional_cast(previous, chain_type)}};
 
-        equation.constraint(constraint, "write constraint", write.s_it->source);
+        equation.constraint(
+          constraint,
+          "write constraint " + id2string(global_variable),
+          write.s_it->source);
 
         previous = lazy_variable_exprt;
       }
@@ -547,16 +821,22 @@ void lazy_pot::create_read_constraints(
           implies_exprt constraint{
             exec,
             equal_exprt{
-              read.s_it->ssa_lhs,
+              narrowed_value(global_variable, read.s_it->ssa_lhs),
               typecast_exprt::conditional_cast(
-                previous.value(), read.s_it->ssa_lhs.type())}};
+                previous.value(),
+                narrowed_type(global_variable, read.s_it->ssa_lhs.type()))}};
           equation.constraint(
-            constraint, "read constraint", read.s_it->source);
+            constraint,
+            "read constraint " + id2string(global_variable),
+            read.s_it->source);
         }
         continue;
       }
 
-      exprt temp_constraint = read.s_it->ssa_lhs;
+      const exprt read_value = narrowed_value(global_variable, read.s_it->ssa_lhs);
+      const typet read_type =
+        narrowed_type(global_variable, read.s_it->ssa_lhs.type());
+      exprt temp_constraint = read_value;
       for(std::size_t round = rounds; round >= 1; --round)
       {
         const symbol_exprt exec =
@@ -567,17 +847,18 @@ void lazy_pot::create_read_constraints(
         if(previous.has_value())
         {
           temp_constraint = if_exprt{exec,
-            typecast_exprt::conditional_cast(
-              previous.value(), read.s_it->ssa_lhs.type()),
+            typecast_exprt::conditional_cast(previous.value(), read_type),
             temp_constraint};
         }
         else {
-          temp_constraint = if_exprt{exec, read.s_it->ssa_lhs, temp_constraint};
+          temp_constraint = if_exprt{exec, read_value, temp_constraint};
         }
       }
-      equal_exprt final_constraint{read.s_it->ssa_lhs, temp_constraint};
+      equal_exprt final_constraint{read_value, temp_constraint};
       equation.constraint(
-        final_constraint, "read constraint", read.s_it->source);
+        final_constraint,
+        "read constraint " + id2string(global_variable),
+        read.s_it->source);
     }
     std::reverse(lazy_variables_read[global_variable].begin(), lazy_variables_read[global_variable].end());
   }

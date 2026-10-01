@@ -7,6 +7,7 @@
 #include "symex_target_equation.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -20,9 +21,9 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
-      read_implication(read_implication)
+      read_implication(read_implication), narrow_shared(narrow_shared)
   {
   }
 
@@ -36,6 +37,25 @@ private:
   /// nested `rounds` deep; see create_read_constraints
   const bool read_implication = false;
   const bool por;
+  /// carry only the byte range a shared object is read through; see
+  /// compute_narrowings
+  const bool narrow_shared = false;
+
+  /// The byte range of a shared object that the equation ever reads, for
+  /// objects whose chain can safely carry only that range.
+  struct narrowingt
+  {
+    std::size_t offset_bits;
+    std::size_t width_bits;
+  };
+  std::map<irep_idt, narrowingt> narrowings;
+
+  void compute_narrowings(const symex_target_equationt &);
+  /// The value the lazy chain carries for `variable`: the whole value, or the
+  /// slice of it that reads observe.
+  exprt narrowed_value(const irep_idt &variable, const exprt &value) const;
+  /// The type that value has.
+  typet narrowed_type(const irep_idt &variable, const typet &type) const;
 
   struct shared_event
   {

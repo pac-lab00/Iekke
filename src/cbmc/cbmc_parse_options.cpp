@@ -116,6 +116,12 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // On by default: 2.09x over the ten slowest unreach-call tasks, verdicts
   // unchanged. --no-read-implication restores the nested-mux form.
   options.set_option("read-implication", true);
+  // A shared object is carried through the lazy chain once per round at its
+  // full width -- but a pthread_mutex_t is 192 bits of which CBMC's own model
+  // reads one byte. Carrying only the bytes some read observes costs nothing
+  // where it does not apply and is most of the formula where it does.
+  // --no-narrow-shared restores the full-width chain.
+  options.set_option("narrow-shared", true);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 
@@ -182,6 +188,12 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-read-implication"))
       options.set_option("read-implication", false);
+
+    if(cmdline.isset("narrow-shared"))
+      options.set_option("narrow-shared", true);
+
+    if(cmdline.isset("no-narrow-shared"))
+      options.set_option("narrow-shared", false);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))
