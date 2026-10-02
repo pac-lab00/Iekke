@@ -714,23 +714,87 @@ typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
 
 void lazy_pot::compute_private_objects()
 {
+  // LAZYPO_THREAD_TALLY reports the classification itself, independently of
+  // whether the flag then acts on it: how many threads actually touch each
+  // shared object, against the per-program decision goto-symex made.
+  if(getenv("LAZYPO_THREAD_TALLY") != nullptr)
+  {
+    for(const auto &gv : global_variables)
+    {
+      std::set<unsigned> write_threads, read_threads, all;
+      std::size_t nw = 0, nr = 0;
+      if(writes.count(gv))
+        for(const auto &w : writes.at(gv))
+        {
+          write_threads.insert(w.thread);
+          ++nw;
+        }
+      if(reads.count(gv))
+        for(const auto &r : reads.at(gv))
+        {
+          read_threads.insert(r.thread);
+          ++nr;
+        }
+      all = write_threads;
+      all.insert(read_threads.begin(), read_threads.end());
+      std::cerr << "THREAD_TALLY " << gv << " threads=" << all.size()
+                << " write_threads=" << write_threads.size()
+                << " read_threads=" << read_threads.size() << " writes=" << nw
+                << " reads=" << nr << "\n";
+    }
+  }
+
   private_objects.clear();
   if(!thread_private)
     return;
 
-  for(auto it = global_variables.begin(); it != global_variables.end();)
+  // Classify first, and only act if the result is worth having. Rewriting the
+  // chain renumbers variables, and a multi-million-clause SAT search is
+  // chaotic in that respect: on elimination_backoff_stack only 38 of 9472
+  // shared accesses are private, the formula shrinks by 0.09%, and the search
+  // still lands on a trajectory 1.44x worse (283s -> 408s, three runs each).
+  // Measured against 13.4% of accesses on 28-race_reach_81-list_racing, where
+  // the same change takes 20.7% off the formula. So: do not perturb a formula
+  // this is not materially improving.
+  std::set<irep_idt> candidates;
+  std::size_t private_accesses = 0, total_accesses = 0;
+
+  for(const auto &variable : global_variables)
   {
     std::set<unsigned> threads;
-    if(writes.count(*it) != 0)
-      for(const auto &w : writes.at(*it))
+    std::size_t accesses = 0;
+    if(writes.count(variable) != 0)
+      for(const auto &w : writes.at(variable))
+      {
         threads.insert(w.thread);
-    if(reads.count(*it) != 0)
-      for(const auto &r : reads.at(*it))
+        ++accesses;
+      }
+    if(reads.count(variable) != 0)
+      for(const auto &r : reads.at(variable))
+      {
         threads.insert(r.thread);
+        ++accesses;
+      }
 
+    total_accesses += accesses;
     // One thread, or none left after the publication filter: no other thread
     // can interleave a write, so the schedule cannot change what a read sees.
     if(threads.size() <= 1)
+    {
+      candidates.insert(variable);
+      private_accesses += accesses;
+    }
+  }
+
+  // A hundredth of the accesses is the threshold; it separates the two
+  // measured cases by more than an order of magnitude, and below it the chain
+  // that would be rewritten is too small to pay for the renumbering.
+  if(total_accesses == 0 || private_accesses * 100 < total_accesses)
+    return;
+
+  for(auto it = global_variables.begin(); it != global_variables.end();)
+  {
+    if(candidates.count(*it) != 0)
     {
       private_objects.insert(*it);
       auto w = writes.find(*it);

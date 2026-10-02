@@ -146,8 +146,9 @@ type, tied to the slice by one extra constraint.
 
 ## 3. `--thread-private`: objects only one thread touches
 
-**Implemented, but OFF by default** pending the regression in
-[Measured](#measured-1) below. Pass `--thread-private` to enable it.
+Pass `--thread-private` to enable it. Still off by default pending a re-run of
+the unresolved tasks at the real competition timeout -- see
+[Measured](#measured-1).
 
 Sharedness is decided upstream **per program, never per object**: goto-symex
 emits `shared_read`/`shared_write` for any global or heap object as soon as
@@ -184,6 +185,12 @@ access's `exec`) rather than by a particular round.
 `create_cs_constraint` iterates threads and labels, **not** `global_variables`,
 so the schedule encoding and the `exec` symbols are untouched.
 
+**It classifies first and only then acts.** Rewriting the chain renumbers
+variables, and a multi-million-clause SAT search is chaotic in that respect, so
+the transformation is skipped entirely unless the private objects hold at least
+**1% of all shared accesses**. See the diagnosis below for why that gate
+exists and what the two measured points are.
+
 > **Trap.** Leaving the accesses in `reads`/`writes` while removing the object
 > from `global_variables` crashes `create_ABW_windows` with *"window threshold
 > must skip id 0"*: the POR windows index into a lazy chain the object no
@@ -200,22 +207,34 @@ On the 398 tuned tasks, as the increment on top of `--narrow-shared`:
     77 tasks faster by >10%,  20 slower by >10%
     1 ANSWER LOST
 
-**Why it is not on by default.** `elimination_backoff_stack` (`u2 r2`) goes
-from FAILED to TIMEOUT. In isolation, with a 600s budget, both arms still
-answer FAILED but the times are **283s -> 408s**, so this is a real 1.44x
-slowdown and not a boundary flake. Bisected cleanly: with only
-`--narrow-shared` that task runs in 284s, so the narrowing is neutral there and
-`--thread-private` alone causes it.
+**Two caveats on that "lost answer".** First, those runs used `TO=300`, and
+the competition timeout is **900 s** -- `elimination_backoff_stack` answers in
+408 s, so nothing is actually lost at the real limit. Second, it was a real
+slowdown regardless, and worth understanding.
 
-The formula gets *smaller* and the search gets *longer*, which is the same
-search-shape effect already recorded for POR -- variable numbering and VSIDS
-ordering, not encoding size. By the project's ordering (wrong answers, then
-answers, then time) a lost answer is a priority-2 loss bought with a
-priority-3 gain, so this waits until the cause is understood or mitigated.
+### Diagnosed: perturbation without benefit
 
-Options on the table, none taken yet: understand and fix the search-shape
-effect; or have the wrapper retry a timeout with `--no-thread-private`, which
-keeps both the answer and the speedup at the cost of one wasted run in 398.
+In isolation, three runs each, `elimination_backoff_stack` went **283 / 283 /
+321 s** to **408 / 411 / 460 s** -- a reproducible 1.44x, not a boundary flake.
+Bisected: with only `--narrow-shared` it runs in 284 s, so the narrowing is
+neutral there and `--thread-private` alone caused it.
+
+The cause is that on that benchmark the change does **nothing**:
+
+| | single-thread accesses | formula change |
+|---|---:|---:|
+| `elimination_backoff_stack` | 38 of 9472 = **0.4%** | 6 023 725 -> 6 018 418 = **-0.09%** |
+| `28-race_reach_81-list_racing` | 37 of 276 = **13.4%** | 424 544 -> 336 547 = **-20.7%** |
+
+It removes essentially nothing from the 6-million-clause formula, but it still
+renumbers every variable after the first change, and the search lands on a
+different and worse trajectory. It is search luck, not a structural cost --
+which is why the aggregate goes the other way 77 times out of 97.
+
+So the fix follows from the diagnosis: **do not perturb a formula you are not
+materially improving.** With the 1% gate, `--thread-private` leaves
+`elimination_backoff_stack` **byte-identical** to the baseline (1 647 137
+variables, 6 023 725 clauses) while `28-race_reach_81` keeps the full 20.7%.
 
 ---
 
@@ -268,6 +287,10 @@ distinct objects each goto instruction reads.
 * **Rebuilding a benchmark with a narrower type is confounded** -- it also
   changes allocated object sizes. It suggested 17x where the honest figure was
   far smaller.
+* **The competition timeout is 900 s, not 300.** Every harness here defaults
+  to `TO=300`, and that alone turned `--thread-private` into a "lost answer"
+  for a task that answers in 408 s. Use `TO=900` for any judgement about
+  whether something costs an answer.
 * **Always measure on the `.i` file.** The `.c` and `.i` forms give identical
   clause counts but different CNF and different solver paths.
 * **Never sweep processes by name.** A harness that killed every process named
