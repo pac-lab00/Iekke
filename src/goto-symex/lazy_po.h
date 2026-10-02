@@ -22,10 +22,10 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
       read_implication(read_implication), narrow_shared(narrow_shared),
-      thread_private(thread_private)
+      thread_private(thread_private), array_rf(array_rf)
   {
   }
 
@@ -55,6 +55,9 @@ private:
   /// state the read-from of objects only one thread touches once, in program
   /// order, instead of once per round; see compute_private_objects
   const bool thread_private = false;
+  /// answer an array element read by matching the writes, instead of carrying
+  /// the whole array through the chain; see compute_array_rf
+  const bool array_rf = false;
 
   void compute_narrowings(const symex_target_equationt &);
   /// The value the lazy chain carries for `variable`: the whole value, or the
@@ -169,6 +172,24 @@ private:
   std::unordered_map<irep_idt, std::vector<shared_event>> private_reads;
 
   void dead_audit(const symex_target_equationt &);
+  /// One shared write to an array object, decomposed. A point update matches a
+  /// read when its index agrees; a whole-array constant initialiser matches
+  /// every index, which is also how it serves as the value before it.
+  struct array_writet
+  {
+    std::size_t event;     ///< index into writes.at(variable)
+    bool whole_array;      ///< a constant initialiser rather than a point update
+    exprt index;
+    exprt value;
+  };
+  /// objects whose element reads are resolved by matching writes
+  std::map<irep_idt, std::vector<array_writet>> array_rf_writes;
+  /// the element value before any write, from the constant initialiser
+  std::map<irep_idt, exprt> array_rf_default;
+
+  void compute_array_rf(const symex_target_equationt &);
+  void create_array_rf_constraints(symex_target_equationt &);
+
   void compute_private_objects();
   void create_private_constraints(symex_target_equationt &);
   exprt happens_in_any_round(const shared_event &);

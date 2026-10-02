@@ -2,6 +2,7 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_po.h"
+#include <optional>
 #include <tuple>
 #include <util/expr_util.h>
 #include <util/pointer_offset_size.h>
@@ -182,6 +183,9 @@ void lazy_pot::operator()(
   compute_private_objects();
   phase("private-objects");
 
+  compute_array_rf(equation);
+  phase("array-rf-plan");
+
   if(por)
   {
     build_atomic_blocks();
@@ -196,6 +200,9 @@ void lazy_pot::operator()(
 
   create_private_constraints(equation);
   phase("private-reads");
+
+  create_array_rf_constraints(equation);
+  phase("array-read-from");
 
   if(por)
   {
@@ -712,6 +719,335 @@ typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
 }
 
 
+
+/// Is this expression a whole-array constant whose elements are all the same
+/// value? `array_of` says so directly; an `array` literal has to be checked.
+/// Anything else cannot serve as the value an element holds before any write.
+static std::optional<exprt> uniform_array_value(const exprt &expr)
+{
+  if(expr.id() == ID_array_of)
+    return to_array_of_expr(expr).what();
+
+  if(expr.id() == ID_array && !expr.operands().empty())
+  {
+    const exprt &first = expr.operands().front();
+    for(const auto &op : expr.operands())
+      if(op != first)
+        return {};
+    return first;
+  }
+
+  return {};
+}
+
+void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
+{
+  array_rf_writes.clear();
+  array_rf_default.clear();
+  if(!array_rf)
+    return;
+
+  // candidates: shared objects of array type that are still in the chain
+  std::set<irep_idt> candidates;
+  for(const auto &v : global_variables)
+  {
+    if(writes.count(v) == 0 || writes.at(v).empty())
+      continue;
+    if(writes.at(v).front().s_it->ssa_lhs.type().id() == ID_array)
+      candidates.insert(v);
+  }
+  if(candidates.empty())
+    return;
+
+  // Every occurrence of one of these objects has to be either the base of a
+  // `with` or the array of an `index`. A use of the array as a whole -- a copy,
+  // a comparison, an argument -- has no index to match on, so the object keeps
+  // its chain. Taking an address does not read the value.
+  std::set<irep_idt> opaque;
+  std::map<irep_idt, std::vector<std::pair<irep_idt, exprt>>> index_uses;
+  std::function<void(const exprt &)> scan = [&](const exprt &expr) {
+    if(expr.id() == ID_address_of)
+      return;
+
+    if(expr.id() == ID_index)
+    {
+      const auto &idx = to_index_expr(expr);
+      if(idx.array().id() == ID_symbol)
+      {
+        const irep_idt id = to_symbol_expr(idx.array()).get_identifier();
+        const irep_idt base = narrowing_base(idx.array());
+        if(candidates.count(base) != 0)
+        {
+          index_uses[base].emplace_back(id, idx.index());
+          scan(idx.index());
+          return;
+        }
+      }
+    }
+
+    if(expr.id() == ID_with && !expr.operands().empty() &&
+       expr.operands()[0].id() == ID_symbol &&
+       candidates.count(narrowing_base(expr.operands()[0])) != 0)
+    {
+      for(std::size_t i = 1; i < expr.operands().size(); ++i)
+        scan(expr.operands()[i]);
+      return;
+    }
+
+    if(expr.id() == ID_symbol)
+    {
+      const irep_idt base = narrowing_base(expr);
+      if(candidates.count(base) != 0)
+        opaque.insert(base);
+      return;
+    }
+
+    for(const auto &op : expr.operands())
+      scan(op);
+  };
+
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(!step.ssa_rhs.is_nil())
+      scan(step.ssa_rhs);
+    if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
+      scan(step.cond_expr);
+    if(!step.guard.is_nil())
+      scan(step.guard);
+  }
+
+  // how each write decomposes, by the assignment that produces its symbol
+  std::map<irep_idt, exprt> defining_rhs;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(!step.is_assignment() || step.ssa_lhs.is_nil())
+      continue;
+    if(candidates.count(narrowing_base(step.ssa_lhs)) == 0)
+      continue;
+    defining_rhs.emplace(
+      to_symbol_expr(step.ssa_lhs).get_identifier(), step.ssa_rhs);
+  }
+
+  for(const auto &variable : candidates)
+  {
+    if(opaque.count(variable) != 0)
+      continue;
+
+    // every index use has to name a shared read event, since that is what
+    // places it in the schedule
+    std::set<irep_idt> read_symbols;
+    for(const auto &r : reads.count(variable) ? reads.at(variable)
+                                              : std::vector<shared_event>{})
+      read_symbols.insert(to_symbol_expr(r.s_it->ssa_lhs).get_identifier());
+    bool indices_placed = true;
+    for(const auto &use : index_uses[variable])
+      if(read_symbols.count(use.first) == 0)
+        indices_placed = false;
+    if(!indices_placed)
+      continue;
+
+    std::vector<array_writet> decomposed;
+    std::optional<exprt> initial;
+    bool ok = true;
+    const auto &ws = writes.at(variable);
+    for(std::size_t i = 0; i < ws.size(); ++i)
+    {
+      const irep_idt id = to_symbol_expr(ws[i].s_it->ssa_lhs).get_identifier();
+      const auto it = defining_rhs.find(id);
+      if(it == defining_rhs.end())
+      {
+        ok = false;
+        break;
+      }
+      const exprt &rhs = it->second;
+      if(rhs.id() == ID_with && rhs.operands().size() == 3 &&
+         narrowing_base(rhs.operands()[0]) == variable)
+      {
+        decomposed.push_back(
+          array_writet{i, false, rhs.operands()[1], rhs.operands()[2]});
+        continue;
+      }
+      const auto uniform = uniform_array_value(rhs);
+      if(uniform.has_value())
+      {
+        if(!initial.has_value())
+          initial = uniform;
+        decomposed.push_back(
+          array_writet{i, true, nil_exprt{}, uniform.value()});
+        continue;
+      }
+      ok = false; // a havoc, a copy, a non-uniform literal: no single value
+      break;
+    }
+    if(!ok || !initial.has_value())
+      continue;
+
+    // Cost model. The chain amortises over reads and wins on a narrow object
+    // read often; the nested selection wins on a wide object written rarely.
+    // Require a clear margin, so a formula is not perturbed for little.
+    const typet &t = ws.front().s_it->ssa_lhs.type();
+    const auto array_bits = pointer_offset_bits(t, ns);
+    const auto elem_bits = pointer_offset_bits(to_array_type(t).element_type(), ns);
+    if(!array_bits.has_value() || !elem_bits.has_value() || *elem_bits <= 0)
+      continue;
+    const double W = static_cast<double>(ws.size());
+    const double Rd =
+      reads.count(variable) ? static_cast<double>(reads.at(variable).size()) : 0;
+    const double R = static_cast<double>(rounds);
+    const double index_bits = 32;
+    const double chain_cost = (W + Rd) * R * static_cast<double>(array_bits->to_long());
+    // a read at round r sees the writes of every earlier round too, so the
+    // selection is W*R deep on average half the time
+    const double rf_cost =
+      Rd * R * (W * R / 2.0) * (static_cast<double>(elem_bits->to_long()) + index_bits);
+    if(rf_cost <= 0 || chain_cost < 2.0 * rf_cost)
+      continue;
+
+    array_rf_writes.emplace(variable, std::move(decomposed));
+    array_rf_default.emplace(variable, initial.value());
+  }
+}
+
+void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
+{
+  if(array_rf_writes.empty())
+    return;
+
+  // position of an event in the schedule chain, for the "writes before this
+  // read" test; the same lexicographic order the chain is sorted by
+  const auto before = [](std::size_t ra, const shared_event &a,
+                         std::size_t rb, const shared_event &b) {
+    return std::make_tuple(ra, a.thread, a.label, a.num) <
+           std::make_tuple(rb, b.thread, b.label, b.num);
+  };
+
+  std::size_t fresh = 0;
+  std::map<std::pair<irep_idt, std::string>, symbol_exprt> replacement;
+
+  for(const auto &entry : array_rf_writes)
+  {
+    const irep_idt &variable = entry.first;
+    const auto &ws = writes.at(variable);
+    const exprt &dflt = array_rf_default.at(variable);
+    const typet elem_type = to_array_type(
+      ws.front().s_it->ssa_lhs.type()).element_type();
+
+    std::map<irep_idt, const shared_event *> read_of;
+    if(reads.count(variable))
+      for(const auto &r : reads.at(variable))
+        read_of.emplace(to_symbol_expr(r.s_it->ssa_lhs).get_identifier(), &r);
+
+    // rewrite every index(V#k, j) into a fresh scalar, and say what it holds
+    std::function<void(exprt &)> rewrite = [&](exprt &expr) {
+      if(expr.id() == ID_address_of)
+        return;
+
+      if(expr.id() == ID_index && expr.operands()[0].id() == ID_symbol &&
+         narrowing_base(expr.operands()[0]) == variable)
+      {
+        const irep_idt id =
+          to_symbol_expr(expr.operands()[0]).get_identifier();
+        const auto rd = read_of.find(id);
+        if(rd != read_of.end())
+        {
+          exprt index = expr.operands()[1];
+          rewrite(index);
+          const auto key =
+            std::make_pair(id, index.pretty());
+          auto it = replacement.find(key);
+          if(it == replacement.end())
+          {
+            const symbol_exprt elt{
+              "arf_" + id2string(id) + "_" + std::to_string(fresh++),
+              elem_type};
+
+            for(std::size_t round = 1; round <= rounds; ++round)
+            {
+              // The write that wins is the LAST one before this read in
+              // schedule order, so the candidates have to be folded in
+              // increasing position -- the one wrapped last ends up outermost
+              // and takes priority. Folding them in any other order silently
+              // elects the wrong write: with the writes walked backwards and
+              // the rounds forwards, the outermost became the FIRST write at
+              // the LAST round, i.e. the zero initialiser, which forced every
+              // read to 0 and proved away a reachable violation.
+              std::vector<std::pair<std::tuple<std::size_t, unsigned, unsigned, unsigned>,
+                                    std::size_t>> candidates;
+              for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
+              {
+                const auto &aw = entry.second[wi];
+                for(std::size_t wr = 1; wr <= rounds; ++wr)
+                {
+                  if(!before(wr, ws[aw.event], round, *rd->second))
+                    continue;
+                  candidates.emplace_back(
+                    std::make_tuple(wr, ws[aw.event].thread, ws[aw.event].label,
+                                    ws[aw.event].num),
+                    wi);
+                }
+              }
+              std::sort(candidates.begin(), candidates.end());
+
+              exprt selected = typecast_exprt::conditional_cast(dflt, elem_type);
+              for(const auto &candidate : candidates)
+              {
+                const auto &aw = entry.second[candidate.second];
+                const symbol_exprt wexec = create_exec_symbol(
+                  ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread,
+                  std::get<0>(candidate.first));
+                exprt matches = aw.whole_array
+                  ? static_cast<exprt>(wexec)
+                  : static_cast<exprt>(and_exprt{
+                      wexec,
+                      equal_exprt{
+                        typecast_exprt::conditional_cast(aw.index, index.type()),
+                        index}});
+                selected = if_exprt{
+                  matches,
+                  typecast_exprt::conditional_cast(aw.value, elem_type),
+                  selected};
+              }
+              const symbol_exprt rexec = create_exec_symbol(
+                rd->second->label, rd->second->num, rd->second->thread, round);
+              equation.constraint(
+                implies_exprt{rexec, equal_exprt{elt, selected}},
+                "array read-from " + id2string(variable),
+                rd->second->s_it->source);
+            }
+
+            it = replacement.emplace(key, elt).first;
+          }
+          expr = it->second;
+          return;
+        }
+      }
+
+      for(auto &op : expr.operands())
+        rewrite(op);
+    };
+
+    for(auto &step : equation.SSA_steps)
+    {
+      if(step.ignore)
+        continue;
+      // the assignments that build the array are no longer needed: nothing
+      // reads the array value any more
+      if(step.is_assignment() && !step.ssa_lhs.is_nil() &&
+         narrowing_base(step.ssa_lhs) == variable)
+      {
+        step.ignore = true;
+        continue;
+      }
+      if(!step.ssa_rhs.is_nil())
+        rewrite(step.ssa_rhs);
+      if(!step.cond_expr.is_nil())
+        rewrite(step.cond_expr);
+      if(!step.guard.is_nil())
+        rewrite(step.guard);
+    }
+  }
+}
+
 void lazy_pot::compute_private_objects()
 {
   // LAZYPO_THREAD_TALLY reports the classification itself, independently of
@@ -1076,16 +1412,19 @@ void lazy_pot::create_write_constraints(
         const symbol_exprt exec =
           create_exec_symbol(write.label, write.num, write.thread, round);
 
-        equal_exprt constraint{
-          lazy_variable_exprt,
-          if_exprt{exec,
-                   narrowed_value(global_variable, write.s_it->ssa_lhs),
-                   typecast_exprt::conditional_cast(previous, chain_type)}};
+        if(array_rf_writes.count(global_variable) == 0)
+        {
+          equal_exprt constraint{
+            lazy_variable_exprt,
+            if_exprt{exec,
+                     narrowed_value(global_variable, write.s_it->ssa_lhs),
+                     typecast_exprt::conditional_cast(previous, chain_type)}};
 
-        equation.constraint(
-          constraint,
-          "write constraint " + id2string(global_variable),
-          write.s_it->source);
+          equation.constraint(
+            constraint,
+            "write constraint " + id2string(global_variable),
+            write.s_it->source);
+        }
 
         previous = lazy_variable_exprt;
       }
@@ -1114,6 +1453,10 @@ void lazy_pot::create_read_constraints(
   for(auto global_variable : global_variables)
   {
     if(this->reads.count(global_variable) == 0)
+      continue;
+    // an --array-rf object answers its element reads directly; it has no
+    // array value for a read to be tied to
+    if(array_rf_writes.count(global_variable) != 0)
       continue;
     const bool implication_form = read_implication;
 

@@ -38,6 +38,7 @@ class optionst;
   "(read-implication)(no-read-implication)" \
   "(narrow-shared)(no-narrow-shared)" \
   "(thread-private)(no-thread-private)" \
+  "(array-rf)(no-array-rf)" \
   "(no-por)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \

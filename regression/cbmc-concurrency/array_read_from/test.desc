@@ -1,0 +1,29 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --array-rf
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`a[i] = v` is `a#2 = with(a#1, i, v)` in the SSA, so an array write is a
+read-modify-write of the WHOLE array and the lazy chain has to carry every
+element once per (write, round). Array objects are 64-90% of the formula across
+the data-race family for that reason, and neither arrays-uf=auto nor
+--narrow-shared reaches it: the first keeps the array-valued terms, the second
+slices byte ranges and an array has no fixed width.
+
+--array-rf answers an element read by matching the writes instead --
+ite(exec(w) && i_w == j, val_w, ... , default) over the writes before it in
+schedule order -- so the cost stops depending on the array's size. A cost model
+decides per object, and the flag is off by default pending evaluation, so this
+test passes it explicitly.
+
+The array is 1000 elements on purpose: the cost model leaves a small array on
+the chain, and the test would then prove nothing.
+
+This is the under-constraining direction: a[idx] can only hold 0, 1 or 2, so a
+read left free to invent a value makes this safe program report a violation it
+does not have. Narrowing is visible here too -- 59933 clauses on the chain,
+26823 with --array-rf.

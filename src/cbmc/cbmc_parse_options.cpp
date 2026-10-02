@@ -133,6 +133,12 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // already recorded for POR. A lost answer outranks a time gain here, so
   // this waits until that is understood. See src/goto-symex/lazy_po.md.
   options.set_option("thread-private", false);
+  // An array write is a read-modify-write of the whole array in the SSA, so the
+  // chain carries every element once per round, and array objects are 64-90% of
+  // the formula across the data-race family. --array-rf answers an element read
+  // by matching the writes instead, which stops the cost depending on the
+  // array's size. Off by default, pending evaluation.
+  options.set_option("array-rf", false);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 
@@ -211,6 +217,12 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-thread-private"))
       options.set_option("thread-private", false);
+
+    if(cmdline.isset("array-rf"))
+      options.set_option("array-rf", true);
+
+    if(cmdline.isset("no-array-rf"))
+      options.set_option("array-rf", false);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))
