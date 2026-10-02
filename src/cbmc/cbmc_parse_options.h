@@ -37,6 +37,7 @@ class optionst;
   "(symmetric-instance):" \
   "(read-implication)(no-read-implication)" \
   "(narrow-shared)(no-narrow-shared)" \
+  "(thread-private)(no-thread-private)" \
   "(no-por)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \

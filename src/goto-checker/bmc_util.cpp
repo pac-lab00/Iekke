@@ -580,7 +580,7 @@ void postprocess_equation(
   {
     if(options.get_unsigned_int_option("rounds") > 0)
     {
-      lazy_pot(ns, options.get_unsigned_int_option("rounds"), options.get_bool_option("datarace"), options.get_bool_option("por"), options.get_bool_option("read-implication"), options.get_bool_option("narrow-shared"))(
+      lazy_pot(ns, options.get_unsigned_int_option("rounds"), options.get_bool_option("datarace"), options.get_bool_option("por"), options.get_bool_option("read-implication"), options.get_bool_option("narrow-shared"), options.get_bool_option("thread-private"))(
         equation, ui_message_handler);
     }
     else

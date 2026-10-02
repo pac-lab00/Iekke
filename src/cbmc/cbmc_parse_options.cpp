@@ -122,6 +122,17 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // where it does not apply and is most of the formula where it does.
   // --no-narrow-shared restores the full-width chain.
   options.set_option("narrow-shared", true);
+  // Sharedness is decided per program, not per object, so an object only one
+  // thread ever touches still gets a rounds-deep chain for a read-from that
+  // program order already fixes. --thread-private states it once instead.
+  //
+  // OFF by default: it makes 77 of the 398 tuned tasks more than 10% faster
+  // but loses one answer -- elimination_backoff_stack goes 283s -> 408s, a
+  // real 1.44x slowdown in isolation, not a timeout flake. The formula gets
+  // smaller and the search gets longer, the same variable-numbering effect
+  // already recorded for POR. A lost answer outranks a time gain here, so
+  // this waits until that is understood. See src/goto-symex/lazy_po.md.
+  options.set_option("thread-private", false);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 
@@ -194,6 +205,12 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-narrow-shared"))
       options.set_option("narrow-shared", false);
+
+    if(cmdline.isset("thread-private"))
+      options.set_option("thread-private", true);
+
+    if(cmdline.isset("no-thread-private"))
+      options.set_option("thread-private", false);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))

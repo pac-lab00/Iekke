@@ -2,6 +2,8 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_po.h"
+#include <tuple>
+#include <util/expr_util.h>
 #include <util/pointer_offset_size.h>
 #include <util/byte_operators.h>
 #include <string>
@@ -177,6 +179,9 @@ void lazy_pot::operator()(
                 << " (ssa_lhs non e' un symbol_exprt; quelle scritture sono "
                    "invisibili agli altri thread)" << messaget::eom;
 
+  compute_private_objects();
+  phase("private-objects");
+
   if(por)
   {
     build_atomic_blocks();
@@ -188,6 +193,9 @@ void lazy_pot::operator()(
 
   create_read_constraints(equation);
   phase("base-reads");
+
+  create_private_constraints(equation);
+  phase("private-reads");
 
   if(por)
   {
@@ -627,6 +635,11 @@ void lazy_pot::compute_narrowings(const symex_target_equationt &equation)
   for(const auto &v : global_variables)
     if(writes.count(v) != 0)
       tracked.insert(v);
+  // compute_private_objects has already moved the single-thread objects out of
+  // global_variables, and they are narrowed on the same terms
+  for(const auto &v : private_objects)
+    if(private_writes.count(v) != 0)
+      tracked.insert(v);
   if(tracked.empty())
     return;
 
@@ -664,8 +677,8 @@ void lazy_pot::compute_narrowings(const symex_target_equationt &equation)
     const auto it = usage.find(v);
     if(it == usage.end() || it->second.unusable || !it->second.read_seen)
       continue;
-    const auto full =
-      pointer_offset_bits(writes.at(v).front().s_it->ssa_lhs.type(), ns);
+    const auto &ws = writes.count(v) != 0 ? writes.at(v) : private_writes.at(v);
+    const auto full = pointer_offset_bits(ws.front().s_it->ssa_lhs.type(), ns);
     if(!full.has_value() || *full <= 0)
       continue;
     const std::size_t lo = it->second.lo;
@@ -698,9 +711,250 @@ typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
   return unsignedbv_typet(it->second.width_bits);
 }
 
+
+void lazy_pot::compute_private_objects()
+{
+  private_objects.clear();
+  if(!thread_private)
+    return;
+
+  for(auto it = global_variables.begin(); it != global_variables.end();)
+  {
+    std::set<unsigned> threads;
+    if(writes.count(*it) != 0)
+      for(const auto &w : writes.at(*it))
+        threads.insert(w.thread);
+    if(reads.count(*it) != 0)
+      for(const auto &r : reads.at(*it))
+        threads.insert(r.thread);
+
+    // One thread, or none left after the publication filter: no other thread
+    // can interleave a write, so the schedule cannot change what a read sees.
+    if(threads.size() <= 1)
+    {
+      private_objects.insert(*it);
+      auto w = writes.find(*it);
+      if(w != writes.end())
+      {
+        private_writes.emplace(*it, std::move(w->second));
+        writes.erase(w);
+      }
+      auto r = reads.find(*it);
+      if(r != reads.end())
+      {
+        private_reads.emplace(*it, std::move(r->second));
+        reads.erase(r);
+      }
+      it = global_variables.erase(it);
+    }
+    else
+      ++it;
+  }
+}
+
+/// "this access happens at all", i.e. the thread reaches it within the round
+/// bound. Exactly the disjunction over rounds of the per-round exec, which is
+/// what a private object's read-from has to be guarded by: which round it lands
+/// in cannot change the answer, only whether it is reached.
+exprt lazy_pot::happens_in_any_round(const shared_event &event)
+{
+  exprt::operandst per_round;
+  per_round.reserve(rounds);
+  for(std::size_t round = 1; round <= rounds; ++round)
+    per_round.push_back(
+      create_exec_symbol(event.label, event.num, event.thread, round));
+  if(per_round.size() == 1)
+    return per_round.front();
+  return disjunction(per_round);
+}
+
+void lazy_pot::create_private_constraints(symex_target_equationt &equation)
+{
+  for(const auto &variable : private_objects)
+  {
+    if(private_writes.count(variable) == 0 || private_reads.count(variable) == 0)
+      continue; // nothing observes the object, so it needs no chain at all
+
+    const auto &ws = private_writes.at(variable);
+    const typet chain_type =
+      narrowed_type(variable, ws.front().s_it->ssa_lhs.type());
+
+    // Same convention as create_write_constraints: the value before any write
+    // is the first write's own ssa_lhs, and a read with nothing before it is
+    // left unconstrained rather than tied to that sentinel.
+    std::vector<exprt> chain;
+    chain.reserve(ws.size());
+    exprt previous = narrowed_value(variable, ws.front().s_it->ssa_lhs);
+
+    for(const auto &write : ws)
+    {
+      const symbol_exprt lazy_variable_exprt{
+        id2string(to_symbol_expr(write.s_it->ssa_lhs).get_identifier()) +
+          "_PRIV",
+        chain_type};
+
+      equation.constraint(
+        equal_exprt{
+          lazy_variable_exprt,
+          if_exprt{happens_in_any_round(write),
+                   narrowed_value(variable, write.s_it->ssa_lhs),
+                   typecast_exprt::conditional_cast(previous, chain_type)}},
+        "private write constraint " + id2string(variable),
+        write.s_it->source);
+
+      chain.push_back(lazy_variable_exprt);
+      previous = lazy_variable_exprt;
+    }
+
+    for(const auto &read : private_reads.at(variable))
+    {
+      // The last write before this read in the thread's own program order.
+      // Scanning the whole vector rather than stopping at the first write that
+      // is not earlier: the chain is built in collection order, and this does
+      // not have to assume that order is sorted by (label, num).
+      bool found = false;
+      std::size_t before = 0;
+      std::pair<unsigned, unsigned> best{0, 0};
+      for(std::size_t i = 0; i < ws.size(); ++i)
+      {
+        const std::pair<unsigned, unsigned> here{ws[i].label, ws[i].num};
+        if(here < std::make_pair(read.label, read.num) &&
+           (!found || best < here))
+        {
+          found = true;
+          best = here;
+          before = i;
+        }
+      }
+      if(!found)
+        continue; // reads the pre-first-write value, which constrains nothing
+
+      equation.constraint(
+        implies_exprt{
+          happens_in_any_round(read),
+          equal_exprt{narrowed_value(variable, read.s_it->ssa_lhs),
+                      typecast_exprt::conditional_cast(
+                        chain[before], chain_type)}},
+        "private read constraint " + id2string(variable),
+        read.s_it->source);
+    }
+  }
+}
+
+
+namespace
+{
+/// Collect every symbol identifier occurring in an expression.
+void dead_audit_symbols(const exprt &expr, std::set<irep_idt> &out)
+{
+  if(expr.id() == ID_symbol)
+    out.insert(to_symbol_expr(expr).get_identifier());
+  for(const auto &op : expr.operands())
+    dead_audit_symbols(op, out);
+}
+} // namespace
+
+void lazy_pot::dead_audit(const symex_target_equationt &equation)
+{
+  // every symbol the equation reads anywhere other than as a shared-read target
+  std::set<irep_idt> used;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(step.is_shared_read())
+      continue; // the read's own lhs is not a use of itself
+    if(!step.ssa_rhs.is_nil())
+      dead_audit_symbols(step.ssa_rhs, used);
+    if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
+      dead_audit_symbols(step.cond_expr, used);
+    if(!step.guard.is_nil())
+      dead_audit_symbols(step.guard, used);
+  }
+
+  std::size_t dead = 0, live = 0;
+  const auto report = [&](const irep_idt &variable,
+                          const std::vector<shared_event> &rs,
+                          const std::vector<shared_event> *ws) {
+    std::set<unsigned> lines;
+    std::size_t d = 0;
+    for(const auto &r : rs)
+    {
+      lines.insert(static_cast<unsigned>(
+        std::atoi(id2string(r.s_it->source.pc->source_location().get_line())
+                    .c_str())));
+      const irep_idt id =
+        to_symbol_expr(r.s_it->ssa_lhs).get_identifier();
+      if(used.count(id) == 0)
+      {
+        ++d;
+        ++dead;
+      }
+      else
+        ++live;
+    }
+    std::cerr << "DEAD_AUDIT " << variable << " reads=" << rs.size()
+              << " dead_reads=" << d << " distinct_read_lines=" << lines.size()
+              << " writes=" << (ws != nullptr ? ws->size() : 0) << "\n";
+  };
+
+  std::set<irep_idt> all;
+  for(const auto &e : reads)
+    all.insert(e.first);
+  for(const auto &e : writes)
+    all.insert(e.first);
+  for(const auto &e : private_reads)
+    all.insert(e.first);
+  for(const auto &e : private_writes)
+    all.insert(e.first);
+
+  static const std::vector<shared_event> none;
+  for(const auto &v : all)
+  {
+    const auto *rs = reads.count(v)           ? &reads.at(v)
+                     : private_reads.count(v) ? &private_reads.at(v)
+                                              : &none;
+    const auto *ws = writes.count(v)           ? &writes.at(v)
+                     : private_writes.count(v) ? &private_writes.at(v)
+                                               : nullptr;
+    report(v, *rs, ws);
+  }
+  std::cerr << "DEAD_AUDIT TOTAL dead_reads=" << dead << " live_reads=" << live
+            << "\n";
+
+  // Fan-out: one source-level access through a pointer that may alias k
+  // objects becomes k shared accesses, each with its own rounds-deep chain.
+  // The .i file puts whole statements on one line, so source lines cannot
+  // separate program points -- (thread, label, num) can.
+  // Key on the goto instruction itself. Label and num cannot answer this: the
+  // dereference of a pointer with k targets expands into k separate shared
+  // accesses, and each one is given its own label, so by label they all look
+  // like distinct program points. The instruction they came from is shared.
+  std::map<const void *, std::set<irep_idt>> at_point;
+  for(const auto *m : {&reads, &private_reads})
+    for(const auto &entry : *m)
+      for(const auto &r : entry.second)
+        at_point[static_cast<const void *>(&*r.s_it->source.pc)]
+          .insert(entry.first);
+
+  std::map<std::size_t, std::size_t> histogram;
+  std::size_t accesses = 0;
+  for(const auto &p : at_point)
+  {
+    ++histogram[p.second.size()];
+    accesses += p.second.size();
+  }
+  std::cerr << "DEAD_AUDIT FANOUT read program points=" << at_point.size()
+            << " shared reads=" << accesses << "\n";
+  for(const auto &h : histogram)
+    std::cerr << "DEAD_AUDIT FANOUT   " << h.second << " points read "
+              << h.first << " object(s)\n";
+}
+
 void lazy_pot::create_write_constraints(
   symex_target_equationt &equation)
 {
+  if(getenv("LAZYPO_DEAD_AUDIT") != nullptr)
+    dead_audit(equation);
+
   // Both this chain and create_read_constraints, which runs straight after,
   // are built from it.
   compute_narrowings(equation);

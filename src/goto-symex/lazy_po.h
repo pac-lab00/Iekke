@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <optional>
 #include <vector>
 
@@ -21,9 +22,10 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
-      read_implication(read_implication), narrow_shared(narrow_shared)
+      read_implication(read_implication), narrow_shared(narrow_shared),
+      thread_private(thread_private)
   {
   }
 
@@ -49,6 +51,10 @@ private:
     std::size_t width_bits;
   };
   std::map<irep_idt, narrowingt> narrowings;
+
+  /// state the read-from of objects only one thread touches once, in program
+  /// order, instead of once per round; see compute_private_objects
+  const bool thread_private = false;
 
   void compute_narrowings(const symex_target_equationt &);
   /// The value the lazy chain carries for `variable`: the whole value, or the
@@ -154,6 +160,18 @@ private:
   std::unordered_map<unsigned, symbol_exprt> dr_atom;
   std::unordered_map<unsigned, symbol_exprt> dr_loc;
   std::unordered_set<irep_idt> global_variables;
+  /// objects moved out of global_variables by compute_private_objects, with
+  /// their accesses moved out of reads/writes as well -- the POR windows and
+  /// the canonicality constraints look those maps up by variable and index
+  /// into a lazy chain these objects no longer have
+  std::set<irep_idt> private_objects;
+  std::unordered_map<irep_idt, std::vector<shared_event>> private_writes;
+  std::unordered_map<irep_idt, std::vector<shared_event>> private_reads;
+
+  void dead_audit(const symex_target_equationt &);
+  void compute_private_objects();
+  void create_private_constraints(symex_target_equationt &);
+  exprt happens_in_any_round(const shared_event &);
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;

@@ -1,0 +1,33 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --thread-private
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+goto-symex marks an access shared if the object is global or heap and more than
+one thread exists; it never asks which threads actually touch that object. So a
+global only main ever touches still gets a lazy chain of rounds x accesses
+full-width constraints, for a read-from that main's own program order already
+fixes. --thread-private, on by default, states it once instead, over a chain in
+program order guarded by "this access happens in some round";
+--no-thread-private restores the per-round chain.
+
+Such an object is also taken out of global_variables, so POR, the canonicality
+constraints and data-race detection skip it -- correct, because an object one
+thread touches cannot race.
+
+Passes --thread-private explicitly: the flag is off by default, because
+it loses an answer on elimination_backoff_stack (283s -> 408s in isolation).
+See src/goto-symex/lazy_po.md.
+
+Discriminating. The assertion pins down that the read sees the LAST write
+before it in program order, under that write's guard, so a static chain that
+picked the wrong link -- the first write, or the one from the branch not taken
+-- would report a violation this program does not have. Verified by mutation:
+with the assertion changed to g == 1 the same program reports VERIFICATION
+FAILED.
+
+The optimisation is observable here: 3787 clauses without it, 2160 with.
