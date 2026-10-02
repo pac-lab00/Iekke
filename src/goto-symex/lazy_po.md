@@ -2,7 +2,7 @@
 
 This documents the round-robin read-from encoding in `lazy_po.cpp`, what the
 formula it builds is actually made of, and the three optimisations built on top
-of it -- one on by default, two held back pending evaluation. It is written to be read next to
+of it -- two on by default, one still opt-in. It is written to be read next to
 the code.
 
 Every number here was measured, not estimated. How to re-measure any of it is
@@ -241,7 +241,7 @@ variables, 6 023 725 clauses) while `28-race_reach_81` keeps the full 20.7%.
 
 ## 4. `--array-rf`: answer an element read by matching the writes
 
-Pass `--array-rf` to enable it. Off by default pending the 398-task evaluation.
+**On by default.** `--no-array-rf` restores the array-valued chain.
 
 `a[i] = v` is `a#2 = with(a#1, i, v)` in the SSA, so **an array write is a
 read-modify-write of the whole array**, and the chain has to carry every element
@@ -318,11 +318,40 @@ stays off there. The flag requires a 2x margin before firing.
     queue_longer         521479 -> 170182       ( 3.1x)
     stack_longest-1       90639 -> 37070        ( 2.4x)
 
-Validated where it fires **and** values matter -- the array-heavy benchmarks
-under `unreach-call`, 63 tasks, **zero verdict differences**, with the six
-expected-false ones still reporting FAILED on formulas 3x to 12x smaller
-(`25_stack_longer-1` 527 442 -> 41 830; `26_stack_cas_longer-1` 768 918 ->
-67 646). Aggregate 20.9M -> 14.5M clauses.
+### The full evaluation, at the 900 s competition timeout
+
+537 runs: the 76 array-heavy tasks under `no-data-race` and again under
+`unreach-call`, the 398 tuned tasks at their own bounds, and a POR on/off x
+array-rf on/off grid.
+
+| set | tasks shrinking >10% | verdict differences |
+|---|---|---|
+| no-data-race | **67 of 76** | 0 |
+| unreach-call | **50 of 63** | 0 |
+| tuned 398 | **94 of 398** | 0 real (two unresolved-vs-unresolved) |
+
+**Zero verdict differences anywhere**, including on every expected-false task
+-- the direction that catches an encoding which proves a violation away. Best
+**13.75x** on the clause count, **median 1.43x** per task. On the tuned 398 both
+arms give 377 correct and 3 wrong.
+
+### Orthogonal to partial order reduction
+
+Measured as a 2x2 over the array-heavy family, excluding `twalock` which alone
+is 82% of that set's clauses and would drown every sum:
+
+| | clauses | time |
+|---|---:|---:|
+| POR on, array-rf off | 45 204 153 | 117.1 s |
+| **POR on, array-rf ON** | **33 688 699** | **104.3 s** |
+| POR off, array-rf off | 43 601 782 | 147.0 s |
+| POR off, array-rf ON | 32 169 088 | 134.2 s |
+
+`--array-rf` is worth **1.34x** in clauses with POR on and **1.36x** with POR
+off. POR is worth **1.26x** in time with array-rf off and **1.29x** with it on.
+They act on different things -- POR on the search, this on the encoding -- and
+neither substitutes for the other. No verdict disagreed across the four
+configurations.
 
 ### The bug this nearly shipped with
 
@@ -490,7 +519,7 @@ In `regression/cbmc-concurrency/`:
 | `thread_private_object_shared_chain` | the `--no-thread-private` arm |
 | `array_read_from` | the under-constraining direction, with the array large enough that the cost model turns `--array-rf` on |
 | `array_read_from_violation` | the **over-constraining** direction -- a reachable violation that must still be found; this is the one that caught the ordering bug |
-| `array_read_from_chain` | the default path, which has to agree |
+| `array_read_from_chain` | the `--no-array-rf` arm, which has to agree |
 
 `--thread-private` is off by default, so its two tests pass it explicitly.
 
