@@ -765,7 +765,9 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
   // its chain. Taking an address does not read the value.
   std::set<irep_idt> opaque;
   std::map<irep_idt, std::vector<std::pair<irep_idt, exprt>>> index_uses;
-  std::function<void(const exprt &)> scan = [&](const exprt &expr) {
+  const bool why = getenv("LAZYPO_ARRAY_WHY") != nullptr;
+  std::function<void(const exprt &, const irep_idt &)> scan =
+    [&](const exprt &expr, const irep_idt &parent) {
     if(expr.id() == ID_address_of)
       return;
 
@@ -779,7 +781,7 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
         if(candidates.count(base) != 0)
         {
           index_uses[base].emplace_back(id, idx.index());
-          scan(idx.index());
+          scan(idx.index(), expr.id());
           return;
         }
       }
@@ -790,30 +792,46 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
        candidates.count(narrowing_base(expr.operands()[0])) != 0)
     {
       for(std::size_t i = 1; i < expr.operands().size(); ++i)
-        scan(expr.operands()[i]);
+        scan(expr.operands()[i], expr.id());
       return;
     }
 
     if(expr.id() == ID_symbol)
     {
       const irep_idt base = narrowing_base(expr);
-      if(candidates.count(base) != 0)
-        opaque.insert(base);
+      if(candidates.count(base) != 0 && opaque.insert(base).second && why)
+        std::cerr << "ARRAY_WHY_DETAIL " << base << " used bare inside a "
+                  << parent << "\n";
       return;
     }
 
     for(const auto &op : expr.operands())
-      scan(op);
+      scan(op, expr.id());
   };
 
   for(const auto &step : equation.SSA_steps)
   {
-    if(!step.ssa_rhs.is_nil())
-      scan(step.ssa_rhs);
+    // `a#3 = a#2` copies one version of the object to another. It does not
+    // observe the array as a whole, so it must not force the chain to stay --
+    // and the lambda cannot tell, since it never sees the left-hand side.
+    // twalock declined for exactly this: __twa_array#3 = __twa_array#<prev>.
+    const bool own_copy =
+      step.is_assignment() && !step.ssa_lhs.is_nil() &&
+      step.ssa_rhs.id() == ID_symbol &&
+      narrowing_base(step.ssa_rhs) == narrowing_base(step.ssa_lhs) &&
+      candidates.count(narrowing_base(step.ssa_lhs)) != 0;
+
+    if(!step.ssa_rhs.is_nil() && !own_copy)
+      scan(
+          step.ssa_rhs,
+          step.ssa_lhs.is_nil()
+            ? irep_idt{"assignment-rhs"}
+            : irep_idt{"assignment-rhs, lhs=" +
+                       id2string(to_symbol_expr(step.ssa_lhs).get_identifier())});
     if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
-      scan(step.cond_expr);
+      scan(step.cond_expr, "cond_expr");
     if(!step.guard.is_nil())
-      scan(step.guard);
+      scan(step.guard, "guard");
   }
 
   // how each write decomposes, by the assignment that produces its symbol
@@ -878,6 +896,9 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
           array_writet{i, false, rhs.operands()[1], rhs.operands()[2]});
         continue;
       }
+      if(rhs.id() == ID_symbol && narrowing_base(rhs) == variable)
+        continue; // a copy of the previous version writes nothing new
+
       const auto uniform = uniform_array_value(rhs);
       if(uniform.has_value())
       {
