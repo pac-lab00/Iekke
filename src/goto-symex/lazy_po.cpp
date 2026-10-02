@@ -828,10 +828,16 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       to_symbol_expr(step.ssa_lhs).get_identifier(), step.ssa_rhs);
   }
 
+  const bool explain = getenv("LAZYPO_ARRAY_WHY") != nullptr;
   for(const auto &variable : candidates)
   {
     if(opaque.count(variable) != 0)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined: used as a whole object somewhere\n";
       continue;
+    }
 
     // every index use has to name a shared read event, since that is what
     // places it in the schedule
@@ -844,7 +850,12 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       if(read_symbols.count(use.first) == 0)
         indices_placed = false;
     if(!indices_placed)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined: an index() does not name a shared read event\n";
       continue;
+    }
 
     std::vector<array_writet> decomposed;
     std::optional<exprt> initial;
@@ -880,7 +891,14 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       break;
     }
     if(!ok || !initial.has_value())
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable << " declined: "
+                  << (ok ? "no uniform constant initialiser"
+                         : "a write is not a single-index update")
+                  << "\n";
       continue;
+    }
 
     // Cost model. The chain amortises over reads and wins on a narrow object
     // read often; the nested selection wins on a wide object written rarely.
@@ -901,8 +919,21 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     const double rf_cost =
       Rd * R * (W * R / 2.0) * (static_cast<double>(elem_bits->to_long()) + index_bits);
     if(rf_cost <= 0 || chain_cost < 2.0 * rf_cost)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined by the cost model: chain=" << chain_cost
+                  << " selection=" << rf_cost << " ratio="
+                  << (rf_cost > 0 ? chain_cost / rf_cost : 0)
+                  << " (W=" << W << " reads=" << Rd << " array_bits="
+                  << array_bits->to_long() << ")\n";
       continue;
+    }
 
+    if(explain)
+      std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: chain=" << chain_cost
+                << " selection=" << rf_cost << " ratio=" << chain_cost / rf_cost
+                << "\n";
     array_rf_writes.emplace(variable, std::move(decomposed));
     array_rf_default.emplace(variable, initial.value());
   }
