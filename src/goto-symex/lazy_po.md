@@ -1,8 +1,8 @@
 # The lazy read-from encoding: where its cost is, and what has been done about it
 
 This documents the round-robin read-from encoding in `lazy_po.cpp`, what the
-formula it builds is actually made of, and the two optimisations built on top
-of it -- one on by default, one held back. It is written to be read next to
+formula it builds is actually made of, and the three optimisations built on top
+of it -- one on by default, two held back pending evaluation. It is written to be read next to
 the code.
 
 Every number here was measured, not estimated. How to re-measure any of it is
@@ -236,9 +236,121 @@ materially improving.** With the 1% gate, `--thread-private` leaves
 `elimination_backoff_stack` **byte-identical** to the baseline (1 647 137
 variables, 6 023 725 clauses) while `28-race_reach_81` keeps the full 20.7%.
 
+
 ---
 
-## 4. Measuring
+## 4. `--array-rf`: answer an element read by matching the writes
+
+Pass `--array-rf` to enable it. Off by default pending the 398-task evaluation.
+
+`a[i] = v` is `a#2 = with(a#1, i, v)` in the SSA, so **an array write is a
+read-modify-write of the whole array**, and the chain has to carry every element
+once per (write, round). Ablating the array-typed shared objects across the hard
+no-data-race family:
+
+| benchmark | total clauses | in array objects |
+|---|---:|---:|
+| `25_stack_longer-1` | 538 556 | **89.7%** |
+| `queue_longer` / `queue_longest` | 521 479 | **89.3%** |
+| `26_stack_cas` family | ~786 000 | **88.7%** |
+| `queue_ok_longer` | 270 517 | 83.3% |
+| `stack_longest-1` | 90 639 | 64.7% |
+| `elimination_backoff_stack` | 8 525 534 | 0.2% |
+
+The objects are `memory` (the `int memory[1921]` of pthread-ext),
+`stored_elements`, `arr`, `queue..element`, and `__CPROVER_threads_exited`
+everywhere.
+
+### The chain defeats an optimisation CBMC already has
+
+That table is measured **with `arrays-uf=auto` on**, and `--narrow-shared`
+cannot reach it either -- it slices byte ranges, and an array has no fixed
+width. Sequential CBMC does not have this problem at all. An `int[N]` with three
+symbolic accesses:
+
+| N | default (uf auto) | `--arrays-uf-never` |
+|---:|---:|---:|
+| 100 | 5 401 | 16 525 |
+| 1 000 | 5 497 | 160 525 |
+| 10 000 | **4 141** | 1 600 525 |
+
+**Flat in the array size.** CBMC's array decision procedure already ties the
+cost to the index set rather than the array's size. What breaks it here is the
+round-robin: the chain re-materialises the array value R times, and each copy
+drags the whole array back in. So this is not a new array decision procedure --
+it removes what was defeating CBMC's.
+
+### The encoding
+
+For a read of `a[j]` at schedule position p:
+
+    ite(exec(w_n) && i_n == j, val_n,
+    ite(exec(w_{n-1}) && i_{n-1} == j, val_{n-1}, ... , default))
+
+over the writes before p in schedule order. The cost stops depending on the
+array's **size** and depends on the number of **writes**, which in these SSAs is
+a single digit: 9 and 13 for `memory`, 4 for `stored_elements`, 3 for `arr`. The
+honest caveat is that writes count per round -- a read in round r sees earlier
+rounds too -- so the selection is W x R deep, not W.
+
+**Preconditions, all checked and all bail-outs:** no use of the object as a
+whole (a copy, a comparison, an argument has no index to match on); every write
+is a `with` at a single index, or a uniform constant initialiser, which also
+supplies the value before any write; and every `index()` names a shared read
+event, since that is what places it in the schedule.
+
+The chain's `lazy_variables` entries are still built. POR, the canonicality
+constraints and data-race detection key on their **ids**; only
+`previous_shared` consumes the **values**, so only those are dropped.
+
+### It is not a global win, so a cost model chooses per object
+
+A chain amortises over many reads and is the better structure for a narrow
+object read often. The nested selection is better for a wide object written
+rarely. Pointer fan-out is the opposite extreme -- four 32-bit objects, 24 reads
+each -- where the same encoding was estimated **40x worse**, and it correctly
+stays off there. The flag requires a 2x margin before firing.
+
+### Measured
+
+    25_stack_longer-1    538556 -> 52944 clauses (10.2x)
+    26_stack_cas         786064 -> 84792        ( 9.3x)
+    queue_longer         521479 -> 170182       ( 3.1x)
+    stack_longest-1       90639 -> 37070        ( 2.4x)
+
+Validated where it fires **and** values matter -- the array-heavy benchmarks
+under `unreach-call`, 63 tasks, **zero verdict differences**, with the six
+expected-false ones still reporting FAILED on formulas 3x to 12x smaller
+(`25_stack_longer-1` 527 442 -> 41 830; `26_stack_cas_longer-1` 768 918 ->
+67 646). Aggregate 20.9M -> 14.5M clauses.
+
+### The bug this nearly shipped with
+
+The first version **proved away a reachable violation** -- it reported
+SUCCESSFUL on a program whose assertion is genuinely false. A missed bug, not a
+false alarm.
+
+The cause was an ordering slip. The selection was folded with the writes walked
+backwards and the rounds forwards, which put the **first write at the last
+round** outermost -- the zero initialiser -- forcing every read to 0. The
+outermost `ite` is the one that wins, so candidates must be folded in
+**increasing** schedule position; they are now sorted explicitly rather than
+relying on loop nesting.
+
+**An A/B over all 76 hard no-data-race tasks did not catch it.** Under
+`--datarace` the verdict depends on the access **events**, not on what the
+accesses read, so the whole family was blind to a value bug by construction. A
+three-line hand-written test with a reachable violation caught it immediately.
+
+> **Carry this forward.** Validate a value-encoding change on `unreach-call`,
+> and write the discriminating test in **both** directions before trusting any
+> sweep: a safe program catches under-constraining, a **reachable violation**
+> catches over-constraining. A suite of SUCCESSFUL results cannot tell the
+> second from a correct answer.
+
+---
+
+## 5. Measuring
 
 Three instruments, each gated on an environment variable. **Known-answer
 control every one before trusting it**: with the variable unset, and with a
@@ -299,7 +411,7 @@ distinct objects each goto instruction reads.
 
 ---
 
-## 5. Measured dead ends -- do not re-try these
+## 6. Measured dead ends -- do not re-try these
 
 | idea | result |
 |---|---|
@@ -325,12 +437,16 @@ The MUX encoding itself is near minimal (about 2 clauses per bit), and
 
 ---
 
-## 6. Open candidates, with measured prizes
+## 7. Open candidates, with measured prizes
 
 Ranked by what they are worth on `28-race_reach_81` after both optimisations
 (336 547 clauses).
 
-1. **Shared arrays travel whole through the chain -- 10.6%.**
+1. ~~Shared arrays travel whole through the chain~~ -- **done**, see
+   [`--array-rf`](#4---array-rf-answer-an-element-read-by-matching-the-writes).
+   The original note read:
+
+   **Shared arrays travel whole through the chain -- 10.6%.**
    `lazy[w,r] = ite(exec, <the entire array>, prev)`.
    `__CPROVER_threads_exited` costs **exactly the same 35 833 clauses with and
    without `--arrays-uf-never`**, so this is *not* array axioms -- it is the
@@ -361,7 +477,7 @@ Ranked by what they are worth on `28-race_reach_81` after both optimisations
 
 ---
 
-## 7. Regression tests
+## 8. Regression tests
 
 In `regression/cbmc-concurrency/`:
 
@@ -372,6 +488,9 @@ In `regression/cbmc-concurrency/`:
 | `narrow_shared_whole_object_read` | the bail is **observable**: copying the mutex whole gives an identical formula either way (24071 variables / 83845 clauses), against 63131 -> 26427 for the same program without the copy |
 | `thread_private_object` | the read sees the last write in program order, under its guard; mutation-checked |
 | `thread_private_object_shared_chain` | the `--no-thread-private` arm |
+| `array_read_from` | the under-constraining direction, with the array large enough that the cost model turns `--array-rf` on |
+| `array_read_from_violation` | the **over-constraining** direction -- a reachable violation that must still be found; this is the one that caught the ordering bug |
+| `array_read_from_chain` | the default path, which has to agree |
 
 `--thread-private` is off by default, so its two tests pass it explicitly.
 
