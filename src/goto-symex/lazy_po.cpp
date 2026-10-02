@@ -2,6 +2,7 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_po.h"
+#include <cctype>
 #include <optional>
 #include <tuple>
 #include <util/expr_util.h>
@@ -472,14 +473,24 @@ void lazy_pot::operator()(
 
 /// Drop the L2 counter so every version of an object maps to one name. The L1
 /// frame suffix stays: that is what global_variables is keyed on.
+///
+/// The counter is `#` followed by digits, and it is not always at the end --
+/// field sensitivity appends the component after it, as in
+/// `queue#1..element`. Erasing from the `#` to the end would turn that into
+/// `queue`, so the object would never be recognised and every analysis keyed
+/// on this name would silently decline it.
 static irep_idt narrowing_base(const exprt &expr)
 {
   if(expr.id() != ID_symbol)
     return irep_idt{};
   std::string id = id2string(to_symbol_expr(expr).get_identifier());
   const std::size_t hash = id.find('#');
-  if(hash != std::string::npos)
-    id.erase(hash);
+  if(hash == std::string::npos)
+    return irep_idt{id};
+  std::size_t end = hash + 1;
+  while(end < id.size() && isdigit(static_cast<unsigned char>(id[end])))
+    ++end;
+  id.erase(hash, end - hash);
   return irep_idt{id};
 }
 
@@ -885,6 +896,9 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       const auto it = defining_rhs.find(id);
       if(it == defining_rhs.end())
       {
+        if(getenv("LAZYPO_ARRAY_WHY") != nullptr)
+          std::cerr << "ARRAY_WHY_NODEF " << variable << " write symbol " << id
+                    << " has no defining assignment in the equation\n";
         ok = false;
         break;
       }
@@ -908,6 +922,12 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
           array_writet{i, true, nil_exprt{}, uniform.value()});
         continue;
       }
+      if(getenv("LAZYPO_ARRAY_WHY") != nullptr)
+        std::cerr << "ARRAY_WHY_WRITE " << variable << " rhs is " << rhs.id()
+                  << (rhs.id() == ID_with && !rhs.operands().empty()
+                        ? " over " + id2string(narrowing_base(rhs.operands()[0]))
+                        : std::string{})
+                  << "\n";
       ok = false; // a havoc, a copy, a non-uniform literal: no single value
       break;
     }
