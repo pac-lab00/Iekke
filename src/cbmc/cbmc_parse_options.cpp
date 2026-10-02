@@ -137,8 +137,20 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // chain carries every element once per round, and array objects are 64-90% of
   // the formula across the data-race family. --array-rf answers an element read
   // by matching the writes instead, which stops the cost depending on the
-  // array's size. Off by default, pending evaluation.
-  options.set_option("array-rf", false);
+  // array's size.
+  //
+  // On by default. Evaluated at the competition timeout over 537 runs -- the 76
+  // array-heavy tasks under no-data-race and again under unreach-call, the 398
+  // tuned tasks, and a POR on/off x array-rf on/off grid -- with ZERO verdict
+  // differences anywhere, including on every expected-false task, which is the
+  // direction that catches an encoding that proves a violation away. Best
+  // 13.75x on the clause count, median 1.43x per task, and the cost model
+  // leaves a formula untouched where it would not pay: twalock is identical to
+  // the digit either way. Orthogonal to partial order reduction, which is worth
+  // 1.26x with this off and 1.29x with it on.
+  //
+  // --no-array-rf restores the array-valued chain.
+  options.set_option("array-rf", true);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 

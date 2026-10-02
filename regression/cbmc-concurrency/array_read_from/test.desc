@@ -17,8 +17,9 @@ slices byte ranges and an array has no fixed width.
 --array-rf answers an element read by matching the writes instead --
 ite(exec(w) && i_w == j, val_w, ... , default) over the writes before it in
 schedule order -- so the cost stops depending on the array's size. A cost model
-decides per object, and the flag is off by default pending evaluation, so this
-test passes it explicitly.
+decides per object. The flag is on by default now; this test still names it
+explicitly, so that the test keeps testing the same thing if the default moves
+again.
 
 The array is 1000 elements on purpose: the cost model leaves a small array on
 the chain, and the test would then prove nothing.
