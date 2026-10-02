@@ -1093,7 +1093,7 @@ void lazy_pot::compute_private_objects()
   // the same change takes 20.7% off the formula. So: do not perturb a formula
   // this is not materially improving.
   std::set<irep_idt> candidates;
-  std::size_t private_accesses = 0, total_accesses = 0;
+  double private_cost = 0, total_cost = 0;
 
   for(const auto &variable : global_variables)
   {
@@ -1112,20 +1112,42 @@ void lazy_pot::compute_private_objects()
         ++accesses;
       }
 
-    total_accesses += accesses;
+    // Weigh an access by the width it carries, not by its count. A chain link
+    // costs width bits, so counting accesses alone misjudges a program whose
+    // private objects are many but narrow: on twalock more than 1% of the
+    // accesses are private and removing them takes 1491 clauses out of 212
+    // million -- 0.0007% -- while still renumbering every variable, which cost
+    // 12% of the runtime.
+    const typet *t = nullptr;
+    if(writes.count(variable) != 0 && !writes.at(variable).empty())
+      t = &writes.at(variable).front().s_it->ssa_lhs.type();
+    else if(reads.count(variable) != 0 && !reads.at(variable).empty())
+      t = &reads.at(variable).front().s_it->ssa_lhs.type();
+    double width = 32; // a type with no fixed size still costs something
+    if(t != nullptr)
+    {
+      const auto bits = pointer_offset_bits(*t, ns);
+      if(bits.has_value() && bits->to_long() > 0)
+        width = static_cast<double>(bits->to_long());
+    }
+    const double cost = static_cast<double>(accesses) * width;
+    total_cost += cost;
     // One thread, or none left after the publication filter: no other thread
     // can interleave a write, so the schedule cannot change what a read sees.
     if(threads.size() <= 1)
     {
       candidates.insert(variable);
-      private_accesses += accesses;
+      private_cost += cost;
     }
   }
 
-  // A hundredth of the accesses is the threshold; it separates the two
-  // measured cases by more than an order of magnitude, and below it the chain
-  // that would be rewritten is too small to pay for the renumbering.
-  if(total_accesses == 0 || private_accesses * 100 < total_accesses)
+  // A hundredth of the chain's cost is the threshold. The three measured
+  // points: 28-race_reach_81 removes 13.4% and the formula drops 20.7%;
+  // elimination_backoff_stack removes 0.4% and the formula drops 0.09% while
+  // the search gets 1.44x worse; twalock removes 0.0007% and the search gets
+  // 12% worse. Below the threshold the chain being rewritten is too small to
+  // pay for renumbering every variable after it.
+  if(total_cost <= 0 || private_cost * 100 < total_cost)
     return;
 
   for(auto it = global_variables.begin(); it != global_variables.end();)
