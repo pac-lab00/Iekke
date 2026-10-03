@@ -1,0 +1,27 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --graphml-witness witness.graphml
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+Invariant check failed
+--
+Building a counterexample is the one path --array-rf touches that no SUCCESSFUL
+run ever reaches, so it needs its own test.
+
+--array-rf replaces each `index(array, j)` in the equation with a fresh
+scalar. The first version made those plain symbol_exprt, which every solver
+path accepts -- but build_goto_trace asserts that what it finds in an SSA step
+carries ID_C_SSA_symbol, so the run aborted in "Building error trace" with
+"wrong SSA expression ID". They are ssa_exprt now.
+
+Nothing caught it until the deployment check ran the competition wrapper, which
+passes --graphml-witness: 537 earlier runs, including every expected-false task
+in three families, had answered FAILED without ever building a witness. Two
+tasks went from FAILED to ERROR the moment they did.
+
+This test asks for the witness explicitly, and forbids the invariant message as
+well as the wrong verdict, so a regression shows up as a failure here rather
+than as an ERROR in the competition.

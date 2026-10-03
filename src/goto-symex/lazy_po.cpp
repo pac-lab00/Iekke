@@ -2,6 +2,7 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_po.h"
+#include <util/ssa_expr.h>
 #include <cctype>
 #include <optional>
 #include <tuple>
@@ -994,7 +995,7 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
   };
 
   std::size_t fresh = 0;
-  std::map<std::pair<irep_idt, std::string>, symbol_exprt> replacement;
+  std::map<std::pair<irep_idt, std::string>, ssa_exprt> replacement;
 
   for(const auto &entry : array_rf_writes)
   {
@@ -1029,9 +1030,17 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
           auto it = replacement.find(key);
           if(it == replacement.end())
           {
-            const symbol_exprt elt{
+            // An ssa_exprt, not a plain symbol: this replaces an
+            // index() inside existing SSA steps, and build_goto_trace
+            // asserts that what it finds there carries ID_C_SSA_symbol.
+            // A bare symbol_exprt passes every solver path and then
+            // aborts in "Building error trace" -- so it only shows up
+            // when a counterexample is actually built, which is exactly
+            // what --graphml-witness does and what no SUCCESSFUL run
+            // ever reaches.
+            const ssa_exprt elt{symbol_exprt{
               "arf_" + id2string(id) + "_" + std::to_string(fresh++),
-              elem_type};
+              elem_type}};
 
             for(std::size_t round = 1; round <= rounds; ++round)
             {
