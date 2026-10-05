@@ -11,6 +11,10 @@ Author: CBMC/lazy_po work
 
 #include "thread_spawn_loops.h"
 
+#include <util/std_types.h>
+
+#include <util/arith_tools.h>
+
 #include <util/namespace.h>
 #include <util/optional.h>
 #include <util/pointer_expr.h>
@@ -316,7 +320,8 @@ bool tail_is_inconsequential(
 
 std::unordered_set<irep_idt> compute_thread_management_loops(
   const goto_functionst &goto_functions,
-  const namespacet &ns)
+  const namespacet &ns,
+  std::vector<std::size_t> *handle_array_sizes)
 {
   std::vector<management_loopt> loops;
 
@@ -488,6 +493,25 @@ std::unordered_set<irep_idt> compute_thread_management_loops(
 
     for(const auto *loop : array_loops)
       result.insert(loop->loop_id);
+
+    // How many threads this family can create at all. Every mention of the
+    // array has just been proved to live inside these loops, so its declared
+    // length is the exact ceiling; a non-constant length reports 0, which the
+    // caller reads as "unknown, keep the default bound".
+    if(handle_array_sizes != nullptr)
+    {
+      std::size_t n = 0;
+      const symbolt *array_symbol = nullptr;
+      if(!ns.lookup(array_id, array_symbol) && array_symbol != nullptr &&
+         array_symbol->type.id() == ID_array)
+      {
+        const auto len =
+          numeric_cast<mp_integer>(to_array_type(array_symbol->type).size());
+        if(len.has_value() && *len > 0 && *len < 1000000)
+          n = numeric_cast_v<std::size_t>(*len);
+      }
+      handle_array_sizes->push_back(n);
+    }
   }
 
   return result;

@@ -73,6 +73,7 @@ Author: CBMC/lazy_po work
 #include <util/irep.h>
 
 #include <unordered_set>
+#include <vector>
 
 class goto_functionst;
 class namespacet;
@@ -86,8 +87,15 @@ class namespacet;
 ///   processing passes (in particular after remove_function_pointers)
 /// \param ns: namespace used to classify symbols
 /// \return set of loop ids that may be bounded by the thread-creation bound
+/// \param handle_array_sizes: if non-null, receives the declared length of
+///   every recognised thread-handle array, or 0 for one whose length is not a
+///   compile-time constant. A family of four handles can create at most four
+///   threads, so unwinding it in full is both affordable and a real answer;
+///   the 10000-element families this analysis was written for are what the
+///   bound is actually for.
 std::unordered_set<irep_idt> compute_thread_management_loops(
   const goto_functionst &goto_functions,
-  const namespacet &ns);
+  const namespacet &ns,
+  std::vector<std::size_t> *handle_array_sizes = nullptr);
 
 #endif // CPROVER_GOTO_SYMEX_THREAD_SPAWN_LOOPS_H

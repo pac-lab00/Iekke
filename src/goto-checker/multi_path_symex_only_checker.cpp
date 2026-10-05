@@ -11,6 +11,10 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include "multi_path_symex_only_checker.h"
 
+#include <vector>
+
+#include <algorithm>
+
 #include <util/ui_message.h>
 
 #include <goto-symex/show_program.h>
@@ -133,15 +137,49 @@ void multi_path_symex_only_checkert::generate_equation()
         }
       }
 
+      std::vector<std::size_t> handle_array_sizes;
       symex.thread_management_loops = compute_thread_management_loops(
-        goto_model.get_goto_functions(), ns);
+        goto_model.get_goto_functions(), ns, &handle_array_sizes);
 
       if(!symex.thread_management_loops.empty())
       {
-        symex.thread_creation_bound = bound;
+        // Do not bound below what the program can actually create. The
+        // analysis exists for families declared `pthread_t t_ids[10000]`,
+        // where bounding is the only way to finish; a family of four is the
+        // opposite case, and cutting it at two turns a real race into a
+        // vacuous SUCCESSFUL (measured: -32 on
+        // pthread-race-challenges/thread-join-array-const-race, whose race is
+        // between the fourth, unjoined thread and main's unguarded read).
+        //
+        // Only raised when *every* recognised family has a known size and the
+        // largest is still cheap, because the bound is a single global: one
+        // 10000-element family and the default stands.
+        unsigned effective_bound = bound;
+        const std::size_t affordable = 16;
+        if(!handle_array_sizes.empty())
+        {
+          std::size_t largest = 0;
+          for(const std::size_t n : handle_array_sizes)
+          {
+            if(n == 0 || n > affordable)
+            {
+              largest = 0;
+              break;
+            }
+            largest = std::max(largest, n);
+          }
+          if(largest > effective_bound)
+            effective_bound = static_cast<unsigned>(largest);
+        }
+
+        symex.thread_creation_bound = effective_bound;
         log.statistics() << "Thread-management loops recognised: "
                          << symex.thread_management_loops.size()
-                         << "; bounding thread creation at " << bound
+                         << "; bounding thread creation at "
+                         << symex.thread_creation_bound
+                         << (symex.thread_creation_bound != bound
+                               ? " (raised to the declared handle-array size)"
+                               : "")
                          << messaget::eom;
       }
     }
@@ -225,6 +263,21 @@ void multi_path_symex_only_checkert::generate_equation()
   }
   else
     std::cout << "Unwinding successfully\n";
+
+  // The thread-creation bound is an under-approximation of the same kind: a
+  // counterexample found under it is real, the absence of one is not a proof.
+  // It used to say so only through log.statistics(), invisible at normal
+  // verbosity, so a vacuous safe answer looked exactly like a proof.
+  //
+  // NB, as above: this message must not contain the literal strings callers
+  // grep for to read the verdict.
+  if(symex.thread_creation_bound_hit)
+  {
+    std::cout << "Thread creation incomplete: bound "
+              << symex.thread_creation_bound
+              << " reached; a counterexample is still real, but a safe result"
+                 " here is not a proof\n";
+  }
   // __SZH_ADD_END__
 
   symex.remove_dummy_accesses();
