@@ -11,6 +11,8 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include "multi_path_symex_only_checker.h"
 
+#include <optional>
+
 #include <vector>
 
 #include <algorithm>
@@ -302,6 +304,76 @@ void multi_path_symex_only_checkert::generate_equation()
                << messaget::eom;
 
   postprocess_equation(symex, equation, options, ns, ui_message_handler);
+}
+
+void multi_path_symex_only_checkert::note_nothing_verified(
+  propertiest &properties,
+  std::unordered_set<irep_idt> &updated_properties)
+{
+  // A run that was cut short and then produced no property at all has not
+  // proved anything. determine_result() folds the statuses starting from
+  // PASS, so an empty set comes out as PASS and the tool announces
+  // VERIFICATION SUCCESSFUL having checked nothing -- which on an
+  // expected-false task is the worst answer available, not the mildest.
+  //
+  // The shape that causes it is a setup loop longer than the bound: the
+  // unwinding *assumption* makes every path past the bound infeasible, so
+  // execution never reaches the code under test. `pthread/indexer`
+  // initialises 128 mutexes before creating a thread, and at every bound
+  // below 129 it answers SUCCESSFUL with no verification condition
+  // generated at all.
+  //
+  // An empty set on its own is legitimate -- a program with no shared
+  // access has nothing to check under --datarace -- so it is the
+  // truncation that makes this unsound.
+  if(!properties.empty())
+    return;
+  if(!symex.unwinding_incomplete && !symex.thread_creation_bound_hit)
+    return;
+  // An empty set is only suspicious when the truncation is what emptied it,
+  // and that question only has an answer when something was being looked
+  // for. Under --datarace every shared access becomes a property, so an
+  // empty set means execution never reached a shared access at all; without
+  // it, a program with no assertion legitimately has nothing to check.
+  //
+  // Both regressions a wider rule caused were of the second kind:
+  // `cbmc-concurrency/memory_barrier1` has no assertion and does not use
+  // --datarace, and `cbmc/Recursion2` is sequential. An earlier attempt keyed
+  // on "no spawn reached the equation" instead, which looked right and was
+  // not: simplify_pthread_create_join collapses a create immediately
+  // followed by a join into a direct call, so memory_barrier1 has no spawn
+  // step either.
+  if(!options.get_bool_option("datarace"))
+    return;
+
+  std::optional<goto_programt::const_targett> pc;
+  if(!equation.SSA_steps.empty())
+    pc = equation.SSA_steps.begin()->source.pc;
+  else
+  {
+    const auto entry = goto_model.get_goto_functions().function_map.find(
+      goto_functionst::entry_point());
+    if(
+      entry != goto_model.get_goto_functions().function_map.end() &&
+      entry->second.body_available())
+    {
+      pc = entry->second.body.instructions.begin();
+    }
+  }
+  if(!pc.has_value())
+    return;
+
+  const irep_idt id = "truncated.nothing.verified.1";
+  properties.emplace(
+    id,
+    property_infot{*pc,
+                   "the bound cut every path before any property was "
+                   "reached, so nothing was verified",
+                   property_statust::UNKNOWN});
+  updated_properties.insert(id);
+  log.status() << "No property was generated and the run was truncated:"
+                  " nothing has been verified"
+               << messaget::eom;
 }
 
 void multi_path_symex_only_checkert::update_properties(
