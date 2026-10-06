@@ -1,3 +1,20 @@
+/* FUNCTION: pthread_mutexattr_init */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+int pthread_mutexattr_init(pthread_mutexattr_t *attr)
+{
+  __CPROVER_HIDE:;
+  // PTHREAD_MUTEX_DEFAULT is not recursive. There was no model for this at
+  // all, so the attribute stayed uninitialised and pthread_mutex_init would
+  // have read a nondeterministic recursive flag out of it.
+  *((signed char *)attr) = 0;
+  return 0;
+}
+
 /* FUNCTION: pthread_mutexattr_settype */
 
 #ifndef __CPROVER_PTHREAD_H_INCLUDED
@@ -11,12 +28,15 @@ int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type)
 {
   __CPROVER_HIDE:;
 
-  (void)attr;
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
+  (void)attr;
   if(type==PTHREAD_MUTEX_RECURSIVE)
     __CPROVER_set_must(attr, "mutexattr-recursive");
   #else
-  (void)type;
+  // Read back by pthread_mutex_init. Without it a legal re-acquisition cannot
+  // be told apart from one that would deadlock, and the model assumes the
+  // first away along with everything that follows it.
+  *((signed char *)attr) = (type == PTHREAD_MUTEX_RECURSIVE);
   #endif
 
   int result=__VERIFIER_nondet_int();
@@ -63,6 +83,23 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned long owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
 #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
 void pthread_mutex_cleanup(void *p)
 {
@@ -78,8 +115,10 @@ int pthread_mutex_init(
   const pthread_mutexattr_t *mutexattr)
 {
   __CPROVER_HIDE:;
-  *((__CPROVER_mutex_t *)mutex)=0;
-  if(mutexattr!=0) (void)*mutexattr;
+  __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+  __state->count = 0;
+  __state->owner = 0;
+  __state->recursive = mutexattr != 0 ? *((const signed char *)mutexattr) : 0;
 
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_cleanup(mutex, pthread_mutex_cleanup);
@@ -109,6 +148,23 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned long owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -130,8 +186,18 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
     "mutex not initialised or destroyed");
   #else
   __CPROVER_atomic_begin();
-  __CPROVER_assume(!*((__CPROVER_mutex_t *)mutex));
-  *((__CPROVER_mutex_t *)mutex)=1;
+  {
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+    // A recursive mutex may be re-acquired by the thread that already holds
+    // it; every other acquisition waits for it to be free. Assuming only
+    // `count == 0` makes the re-acquisition unsatisfiable, which silently
+    // prunes the rest of the thread rather than blocking it.
+    __CPROVER_assume(
+      __state->count == 0 ||
+      (__state->recursive && __state->owner == __CPROVER_thread_id));
+    __state->owner = __CPROVER_thread_id;
+    __state->count = __state->count + 1;
+  }
   __CPROVER_atomic_end();
 
   __CPROVER_fence("WWfence", "RRfence", "RWfence", "WRfence",
@@ -158,6 +224,23 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned long owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
 int pthread_mutex_trylock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -172,16 +255,21 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
     "mutex not initialised or destroyed");
   #endif
 
-  if(*((__CPROVER_mutex_t *)mutex)==1)
   {
-    // failed
-    return_value=16;
-  }
-  else
-  {
-    // ok
-    return_value=0;
-    *((__CPROVER_mutex_t *)mutex)=1;
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+    if(__state->count != 0 &&
+       !(__state->recursive && __state->owner == __CPROVER_thread_id))
+    {
+      // failed
+      return_value=16;
+    }
+    else
+    {
+      // ok
+      return_value=0;
+      __state->owner = __CPROVER_thread_id;
+      __state->count = __state->count + 1;
+    }
   }
 
   __CPROVER_atomic_end();
@@ -209,6 +297,23 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned long owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
 int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -233,7 +338,14 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
   __CPROVER_atomic_begin();
   // __CPROVER_assert(*((__CPROVER_mutex_t *)mutex)==1,
   //   "must hold lock upon unlock");
-  *((__CPROVER_mutex_t *)mutex)=0;
+  {
+    // A recursive mutex is released only by as many unlocks as it took
+    // locks; for a non-recursive one the count is 0 or 1 and this is the
+    // assignment it replaces.
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+    if(__state->count > 0)
+      __state->count = __state->count - 1;
+  }
   __CPROVER_atomic_end();
   #endif
 
@@ -256,6 +368,23 @@ typedef pthread_mutex_t __CPROVER_mutex_t;
 typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
+
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned long owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
