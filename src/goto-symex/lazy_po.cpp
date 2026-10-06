@@ -4112,6 +4112,59 @@ void lazy_pot::create_low_tot_symbol(
   }
 }
 
+/// Data races are not preserved by the read-from equivalence that
+/// create_atomic_canonical quotients the schedules by. ABR and ABW are built
+/// from read-side witnesses only, so a write that no read observes is
+/// invisible to them; two schedules that differ just in the order of two such
+/// writes are read-from equivalent, yet one has a race and the other has not.
+/// Under --datarace an atomic block holding a conflicting access therefore
+/// cannot be pruned on those witnesses alone.
+///
+/// Only write/write conflicts need the exemption. A read-write pair leaves a
+/// read-from edge, which is what ABR and ABW are made of, so those races
+/// survive the reduction; a write/write pair leaves no edge at all. Measured:
+/// `ww` recovers every reproducer and semaphore-posix-race, and `wide`
+/// recovers nothing beyond it.
+///
+/// LAZYPO_POR_RACE_EXEMPT overrides the rule, for the ablation:
+///   ww (default) only write/write, the conflict the witnesses cannot see;
+///   wide         any conflicting pair, write/write or read/write;
+///   off          nothing, i.e. the behaviour before this fix.
+bool lazy_pot::block_can_race(const atomic_block &b) const
+{
+  static const std::string mode = []() -> std::string {
+    const char *e = getenv("LAZYPO_POR_RACE_EXEMPT");
+    return e == nullptr ? "ww" : e;
+  }();
+  if(mode == "off")
+    return false;
+  const bool ww_only = mode == "ww";
+
+  auto other_thread_accesses =
+    [&b](const std::unordered_map<irep_idt, std::vector<shared_event>> &events,
+         const irep_idt &object) {
+      const auto it = events.find(object);
+      if(it == events.end())
+        return false;
+      for(const auto &e : it->second)
+        if(e.thread != b.thread)
+          return true;
+      return false;
+    };
+
+  // A write conflicts with any other-thread access to the same object; a read
+  // conflicts only with another thread's write.
+  for(const auto &entry : b.writes)
+    if(other_thread_accesses(writes, entry.first) ||
+       (!ww_only && other_thread_accesses(reads, entry.first)))
+      return true;
+  if(!ww_only)
+    for(const auto &entry : b.reads)
+      if(other_thread_accesses(writes, entry.first))
+        return true;
+  return false;
+}
+
 void lazy_pot::create_atomic_canonical(
   symex_target_equationt &equation) {
   for(std::size_t round = 2; round <= rounds; ++round){
@@ -4121,6 +4174,10 @@ void lazy_pot::create_atomic_canonical(
       if(b.label == 0)
         continue;
       if(b.reads.empty() && b.writes.empty())
+        continue;
+      // Canonicality is justified by read-from equivalence, which does not
+      // preserve data races; see block_can_race.
+      if(datarace && block_can_race(b))
         continue;
       const auto &src = !b.reads.empty()
         ? b.reads.begin()->second.front().s_it->source

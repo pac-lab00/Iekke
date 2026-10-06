@@ -372,6 +372,12 @@ private:
 
   void create_atomic_canonical(symex_target_equationt &equation);
 
+  /// True when an access of \p b conflicts with an access of another
+  /// thread, so the block's position is observable to data-race detection
+  /// even when it is invisible to the read-from equivalence that justifies
+  /// canonicality. See create_atomic_canonical.
+  bool block_can_race(const atomic_block &b) const;
+
   symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
 
   symbol_exprt create_ABW(const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
