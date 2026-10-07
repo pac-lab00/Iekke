@@ -3377,9 +3377,30 @@ void lazy_pot::collect_reads_and_writes(
   const bool pubfilter_enabled =
     datarace && getenv("LAZYPO_NO_PUBFILTER") == nullptr;
 
-  // object -> (publishing thread, that thread's step ordinal)
-  std::unordered_map<std::string, std::pair<std::size_t, std::size_t>>
-    publication;
+  // The thread that allocated each dynamic object, read off malloc's own
+  // model: it stores the fresh address into a CPROVER-internal global, and
+  // that right-hand side is a literal address-of, so no points-to set can
+  // widen it and attribute the allocation elsewhere. "First thread to touch
+  // the object" was tried instead and does not work -- under
+  // --refined-pointer-analysis main writes through a pointer wide enough to
+  // reach every node, so all four objects of 28-race_reach_84 came out
+  // allocated by thread 0.
+  //
+  // Objects with no such record (not every dynamic object comes from the
+  // malloc model) fall back to first_publisher below, which is what this
+  // filter used before.
+  std::unordered_map<std::string, std::size_t> allocator;
+
+  // The first thread seen publishing each object, in equation order. Only
+  // used for the fallback just described.
+  std::unordered_map<std::string, std::size_t> first_publisher;
+
+  // (object, thread) -> that thread's own earliest step ordinal at which it
+  // makes the object's address visible to others. Keyed by thread because
+  // the ordinals below are per-thread counters: comparing one thread's
+  // ordinal against another's compares two different counters and means
+  // nothing.
+  std::map<std::pair<std::string, std::size_t>, std::size_t> publication;
   if(pubfilter_enabled)
   {
     std::map<unsigned, std::size_t> scan_ord;
@@ -3400,14 +3421,27 @@ void lazy_pot::collect_reads_and_writes(
       if(!it->is_shared_write())
         continue;
 
-      // Skip CBMC's own bookkeeping. malloc's model stores the fresh
-      // object's address into internal globals, which would otherwise date
-      // the publication to the allocation itself and leave every user-level
-      // initialisation of the object unexempted.
+      // CBMC's own bookkeeping is not a publication -- malloc's model
+      // stores the fresh object's address into internal globals, which would
+      // otherwise date the publication to the allocation itself and leave
+      // every user-level initialisation unexempted. It is, however, exactly
+      // where the allocating thread can be read off.
       if(can_cast_expr<symbol_exprt>(it->ssa_lhs) &&
          has_prefix(
            id2string(it->ssa_lhs.get_l1_object_identifier()), CPROVER_PREFIX))
+      {
+        auto alloc_next = it;
+        ++alloc_next;
+        if(alloc_next != ssa_steps.end() && alloc_next->is_assignment())
+        {
+          std::set<std::string> fresh;
+          value_objects(alloc_next->ssa_rhs, fresh);
+          for(const auto &k : fresh)
+            allocator.emplace(
+              k, static_cast<std::size_t>(it->source.thread_nr));
+        }
         continue;
+      }
 
       // the stored value lives in the assignment step that follows
       auto next = it;
@@ -3418,11 +3452,20 @@ void lazy_pot::collect_reads_and_writes(
       std::set<std::string> published;
       value_objects(next->ssa_rhs, published);
       for(const auto &k : published)
-        if(publication.find(k) == publication.end())
-          publication.emplace(
-            k,
-            std::make_pair(
-              static_cast<std::size_t>(it->source.thread_nr), my_ord));
+      {
+        // Earliest publication *by this thread*. A thread that only appears
+        // to publish the object records its own entry and leaves the
+        // allocating thread's window alone.
+        const auto key =
+          std::make_pair(k, static_cast<std::size_t>(it->source.thread_nr));
+        const auto pub = publication.find(key);
+        if(pub == publication.end())
+          publication.emplace(key, my_ord);
+        else if(my_ord < pub->second)
+          pub->second = my_ord;
+        first_publisher.emplace(
+          k, static_cast<std::size_t>(it->source.thread_nr));
+      }
     }
   }
 
@@ -3439,10 +3482,14 @@ void lazy_pot::collect_reads_and_writes(
   const bool pubfilter_off = !pubfilter_enabled;
   const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
   if(pubfilter_debug)
+  {
+    for(const auto &a : allocator)
+      std::cerr << "PUBFILTER " << a.first << " allocated by thread "
+                << a.second << "\n";
     for(const auto &p : publication)
-      std::cerr << "PUBFILTER published " << p.first << " by thread "
-                << p.second.first << " at ordinal " << p.second.second
-                << "\n";
+      std::cerr << "PUBFILTER published " << p.first.first << " by thread "
+                << p.first.second << " at its ordinal " << p.second << "\n";
+  }
 
   const auto pre_publication_access =
     [&](const irep_idt &l1_id, std::size_t thread, std::size_t ordinal,
@@ -3452,16 +3499,35 @@ void lazy_pot::collect_reads_and_writes(
       const std::string k = dynamic_object_key(l1_id);
       if(k.empty())
         return false;
-      const auto pub = publication.find(k);
+      // The window must be closed by a publication this thread performs
+      // itself: an object whose address this thread never stores anywhere
+      // may still have escaped by a route this pass does not see (a thread
+      // argument, say), so no exemption is given at all.
+      const auto pub = publication.find(std::make_pair(k, thread));
       if(pub == publication.end())
         return false;
-      const bool exempt = pub->second.first == thread &&
-                          ordinal < pub->second.second &&
-                          is_scalar_data(access_type);
+      // And only the allocating thread may be exempted. Asking instead for a
+      // match on the *publisher* makes the filter fail exactly when the
+      // points-to set is wide enough to invent one: under
+      // --refined-pointer-analysis main appeared to publish both workers'
+      // nodes, which cost 28-race_reach_84 and _94 a false alarm each.
+      const auto alloc = allocator.find(k);
+      if(alloc != allocator.end())
+      {
+        if(alloc->second != thread)
+          return false;
+      }
+      else
+      {
+        const auto fp = first_publisher.find(k);
+        if(fp == first_publisher.end() || fp->second != thread)
+          return false;
+      }
+      const bool exempt = ordinal < pub->second && is_scalar_data(access_type);
       if(exempt && pubfilter_debug)
         std::cerr << "PUBFILTER exempt " << id2string(l1_id) << " thread "
-                  << thread << " ordinal " << ordinal << " < pub "
-                  << pub->second.second << "\n";
+                  << thread << " ordinal " << ordinal << " < its pub "
+                  << pub->second << "\n";
       return exempt;
     };
 

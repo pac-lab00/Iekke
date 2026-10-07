@@ -194,6 +194,23 @@ void multi_path_symex_only_checkert::generate_equation()
     goto_symext::get_goto_function(goto_model), symex_symbol_table);
 
 
+  // NOT suitable as a default, measured over the whole 3220-pair corpus on
+  // 2026-10-08. It removes every false alarm the corpus has -- mcslock,
+  // rec_mcslock, cnalock and 28-race_reach_82-list_racefree, 4 -> 0 -- and
+  // pays for them with two wrong "this program is safe" answers, which are
+  // worse: hemlock (recoverable, it is only a truncation -- the race is
+  // found again at --unwind 3) and per-thread-array-join-counter-race-4
+  // (not recoverable at any bound tried: 2, 3, 4 rounds 3 and 4). Net -11.
+  //
+  // And the two halves do not separate, which was the obvious thing to try:
+  // running the collection passes to a fixpoint *without* seeding the final
+  // pass from the union keeps hemlock and repairs only
+  // 28-race_reach_82-list_racefree, still loses race-4, and comes out worse
+  // than not using the flag at all (-14). The reason race-4 goes either way
+  // is that value_set_dereferencet already resolves against
+  // overall_value_set in the final pass, so merely *growing* the union is
+  // enough to widen the dereference: there is no configuration in which the
+  // extra passes teach the analysis something without also widening it.
   if(options.get_bool_option("refined-pointer-analysis") && symex.target.has_threads())
   {
     // Was: exactly one further pass with try_finding_value_set off.  That is
