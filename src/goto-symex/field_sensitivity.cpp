@@ -40,8 +40,28 @@ exprt field_sensitivityt::apply(
 
   if(expr.id() != ID_address_of)
   {
+    // Materialising the array operand of a store at a symbolic index is the
+    // lowering framing the untouched elements back over themselves, not a
+    // read the program performs. Produce the values, record no events: the
+    // writes are already conditioned on `i == k` in field_assignments_rec,
+    // and without this the same store is recorded as reading every element,
+    // so two threads storing to different elements are paired on all of them.
+    const bool framing_base = expr.id() == ID_with &&
+                              expr.operands().size() == 3 &&
+                              !to_with_expr(expr).where().is_constant();
+    bool is_base = true;
     Forall_operands(it, expr)
-      *it = apply(ns, state, std::move(*it), write);
+    {
+      if(framing_base && is_base)
+      {
+        state.record_events.push(false);
+        *it = apply(ns, state, std::move(*it), write);
+        state.record_events.pop();
+      }
+      else
+        *it = apply(ns, state, std::move(*it), write);
+      is_base = false;
+    }
   }
 
   if(!write && is_ssa_expr(expr))
