@@ -526,6 +526,12 @@ if(atomic_section_id!=0)
     INVARIANT(!check_renaming(ssa_l2), "expr should be renamed to L2");
     expr = std::move(ssa_l2);
 
+    // Same reason as on the plain path below: a pointer published by a
+    // thread symexed later is not in this read's set. Atomic sections need
+    // it at least as much, since every atomic operation is one -- an MCS
+    // lock hands its successor a node through vatomicptr_xchg.
+    seed_published_targets(expr, l1_identifier, ns);
+
     a_s_read.second.push_back(guard);
     if(!no_write.op().is_false())
       a_s_read.second.back().add(no_write);
