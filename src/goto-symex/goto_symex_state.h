@@ -270,6 +270,24 @@ public:
 
   const incremental_dirtyt *dirty = nullptr;
 
+  /// Points-to targets collected for shared pointers by an earlier symex
+  /// pass, or null when there was none.
+  ///
+  /// Value sets are built in symex order, so a pointer published by a thread
+  /// symexed later than this read is not in this read's set and the
+  /// dereference resolves against a stale one -- CBMC issue #305. Only a
+  /// previous pass can know what is published, so where one has run, a shared
+  /// read of a pointer tops up *that object's* entry from here. Set by
+  /// goto_symext while \ref goto_symext::seed_value_set_from_overall is on.
+  const value_sett *published_value_set = nullptr;
+
+  /// Top up \p expr's points-to set from \ref published_value_set, for a
+  /// shared read of a pointer. Does nothing otherwise.
+  void seed_published_targets(
+    const ssa_exprt &expr,
+    const irep_idt &l1_identifier,
+    const namespacet &ns);
+
   /// Shared variables that a static, whole-program analysis has proven to be
   /// accessed by at most one thread over any execution (see
   /// thread_exclusivity.h). Such a variable cannot be interfered with by any

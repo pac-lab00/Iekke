@@ -628,16 +628,16 @@ void goto_symext::symex_step(
       overall_value_set_changed = true;
   }
 
-  // Seeding only the entry-point state is not enough.  __CPROVER_initialize
-  // runs the global initialisers before any thread exists, so the initialiser
-  // of a global pointer is not a *shared* write: it replaces that pointer's
-  // points-to set rather than accumulating into it, wiping the seeded targets
-  // straight back out.  Top the state up at every step instead, so a target
-  // published by another thread survives initialisation and is still there
-  // when a thread-local is assigned from that pointer.  Only ever active under
-  // --refined-pointer-analysis.
+  // Was: state.value_set.make_union(overall_value_set) at every step, which
+  // widens every pointer everywhere. That triples the formula and suppresses
+  // race detection in both directions -- measured, it removes hemlock's real
+  // race exactly as readily as mcslock's spurious one.
+  //
+  // Hand the collected set to the state instead and let it top up one
+  // object's entry at a shared read of a pointer, which is the only place the
+  // staleness can bite. See goto_symex_statet::seed_published_targets.
   if(seed_value_set_from_overall)
-    state.value_set.make_union(overall_value_set);
+    state.published_value_set = &overall_value_set;
   // __SZH_ADD_END__
 
   // Print debug statements if they've been enabled.

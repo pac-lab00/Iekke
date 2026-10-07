@@ -544,12 +544,38 @@ if(atomic_section_id!=0)
   level2.increase_generation(l1_identifier, ssa_l1, fresh_l2_name_provider);
   expr = set_indices<L2>(std::move(ssa_l1), ns).get();
 
+  seed_published_targets(expr, l1_identifier, ns);
+
   // and record that
   INVARIANT_STRUCTURED(
     symex_target!=nullptr, nullptr_exceptiont, "symex_target is null");
   symex_target->shared_read(guard_as_expr, expr, atomic_section_id, source);
 
   return true;
+}
+
+void goto_symex_statet::seed_published_targets(
+  const ssa_exprt &expr,
+  const irep_idt &l1_identifier,
+  const namespacet &ns)
+{
+  // Only a pointer can be published, and only a previous pass can know what
+  // was published: value sets are built in symex order, so a read carries
+  // only the targets that existed when it was symexed (CBMC issue #305).
+  (void)ns;
+  if(published_value_set == nullptr || expr.type().id() != ID_pointer)
+    return;
+
+  const auto *entry = published_value_set->find_entry(l1_identifier);
+  if(entry == nullptr)
+    return;
+
+  // Merge, never replace: what this read already knows is right, the
+  // published targets are additional. And only this object is touched --
+  // widening every pointer at every step is what makes
+  // --refined-pointer-analysis suppress real races as well as spurious ones.
+  value_sett::entryt target{l1_identifier, entry->suffix};
+  value_set.update_entry(target, expr.type(), entry->object_map, true);
 }
 
 goto_symex_statet::write_is_shared_resultt goto_symex_statet::write_is_shared(
