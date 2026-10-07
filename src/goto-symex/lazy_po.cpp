@@ -2983,6 +2983,30 @@ void lazy_pot::handling_datarace(
   symbol_exprt phases_swap_symbl{phases_swap_name, bool_typet{}};
   exprt phases_swap_exp = false_exprt{};
   // __SZH_DR_ADD_END__
+  if(getenv("IEKKE_DUMP_GLOBALS") != nullptr)
+  {
+    std::cout << "=== shared objects seen by the race encoding ===\n";
+    for(auto v : global_variables)
+    {
+      std::set<unsigned> rt, wt;
+      if(reads.count(v))
+        for(const auto &e : reads.at(v))
+          rt.insert(e.thread);
+      if(writes.count(v))
+        for(const auto &e : writes.at(v))
+          wt.insert(e.thread);
+      std::cout << "  " << v << "  reads=" << (reads.count(v) ? reads.at(v).size() : 0)
+                << " from " << rt.size() << " thread(s)"
+                << "  writes=" << (writes.count(v) ? writes.at(v).size() : 0)
+                << " from " << wt.size() << " thread(s)";
+      if(v.starts_with("__CPROVER"))
+        std::cout << "   [skipped: __CPROVER]";
+      else if(equation.symbol_is_atomic(ns, v))
+        std::cout << "   [skipped: atomic]";
+      std::cout << "\n";
+    }
+    std::cout << "=== end shared objects ===\n";
+  }
   for (auto v : global_variables) {
     if (v.starts_with("__CPROVER"))
       continue;
