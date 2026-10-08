@@ -1,0 +1,9 @@
+CORE
+main.c
+--unwind 4 --rounds 4 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^\*\* 1 of 1 failed
+^VERIFICATION FAILED$
+--
+^warning: ignoring

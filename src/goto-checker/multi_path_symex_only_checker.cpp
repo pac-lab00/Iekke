@@ -194,6 +194,40 @@ void multi_path_symex_only_checkert::generate_equation()
     goto_symext::get_goto_function(goto_model), symex_symbol_table);
 
 
+  // CBMC issue #305, in the configuration that actually ships.
+  //
+  // Value sets are built in symex order, which for a concurrent program is
+  // not an execution order: a thread spawned first is symexed first, so a
+  // pointer another thread publishes later is not in its set, the
+  // dereference resolves against the stale entry, and the interleaving is
+  // never encoded. The 13-line reproduction is ~/bench-minrepro/p305.c,
+  // where the reader is spawned before the publisher and the reachable
+  // assertion was reported SUCCESSFUL.
+  //
+  // The repair is a second pass: the first collects what every pointer may
+  // point to, the second builds the equation with that collection available
+  // so a *shared read of a pointer* can top up its own entry
+  // (goto_symex_statet::seed_published_targets). try_finding_value_set stays
+  // on, which is deliberate -- it is what keeps value_set_dereferencet
+  // resolving against the state's own set rather than the global union.
+  // Widening the dereference is what --refined-pointer-analysis does below,
+  // and it suppresses real races.
+  //
+  // Only for programs that have threads: without them there is no ordering
+  // mismatch and the second pass would be pure cost.
+  if(symex.target.has_threads() &&
+     !options.get_bool_option("refined-pointer-analysis"))
+  {
+    symex.path_storage.clear();
+    symex.target.clear();
+    symex.dynamic_counter = 0;
+    symex.try_finding_value_set = true;
+    symex.seed_published_reads = true;
+
+    symex.symex_from_entry_point_of(
+      goto_symext::get_goto_function(goto_model), symex_symbol_table);
+  }
+
   // NOT suitable as a default, measured over the whole 3220-pair corpus on
   // 2026-10-08. It removes every false alarm the corpus has -- mcslock,
   // rec_mcslock, cnalock and 28-race_reach_82-list_racefree, 4 -> 0 -- and

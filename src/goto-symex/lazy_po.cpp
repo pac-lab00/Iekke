@@ -2999,6 +2999,31 @@ void lazy_pot::handling_datarace(
                 << " from " << rt.size() << " thread(s)"
                 << "  writes=" << (writes.count(v) ? writes.at(v).size() : 0)
                 << " from " << wt.size() << " thread(s)";
+      if(getenv("IEKKE_DUMP_ACCESSES") != nullptr)
+      {
+        std::cout << "\n";
+        if(writes.count(v))
+          for(const auto &e : writes.at(v))
+            std::cout << "      W t=" << e.thread << " label=" << e.label
+                      << " num=" << e.num
+                      << " atomic=" << (e.s_it->atomic_section_id != 0)
+                      << " ultimo_del_blocco="
+                      << (e.label < labels[e.thread] ? "forse" : "si")
+                      << " fn=" << id2string(
+                           e.s_it->source.pc->source_location().get_function())
+                      << "\n";
+        if(reads.count(v))
+          for(const auto &e : reads.at(v))
+            std::cout << "      R t=" << e.thread << " label=" << e.label
+                      << " num=" << e.num
+                      << " atomic=" << (e.s_it->atomic_section_id != 0)
+                      << " primo_del_blocco="
+                      << (e.label > 1 ? "forse" : "si")
+                      << " fn=" << id2string(
+                           e.s_it->source.pc->source_location().get_function())
+                      << "\n";
+        std::cout << "   ";
+      }
       if(v.starts_with("__CPROVER"))
         std::cout << "   [skipped: __CPROVER]";
       else if(equation.symbol_is_atomic(ns, v))
