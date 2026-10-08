@@ -1,8 +1,8 @@
 Copyright (c) 2021-2026, Fei He, Zhihang Sun, and Hongyu Fan, 
 		School of Software, Tsinghua University
 
-(C) 2025-2026, Di Biase Paolo, Bernd Fischer, Salvatore La Torre, Peter Schrammel, Gennaro Parlato
-GSSI, Stellenbosch University, University of Salerno, Diffblue Ltd, University of Molise
+(C) 2025-2027, di Cristofaro Andrea Pino, Di Biase Paolo, Bernd Fischer, Salvatore La Torre, Peter Schrammel, Gennaro Parlato
+University of Molise, GSSI, Stellenbosch University, University of Salerno, Diffblue Ltd
 
 All rights reserved.
 

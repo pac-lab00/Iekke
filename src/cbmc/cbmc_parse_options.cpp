@@ -421,7 +421,7 @@ int cbmc_parse_optionst::doit()
 {
   if(cmdline.isset("version"))
   {
-    std::cout << "1.0" << '\n';
+    std::cout << "2.0" << '\n';
     return CPROVER_EXIT_SUCCESS;
   }
 
@@ -905,11 +905,13 @@ void cbmc_parse_optionst::help()
   // clang-format off
 
   // __SZH_ADD_BEGIN__
-  std::cout << "\n" << banner_string("Iekke", "1.0") << '\n'
-  << align_center_with_border("Copyright (C) 2025-2026") << '\n'
-            << align_center_with_border("Di Biase Paolo, Bernd Fischer, Salvatore La Torre, Peter Schrammel, Gennaro Parlato") << '\n'
-            << align_center_with_border("GSSI, Stellenbosch University, University of Salerno, Diffblue Ltd, University of Molise") << '\n'
-            << align_center_with_border("paolo.dibiase@gssi.it") << '\n';
+  std::cout << "\n" << banner_string("Iekke", "2.0") << '\n'
+  << align_center_with_border("Copyright (C) 2025-2027") << '\n'
+            << align_center_with_border("di Cristofaro Andrea Pino, Di Biase Paolo, Bernd Fischer,") << '\n'
+            << align_center_with_border("Salvatore La Torre, Peter Schrammel, Gennaro Parlato") << '\n'
+            << align_center_with_border("University of Molise, GSSI, Stellenbosch University,") << '\n'
+            << align_center_with_border("University of Salerno, Diffblue Ltd") << '\n'
+            << align_center_with_border("a.dicristofaro3@studenti.unimol.it") << '\n';
   
   std::cout << "which contains:\n";
 
