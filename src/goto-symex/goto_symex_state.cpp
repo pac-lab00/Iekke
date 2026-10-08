@@ -10,6 +10,7 @@ Author: Daniel Kroening, kroening@kroening.com
 /// Symbolic Execution
 
 #include "goto_symex_state.h"
+#include <util/arith_tools.h>
 #include "goto_symex_is_constant.h"
 
 #include <iostream>
@@ -283,6 +284,49 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       expr.op0() = rename<level>(std::move(expr.op0()), ns).get();
       expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
       expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
+    }
+    // A load at a symbolic index, after field sensitivity has already
+    // expanded the array into its elements: `{a[[0]], a[[1]], ...}[i]`.
+    //
+    // Renaming the elements with the plain walk emits a shared read event for
+    // every one of them, carrying only the path guard. The program reads one
+    // element. For reachability the extra events cost nothing -- only the
+    // value is consumed -- but where the property is about accesses they are
+    // false alarms: a thread holding mutex[1] and touching data[1] is
+    // reported racing on data[0] against a thread holding mutex[0] (the
+    // 09-regions and 06-symbeq families).
+    //
+    // Rename each element under `i == k` instead, so the event lazy_po
+    // collects carries that condition and `exec = Enabled & guard` switches
+    // off the elements this load does not touch. The index is renamed first
+    // because the condition has to be in terms of the renamed index.
+    //
+    // This belongs here and not in field_sensitivityt::apply, which runs
+    // *after* this walk (see the call at the end of this function): by then
+    // the events have already been emitted. Conditioning them inside apply
+    // was tried and measured inert.
+    else if(
+      level == L2 && expr.id() == ID_index &&
+      to_index_expr(expr).array().id() == ID_array &&
+      !to_index_expr(expr).index().is_constant())
+    {
+      index_exprt &index_expr = to_index_expr(expr);
+      index_expr.index() =
+        rename<level>(std::move(index_expr.index()), ns).get();
+      const exprt renamed_index = index_expr.index();
+
+      std::size_t element = 0;
+      for(auto &op : to_array_expr(index_expr.array()).operands())
+      {
+        // Restored rather than popped: nothing else expects the guard to
+        // have changed across this call.
+        guardt saved = guard;
+        guard.add(equal_exprt{
+          renamed_index, from_integer(element, renamed_index.type())});
+        op = rename<level>(std::move(op), ns).get();
+        guard = std::move(saved);
+        ++element;
+      }
     }
     else
     {
