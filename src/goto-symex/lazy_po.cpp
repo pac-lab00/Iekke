@@ -2368,7 +2368,15 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
         std::string func = id2string(write.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        // pthread_create's own write to its thread-ID output parameter is
+        // user-visible data (the caller supplied that pointer), not library
+        // bookkeeping -- unlike pthread_mutex_lock/_unlock/_init, pthread_join,
+        // pthread_cond_wait and friends, which only ever touch their own
+        // internal state objects here. Excluding it hid a genuine race: see
+        // ~/tid_write_race.c, a 9-line reproducer where one thread's
+        // pthread_create races an unsynchronised read of the thread-ID global
+        // in another thread, reported SUCCESSFUL with the blanket exclusion.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
         if (write.thread != thread || is_pthread)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
@@ -2443,7 +2451,9 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
         std::string func = id2string(write.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
         if (write.thread != thread || is_pthread)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
@@ -2490,7 +2500,9 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
         std::string func = id2string(read.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
         if (read.thread != thread || is_pthread)
           continue;
         irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
@@ -2710,7 +2722,9 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
         std::string func = id2string(read.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
         if (read.thread != thread || is_pthread)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
@@ -2788,7 +2802,9 @@ symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
         std::string func = id2string(write.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
         if (write.thread != thread || is_pthread)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_swap_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
