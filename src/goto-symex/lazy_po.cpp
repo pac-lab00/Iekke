@@ -2971,6 +2971,63 @@ symbol_exprt lazy_pot::no_interf_swap(symex_target_equationt &equation) {
 }
 // __SZH_DR_ADD_END__
 
+
+// L'offset di un accesso puo' essere sepolto sotto un `if`.
+//
+// Un oggetto dinamico di dimensione *simbolica* non viene spezzato per
+// elemento dalla field sensitivity (che richiede una size costante), quindi
+// `datas[i] = v` arriva nella SSA come
+//
+//   obj#4 == (datas == &obj ? obj#3 WITH [0:=v] : obj#2)
+//
+// La destra non e' un `with`: e' un `if` che lo contiene, perche' il
+// puntatore potrebbe puntare altrove. Il test sulla forma falliva, `where`
+// restava al sentinella -1 per *ogni* accesso all'oggetto, e la condizione di
+// corsa confronta `dr_loc(1) == dr_loc(2)` -- quindi due thread che scrivono
+// elementi diversi finivano sulla stessa locazione e venivano dichiarati in
+// corsa. E' la famiglia per-thread-array-index / per-thread-index-* / sssc12,
+// e il riproduttore minimo e' ~/heapidx/c_constthreads.c (22 righe, con il
+// controllo a indice uguale che deve restare FAILED).
+//
+// Conservativo per costruzione: se i rami portano indici diversi non c'e' un
+// solo offset da attribuire all'accesso e si torna al sentinella, cioe' al
+// comportamento di prima.
+static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
+{
+  if(e.id() == ID_with && e.operands().size() == 3)
+  {
+    const exprt &w = to_with_expr(e).where();
+    if(found)
+      return out == w;
+    out = w;
+    found = true;
+    return true;
+  }
+  if(e.id() == ID_if)
+  {
+    for(const auto &op : e.operands())
+    {
+      if(op.type().id() == ID_bool)
+        continue;
+      if(!with_index_under_if(op, out, found))
+        return false;
+    }
+    return true;
+  }
+  return true;
+}
+
+/// \return l'offset dell'accesso se sotto gli `if` ce n'e' esattamente uno,
+///   altrimenti nil.
+static exprt access_offset(const exprt &rhs)
+{
+  exprt out = nil_exprt{};
+  bool found = false;
+  if(!with_index_under_if(rhs, out, found) || !found)
+    return nil_exprt{};
+  return out;
+}
+
 void lazy_pot::handling_datarace(
   symex_target_equationt &equation) {
 
@@ -3712,6 +3769,10 @@ void lazy_pot::collect_reads_and_writes(
         if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
           where = to_with_expr(next->ssa_rhs).where();
         }
+        else if (next != ssa_steps.end() && next->is_assignment() &&
+                 access_offset(next->ssa_rhs).is_not_nil()) { //ARRAY sotto un if
+          where = access_offset(next->ssa_rhs);
+        }
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
           auto pos = id.rfind("..");
@@ -3804,6 +3865,10 @@ void lazy_pot::collect_reads_and_writes(
         next++;
         if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
           where = to_index_expr(next->ssa_rhs).index();
+        }
+        else if (next != ssa_steps.end() && next->is_assignment() &&
+                 access_offset(next->ssa_rhs).is_not_nil()) { //ARRAY sotto un if
+          where = access_offset(next->ssa_rhs);
         }
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
