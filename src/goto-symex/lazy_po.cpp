@@ -3039,12 +3039,37 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
     found = true;
     return true;
   }
+  // `if`'s own condition is always its first operand, by construction --
+  // skip it by position, not by type. The previous type-based skip
+  // (`op.type().id() == ID_bool`) assumed the condition was the only
+  // bool-typed operand, which holds when the if's VALUE type is the array
+  // element type (the #305 pointer-identity chain this was written for).
+  // It breaks when the if itself computes a boolean result, as happens one
+  // level up from the `not`/`equal` case just below, inside a guard
+  // update: then the true/false branches are bool-typed too, and the old
+  // skip wrongly discarded them along with the condition.
   if(e.id() == ID_if)
+  {
+    const if_exprt &ife = to_if_expr(e);
+    return with_index_under_if(ife.true_case(), out, found) &&
+           with_index_under_if(ife.false_case(), out, found);
+  }
+  // Reading `arr[k]` inside an `if`-condition (`if (arr[k] != 0) ...`),
+  // rather than materialising it into a plain temporary first, folds the
+  // dereference straight into the boolean test: `!(arr[k] == 0)`. The
+  // if-chain above is still there (that part was already handled), but
+  // each branch is now `not(equal(index_or_with, constant))`, not a bare
+  // `with`/`index` directly -- so the recursion stopped one layer too
+  // early and the read landed on the sentinel. `not`/`equal`/`notequal`
+  // carry the same offset as whichever operand resolves to one; the other
+  // operand is typically a plain constant (e.g. the `0` being compared
+  // against), which recurses here too but contributes nothing (falls to
+  // the catch-all below without touching `found`/`out`). See
+  // ~/tidrace_check/tid_ifcond_const.c.
+  if(e.id() == ID_not || e.id() == ID_equal || e.id() == ID_notequal)
   {
     for(const auto &op : e.operands())
     {
-      if(op.type().id() == ID_bool)
-        continue;
       if(!with_index_under_if(op, out, found))
         return false;
     }
@@ -3802,6 +3827,14 @@ void lazy_pot::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
+        // A read/write whose value feeds an if-condition's guard update
+        // (`if (arr[k] != 0) ...`) has a GOTO step between it and the
+        // assignment that actually computes the guard -- the GOTO is the
+        // branch instruction itself, emitted before the guard is folded in.
+        // Skip exactly that one step, no further, before giving up. See
+        // ~/tidrace_check/tid_ifcond_const.c.
+        if(next != ssa_steps.end() && next->type == goto_trace_stept::typet::GOTO)
+          next++;
         if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
           where = to_with_expr(next->ssa_rhs).where();
         }
@@ -3899,6 +3932,11 @@ void lazy_pot::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
+        // See the write-site comment above: skip exactly one GOTO step
+        // between this read and the assignment that consumes it, when the
+        // read feeds an if-condition's guard update directly.
+        if(next != ssa_steps.end() && next->type == goto_trace_stept::typet::GOTO)
+          next++;
         if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
           where = to_index_expr(next->ssa_rhs).index();
         }
