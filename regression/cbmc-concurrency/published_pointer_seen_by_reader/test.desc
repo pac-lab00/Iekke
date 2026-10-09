@@ -1,0 +1,38 @@
+CORE
+main.c
+--unwind 4 --rounds 4 --allow-pointer-unsoundness --refined-pointer-analysis
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+A pointer published by a thread symexed later was invisible to an earlier
+read -- CBMC issue #305.
+
+Value sets are built in symex order. `reader` is symexed first, so its
+`p = gp` records the only target `gp` has at that moment, `&n1`. `updater`
+publishes `&n2` afterwards, which repairs `gp`'s own entry but not `p`'s:
+nothing revisits a local that was assigned from the pointer before the
+publication existed. `p->x` then resolves against `n1` alone and the
+interleaving where the reader runs last is never encoded, so the assertion
+appears to hold.
+
+Only a previous pass can know what gets published, which is what
+--refined-pointer-analysis collects: it iterates symex until the union of
+every state's value set stops growing. The bug was in how it applied the
+result -- it unioned that whole set into every state at every step, widening
+every pointer everywhere. Measured, that tripled the formula and suppressed
+race detection in both directions: it removed `libvsync/hemlock`'s real race
+exactly as readily as `mcslock`'s spurious one, and invented false alarms of
+its own.
+
+It is now applied where the staleness actually bites: at a shared read of a
+pointer, that one object's entry is topped up from the collected set, and
+nothing else is touched. On this program the race is found either way; what
+the narrower rule buys is that `hemlock` and
+`28-race_reach_82-list_racefree` keep their correct answers, which the wide
+version took away.
+
+The flag remains off by default. Without it there is no previous pass, so
+there is nothing to seed from and the behaviour is unchanged.

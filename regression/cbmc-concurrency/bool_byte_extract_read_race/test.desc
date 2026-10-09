@@ -1,0 +1,25 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Builds on `if_condition_read_race`: a `_Bool` element is one byte wide, so
+reading it as a value (inside `if (flags[0]) ...`) goes through an explicit
+byte extraction on top of the if-condition shape that fix already handled:
+`byte_extract(obj[k], 0, c_bool[8]) != 0`, not a bare `obj[k]` under the
+comparison. `with_index_under_if` had no case for
+`ID_byte_extract_little_endian`/`_big_endian`, so it never recursed into
+the object being extracted from to find the nested index.
+
+Reproducer: a symbolic-size malloc'd `_Bool` array, written unprotected in
+main, read inside `if (flags[0])` under a mutex that only the reader holds
+(still racy). Reported SUCCESSFUL before this fix, FAILED after.
+
+See `bool_byte_extract_read_race_ordered`, the negative control: same
+shape but the write happens-before the reader thread is created (and is
+itself mutex-protected), so there is no race -- must stay SUCCESSFUL before
+and after.

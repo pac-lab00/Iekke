@@ -7,6 +7,8 @@
 #include "symex_target_equation.h"
 
 #include <cstdint>
+#include <map>
+#include <set>
 #include <optional>
 #include <vector>
 
@@ -20,9 +22,10 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
-      read_implication(read_implication)
+      read_implication(read_implication), narrow_shared(narrow_shared),
+      thread_private(thread_private), array_rf(array_rf)
   {
   }
 
@@ -36,6 +39,32 @@ private:
   /// nested `rounds` deep; see create_read_constraints
   const bool read_implication = false;
   const bool por;
+  /// carry only the byte range a shared object is read through; see
+  /// compute_narrowings
+  const bool narrow_shared = false;
+
+  /// The byte range of a shared object that the equation ever reads, for
+  /// objects whose chain can safely carry only that range.
+  struct narrowingt
+  {
+    std::size_t offset_bits;
+    std::size_t width_bits;
+  };
+  std::map<irep_idt, narrowingt> narrowings;
+
+  /// state the read-from of objects only one thread touches once, in program
+  /// order, instead of once per round; see compute_private_objects
+  const bool thread_private = false;
+  /// answer an array element read by matching the writes, instead of carrying
+  /// the whole array through the chain; see compute_array_rf
+  const bool array_rf = false;
+
+  void compute_narrowings(const symex_target_equationt &);
+  /// The value the lazy chain carries for `variable`: the whole value, or the
+  /// slice of it that reads observe.
+  exprt narrowed_value(const irep_idt &variable, const exprt &value) const;
+  /// The type that value has.
+  typet narrowed_type(const irep_idt &variable, const typet &type) const;
 
   struct shared_event
   {
@@ -44,6 +73,9 @@ private:
     unsigned label;
     unsigned num;
     unsigned thread;
+    /// Excused from race pairing by the publication filter. Still part of
+    /// the value flow: see collect_reads_and_writes.
+    bool race_exempt = false;
   };
   struct lazy_variable
   {
@@ -134,6 +166,36 @@ private:
   std::unordered_map<unsigned, symbol_exprt> dr_atom;
   std::unordered_map<unsigned, symbol_exprt> dr_loc;
   std::unordered_set<irep_idt> global_variables;
+  /// objects moved out of global_variables by compute_private_objects, with
+  /// their accesses moved out of reads/writes as well -- the POR windows and
+  /// the canonicality constraints look those maps up by variable and index
+  /// into a lazy chain these objects no longer have
+  std::set<irep_idt> private_objects;
+  std::unordered_map<irep_idt, std::vector<shared_event>> private_writes;
+  std::unordered_map<irep_idt, std::vector<shared_event>> private_reads;
+
+  void dead_audit(const symex_target_equationt &);
+  /// One shared write to an array object, decomposed. A point update matches a
+  /// read when its index agrees; a whole-array constant initialiser matches
+  /// every index, which is also how it serves as the value before it.
+  struct array_writet
+  {
+    std::size_t event;     ///< index into writes.at(variable)
+    bool whole_array;      ///< a constant initialiser rather than a point update
+    exprt index;
+    exprt value;
+  };
+  /// objects whose element reads are resolved by matching writes
+  std::map<irep_idt, std::vector<array_writet>> array_rf_writes;
+  /// the element value before any write, from the constant initialiser
+  std::map<irep_idt, exprt> array_rf_default;
+
+  void compute_array_rf(const symex_target_equationt &);
+  void create_array_rf_constraints(symex_target_equationt &);
+
+  void compute_private_objects();
+  void create_private_constraints(symex_target_equationt &);
+  exprt happens_in_any_round(const shared_event &);
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;
@@ -312,6 +374,12 @@ private:
   void create_nrp_tot_symbol(symex_target_equationt &equation);
 
   void create_atomic_canonical(symex_target_equationt &equation);
+
+  /// True when an access of \p b conflicts with an access of another
+  /// thread, so the block's position is observable to data-race detection
+  /// even when it is invisible to the read-from equivalence that justifies
+  /// canonicality. See create_atomic_canonical.
+  bool block_can_race(const atomic_block &b) const;
 
   symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
 

@@ -58,7 +58,13 @@ operator()(propertiest &properties)
 
     // Have we got anything to check? Otherwise we return DONE.
     if(!has_properties_to_check(properties))
+    {
+      // Returning here with nothing to check is a PASS by default. That is
+      // right when the program really has nothing to check, and wrong when
+      // the bound cut every path before anything was generated.
+      note_nothing_verified(properties, result.updated_properties);
       return result;
+    }
 
     solver_runtime += prepare_property_decider(properties);
 

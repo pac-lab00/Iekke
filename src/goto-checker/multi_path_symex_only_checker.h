@@ -45,6 +45,12 @@ protected:
 
   /// Updates the \p properties from the `equation` and
   /// adds their property IDs to \p updated_properties.
+  /// Record that a truncated run generated no property at all, so that an
+  /// empty set is not folded into a PASS. See the definition.
+  void note_nothing_verified(
+    propertiest &properties,
+    std::unordered_set<irep_idt> &updated_properties);
+
   virtual void update_properties(
     propertiest &properties,
     std::unordered_set<irep_idt> &updated_properties);

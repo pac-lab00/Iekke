@@ -1,0 +1,9 @@
+CORE
+main.c
+--datarace --por --unwind 2 --rounds 3 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] line 27 assertion !done: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

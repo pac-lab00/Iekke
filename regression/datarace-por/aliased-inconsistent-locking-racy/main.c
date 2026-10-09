@@ -2,16 +2,15 @@
 #include <stdlib.h>
 /* Same shape as 09-regions_03-list2_rc: the node reached as A->next and as
    B->next is one object, guarded by A_mutex in one place and B_mutex in the
-   other -- a genuine race.
+   other -- a genuine race. Both of its accesses happen after the node is
+   published.
 
-   KNOWNBUG. We do not actually detect that race. Both of its accesses happen
-   after the node is published, and the encoding never pairs them; what used
-   to make this report FAILED was malloc's own initialisation writes, which
-   happen before publication and cannot race with anything. The publication
-   filter removes those, and the program then reports SUCCESSFUL at every
-   bound tried (unwind 2..21, rounds 3..6). An earlier version of this
-   comment claimed the program has no pre-publication writes -- allocation
-   supplies them. */
+   Was KNOWNBUG. The publication filter excuses malloc's initialisation
+   writes, which happen before publication, from race pairing -- correctly --
+   but it also dropped them from the value flow, so the lazy chain started
+   from the thread's first increment and that increment had to read its own
+   result. No run reached either increment, and the race was never
+   witnessed. See publish-then-rmw-racy. */
 struct s { int datum; struct s *next; } *A, *B;
 pthread_mutex_t A_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t B_mutex = PTHREAD_MUTEX_INITIALIZER;

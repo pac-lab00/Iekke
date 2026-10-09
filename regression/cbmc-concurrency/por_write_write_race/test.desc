@@ -1,0 +1,43 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Partial-order reduction dropped schedules that exhibit a data race.
+
+`create_atomic_canonical` constrains every atomic block with
+
+    fire_cond => (ABR v ABW)
+
+so a block may occupy a schedule slot only if one of its reads observes a
+value from elsewhere (ABR) or one of its writes is itself observed (ABW).
+Both witnesses are built from read-side quantities -- NRP, WINR, LW, LOW --
+so a write that no read ever observes is invisible to them. The effect is to
+keep one representative per read-from equivalence class, which is sound for
+reachability: two schedules that differ only in the order of two writes
+nobody reads really do compute the same thing.
+
+A data race is not preserved by that equivalence. It is concurrency of
+conflicting accesses, not flow of values, so the two schedules in such a
+class can disagree about whether a race occurs -- and in this program they
+do. The block holding `datum = 5` has no read, and its write is never
+observed, so neither witness can be satisfied and the block was never placed
+where it races with main's `datum = 8`. The answer was SUCCESSFUL, against
+FAILED under --no-por.
+
+A read on either side restores it: make the racing access a read, or let the
+block read `datum` before writing it, and the race is found with POR on.
+That is the dividing line -- a read/write conflict leaves a read-from edge
+for the witnesses to find, a write/write conflict leaves none -- so the fix
+exempts from canonicality exactly those blocks that write an object another
+thread also writes. Under --datarace only; the constraint is unchanged for
+reachability, where it is sound, so the reduction unreach-call benefits from
+is untouched.
+
+On the corpus this is `pthread-ext/semaphore-posix-race`, SUCCESSFUL with POR
+and FAILED without, worth -32 as a missed bug against +1 for finding it. The
+companion flag is LAZYPO_POR_RACE_EXEMPT (ww, wide, off) for the ablation.

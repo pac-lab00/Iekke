@@ -2,6 +2,15 @@
 /// LazyCSeq context-bounded concurrency SSA transformation
 
 #include "lazy_po.h"
+#include <util/ssa_expr.h>
+#include <cctype>
+#include <optional>
+#include <tuple>
+#include <util/expr_util.h>
+#include <util/pointer_offset_size.h>
+#include <util/byte_operators.h>
+#include <string>
+#include <map>
 #include <algorithm>
 #include <set>
 #include <cstdlib>
@@ -173,6 +182,12 @@ void lazy_pot::operator()(
                 << " (ssa_lhs non e' un symbol_exprt; quelle scritture sono "
                    "invisibili agli altri thread)" << messaget::eom;
 
+  compute_private_objects();
+  phase("private-objects");
+
+  compute_array_rf(equation);
+  phase("array-rf-plan");
+
   if(por)
   {
     build_atomic_blocks();
@@ -184,6 +199,12 @@ void lazy_pot::operator()(
 
   create_read_constraints(equation);
   phase("base-reads");
+
+  create_private_constraints(equation);
+  phase("private-reads");
+
+  create_array_rf_constraints(equation);
+  phase("array-read-from");
 
   if(por)
   {
@@ -450,19 +471,1026 @@ void lazy_pot::operator()(
     << "ms" << messaget::eom;
 }
 
+
+/// Drop the L2 counter so every version of an object maps to one name. The L1
+/// frame suffix stays: that is what global_variables is keyed on.
+///
+/// The counter is `#` followed by digits, and it is not always at the end --
+/// field sensitivity appends the component after it, as in
+/// `queue#1..element`. Erasing from the `#` to the end would turn that into
+/// `queue`, so the object would never be recognised and every analysis keyed
+/// on this name would silently decline it.
+static irep_idt narrowing_base(const exprt &expr)
+{
+  if(expr.id() != ID_symbol)
+    return irep_idt{};
+  std::string id = id2string(to_symbol_expr(expr).get_identifier());
+  const std::size_t hash = id.find('#');
+  if(hash == std::string::npos)
+    return irep_idt{id};
+  std::size_t end = hash + 1;
+  while(end < id.size() && isdigit(static_cast<unsigned char>(id[end])))
+    ++end;
+  id.erase(hash, end - hash);
+  return irep_idt{id};
+}
+
+namespace
+{
+/// What the equation does to one shared object, as far as narrowing cares.
+struct object_usaget
+{
+  bool read_seen = false;
+  bool unusable = false;  ///< a use that would observe bits outside the range
+  std::size_t lo = 0;
+  std::size_t hi = 0;
+
+  void read(std::size_t offset_bits, std::size_t width_bits)
+  {
+    if(!read_seen)
+    {
+      lo = offset_bits;
+      hi = offset_bits + width_bits;
+      read_seen = true;
+    }
+    else
+    {
+      lo = std::min(lo, offset_bits);
+      hi = std::max(hi, offset_bits + width_bits);
+    }
+  }
+};
+} // namespace
+
+/// Can an assignment producing `base` with this right-hand side be narrowed?
+/// Only shapes whose bits outside the read range are the object's own previous
+/// bits, fresh nondeterminism, or a constant -- none of which a read can
+/// distinguish once the bare-use check below has passed.
+static bool narrowing_rhs_ok(const exprt &expr, const irep_idt &base)
+{
+  if(expr.id() == ID_nondet_symbol || expr.is_constant())
+    return true;
+  if(expr.id() == ID_symbol)
+    return narrowing_base(expr) == base; // a copy between versions
+  if(
+    expr.id() == ID_byte_update_little_endian ||
+    expr.id() == ID_byte_update_big_endian)
+  {
+    return narrowing_rhs_ok(expr.operands()[0], base);
+  }
+  if(expr.id() == ID_if) // a phi over two acceptable versions
+  {
+    return narrowing_rhs_ok(expr.operands()[1], base) &&
+           narrowing_rhs_ok(expr.operands()[2], base);
+  }
+  if(expr.id() == ID_typecast)
+    return narrowing_rhs_ok(expr.operands()[0], base);
+  return false;
+}
+
+static void narrowing_scan(
+  const exprt &,
+  const namespacet &,
+  const std::set<irep_idt> &,
+  std::map<irep_idt, object_usaget> &);
+
+/// Walk a right-hand side narrowing_rhs_ok accepted. Its shape is understood,
+/// so the object's own symbols in it are not bare uses; the values written and
+/// the phi conditions still go through the general scan.
+static void narrowing_scan_accepted(
+  const exprt &expr,
+  const irep_idt &base,
+  const namespacet &ns,
+  const std::set<irep_idt> &tracked,
+  std::map<irep_idt, object_usaget> &usage)
+{
+  if(expr.id() == ID_if)
+  {
+    narrowing_scan(expr.operands()[0], ns, tracked, usage);
+    narrowing_scan_accepted(expr.operands()[1], base, ns, tracked, usage);
+    narrowing_scan_accepted(expr.operands()[2], base, ns, tracked, usage);
+  }
+  else if(expr.id() == ID_typecast)
+  {
+    narrowing_scan_accepted(expr.operands()[0], base, ns, tracked, usage);
+  }
+  else if(
+    expr.id() == ID_byte_update_little_endian ||
+    expr.id() == ID_byte_update_big_endian)
+  {
+    // a write does not widen the chain -- see the file comment
+    narrowing_scan_accepted(expr.operands()[0], base, ns, tracked, usage);
+    narrowing_scan(expr.operands()[1], ns, tracked, usage);
+    narrowing_scan(expr.operands()[2], ns, tracked, usage);
+  }
+  // symbol / nondet_symbol / constant: nothing to record
+}
+
+/// Record the byte ranges reads take out of each tracked object, and flag any
+/// use that would observe it some other way.
+static void narrowing_scan(
+  const exprt &expr,
+  const namespacet &ns,
+  const std::set<irep_idt> &tracked,
+  std::map<irep_idt, object_usaget> &usage)
+{
+  // Taking an object's address does not observe its value; by the time symex
+  // has produced this equation every dereference has already been resolved
+  // into the byte_extract/byte_update forms handled here. field_sensitivityt
+  // skips ID_address_of for the same reason.
+  if(expr.id() == ID_address_of)
+    return;
+
+  const bool is_extract = expr.id() == ID_byte_extract_little_endian ||
+                          expr.id() == ID_byte_extract_big_endian;
+  const bool is_update = expr.id() == ID_byte_update_little_endian ||
+                         expr.id() == ID_byte_update_big_endian;
+
+  if(is_extract || is_update)
+  {
+    const irep_idt base = narrowing_base(expr.operands()[0]);
+    if(!base.empty() && tracked.count(base) != 0)
+    {
+      auto &u = usage[base];
+      const auto offset = numeric_cast<mp_integer>(expr.operands()[1]);
+      const typet &accessed_type =
+        is_extract ? expr.type() : expr.operands()[2].type();
+      const auto width = pointer_offset_bits(accessed_type, ns);
+      if(!offset.has_value() || !width.has_value() || *offset < 0)
+        u.unusable = true;
+      else if(is_extract)
+      {
+        u.read(
+          numeric_cast_v<std::size_t>(*offset) * 8,
+          numeric_cast_v<std::size_t>(*width));
+      }
+
+      // operand 0 is accounted for; the rest can still hold other uses
+      for(std::size_t i = 1; i < expr.operands().size(); ++i)
+        narrowing_scan(expr.operands()[i], ns, tracked, usage);
+      return;
+    }
+  }
+
+  const irep_idt base = narrowing_base(expr);
+  if(!base.empty() && tracked.count(base) != 0)
+  {
+    // a bare occurrence: a whole-object copy, comparison or argument. The
+    // chain has to keep every bit this could observe.
+    usage[base].unusable = true;
+  }
+
+  for(const auto &op : expr.operands())
+    narrowing_scan(op, ns, tracked, usage);
+}
+
+void lazy_pot::compute_narrowings(const symex_target_equationt &equation)
+{
+  narrowings.clear();
+  if(!narrow_shared)
+    return;
+
+  std::set<irep_idt> tracked;
+  for(const auto &v : global_variables)
+    if(writes.count(v) != 0)
+      tracked.insert(v);
+  // compute_private_objects has already moved the single-thread objects out of
+  // global_variables, and they are narrowed on the same terms
+  for(const auto &v : private_objects)
+    if(private_writes.count(v) != 0)
+      tracked.insert(v);
+  if(tracked.empty())
+    return;
+
+  std::map<irep_idt, object_usaget> usage;
+  for(const auto &step : equation.SSA_steps)
+  {
+    bool lhs_handled = false;
+    if(!step.ssa_lhs.is_nil() && step.is_assignment())
+    {
+      const irep_idt lhs_base = narrowing_base(step.ssa_lhs);
+      if(!lhs_base.empty() && tracked.count(lhs_base) != 0)
+      {
+        if(narrowing_rhs_ok(step.ssa_rhs, lhs_base))
+        {
+          narrowing_scan_accepted(step.ssa_rhs, lhs_base, ns, tracked, usage);
+          lhs_handled = true;
+        }
+        else
+          usage[lhs_base].unusable = true;
+      }
+    }
+
+    if(!step.ssa_rhs.is_nil() && !lhs_handled)
+      narrowing_scan(step.ssa_rhs, ns, tracked, usage);
+    // for an assignment or a decl cond_expr is just `ssa_lhs == ssa_rhs`, so
+    // scanning it would re-read the target as a bare use of itself
+    if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
+      narrowing_scan(step.cond_expr, ns, tracked, usage);
+    if(!step.guard.is_nil())
+      narrowing_scan(step.guard, ns, tracked, usage);
+  }
+
+  for(const auto &v : tracked)
+  {
+    const auto it = usage.find(v);
+    if(it == usage.end() || it->second.unusable || !it->second.read_seen)
+      continue;
+    const auto &ws = writes.count(v) != 0 ? writes.at(v) : private_writes.at(v);
+    const auto full = pointer_offset_bits(ws.front().s_it->ssa_lhs.type(), ns);
+    if(!full.has_value() || *full <= 0)
+      continue;
+    const std::size_t lo = it->second.lo;
+    const std::size_t hi = it->second.hi;
+    // byte_extract addresses bytes, so only a byte-aligned slice can be named
+    if(lo % 8 != 0 || (hi - lo) % 8 != 0)
+      continue;
+    if(hi - lo >= numeric_cast_v<std::size_t>(*full))
+      continue;
+    narrowings.emplace(v, narrowingt{lo, hi - lo});
+  }
+}
+
+exprt lazy_pot::narrowed_value(const irep_idt &variable, const exprt &value) const
+{
+  const auto it = narrowings.find(variable);
+  if(it == narrowings.end())
+    return value;
+  return make_byte_extract(
+    value,
+    from_integer(it->second.offset_bits / 8, c_index_type()),
+    unsignedbv_typet(it->second.width_bits));
+}
+
+typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
+{
+  const auto it = narrowings.find(variable);
+  if(it == narrowings.end())
+    return type;
+  return unsignedbv_typet(it->second.width_bits);
+}
+
+
+
+/// Is this expression a whole-array constant whose elements are all the same
+/// value? `array_of` says so directly; an `array` literal has to be checked.
+/// Anything else cannot serve as the value an element holds before any write.
+static std::optional<exprt> uniform_array_value(const exprt &expr)
+{
+  if(expr.id() == ID_array_of)
+    return to_array_of_expr(expr).what();
+
+  if(expr.id() == ID_array && !expr.operands().empty())
+  {
+    const exprt &first = expr.operands().front();
+    for(const auto &op : expr.operands())
+      if(op != first)
+        return {};
+    return first;
+  }
+
+  return {};
+}
+
+void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
+{
+  array_rf_writes.clear();
+  array_rf_default.clear();
+  if(!array_rf)
+    return;
+
+  // candidates: shared objects of array type that are still in the chain
+  std::set<irep_idt> candidates;
+  for(const auto &v : global_variables)
+  {
+    if(writes.count(v) == 0 || writes.at(v).empty())
+      continue;
+    if(writes.at(v).front().s_it->ssa_lhs.type().id() == ID_array)
+      candidates.insert(v);
+  }
+  if(candidates.empty())
+    return;
+
+  // Every occurrence of one of these objects has to be either the base of a
+  // `with` or the array of an `index`. A use of the array as a whole -- a copy,
+  // a comparison, an argument -- has no index to match on, so the object keeps
+  // its chain. Taking an address does not read the value.
+  std::set<irep_idt> opaque;
+  std::map<irep_idt, std::vector<std::pair<irep_idt, exprt>>> index_uses;
+  const bool why = getenv("LAZYPO_ARRAY_WHY") != nullptr;
+  std::function<void(const exprt &, const irep_idt &)> scan =
+    [&](const exprt &expr, const irep_idt &parent) {
+    if(expr.id() == ID_address_of)
+      return;
+
+    if(expr.id() == ID_index)
+    {
+      const auto &idx = to_index_expr(expr);
+      if(idx.array().id() == ID_symbol)
+      {
+        const irep_idt id = to_symbol_expr(idx.array()).get_identifier();
+        const irep_idt base = narrowing_base(idx.array());
+        if(candidates.count(base) != 0)
+        {
+          index_uses[base].emplace_back(id, idx.index());
+          scan(idx.index(), expr.id());
+          return;
+        }
+      }
+    }
+
+    if(expr.id() == ID_with && !expr.operands().empty() &&
+       expr.operands()[0].id() == ID_symbol &&
+       candidates.count(narrowing_base(expr.operands()[0])) != 0)
+    {
+      for(std::size_t i = 1; i < expr.operands().size(); ++i)
+        scan(expr.operands()[i], expr.id());
+      return;
+    }
+
+    if(expr.id() == ID_symbol)
+    {
+      const irep_idt base = narrowing_base(expr);
+      if(candidates.count(base) != 0 && opaque.insert(base).second && why)
+        std::cerr << "ARRAY_WHY_DETAIL " << base << " used bare inside a "
+                  << parent << "\n";
+      return;
+    }
+
+    for(const auto &op : expr.operands())
+      scan(op, expr.id());
+  };
+
+  for(const auto &step : equation.SSA_steps)
+  {
+    // `a#3 = a#2` copies one version of the object to another. It does not
+    // observe the array as a whole, so it must not force the chain to stay --
+    // and the lambda cannot tell, since it never sees the left-hand side.
+    // twalock declined for exactly this: __twa_array#3 = __twa_array#<prev>.
+    const bool own_copy =
+      step.is_assignment() && !step.ssa_lhs.is_nil() &&
+      step.ssa_rhs.id() == ID_symbol &&
+      narrowing_base(step.ssa_rhs) == narrowing_base(step.ssa_lhs) &&
+      candidates.count(narrowing_base(step.ssa_lhs)) != 0;
+
+    if(!step.ssa_rhs.is_nil() && !own_copy)
+      scan(
+          step.ssa_rhs,
+          step.ssa_lhs.is_nil()
+            ? irep_idt{"assignment-rhs"}
+            : irep_idt{"assignment-rhs, lhs=" +
+                       id2string(to_symbol_expr(step.ssa_lhs).get_identifier())});
+    if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
+      scan(step.cond_expr, "cond_expr");
+    if(!step.guard.is_nil())
+      scan(step.guard, "guard");
+  }
+
+  // how each write decomposes, by the assignment that produces its symbol
+  std::map<irep_idt, exprt> defining_rhs;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(!step.is_assignment() || step.ssa_lhs.is_nil())
+      continue;
+    if(candidates.count(narrowing_base(step.ssa_lhs)) == 0)
+      continue;
+    defining_rhs.emplace(
+      to_symbol_expr(step.ssa_lhs).get_identifier(), step.ssa_rhs);
+  }
+
+  const bool explain = getenv("LAZYPO_ARRAY_WHY") != nullptr;
+  for(const auto &variable : candidates)
+  {
+    if(opaque.count(variable) != 0)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined: used as a whole object somewhere\n";
+      continue;
+    }
+
+    // every index use has to name a shared read event, since that is what
+    // places it in the schedule
+    std::set<irep_idt> read_symbols;
+    for(const auto &r : reads.count(variable) ? reads.at(variable)
+                                              : std::vector<shared_event>{})
+      read_symbols.insert(to_symbol_expr(r.s_it->ssa_lhs).get_identifier());
+    bool indices_placed = true;
+    for(const auto &use : index_uses[variable])
+      if(read_symbols.count(use.first) == 0)
+        indices_placed = false;
+    if(!indices_placed)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined: an index() does not name a shared read event\n";
+      continue;
+    }
+
+    std::vector<array_writet> decomposed;
+    std::optional<exprt> initial;
+    bool ok = true;
+    const auto &ws = writes.at(variable);
+    for(std::size_t i = 0; i < ws.size(); ++i)
+    {
+      const irep_idt id = to_symbol_expr(ws[i].s_it->ssa_lhs).get_identifier();
+      const auto it = defining_rhs.find(id);
+      if(it == defining_rhs.end())
+      {
+        if(getenv("LAZYPO_ARRAY_WHY") != nullptr)
+          std::cerr << "ARRAY_WHY_NODEF " << variable << " write symbol " << id
+                    << " has no defining assignment in the equation\n";
+        ok = false;
+        break;
+      }
+      const exprt &rhs = it->second;
+      if(rhs.id() == ID_with && rhs.operands().size() == 3 &&
+         narrowing_base(rhs.operands()[0]) == variable)
+      {
+        decomposed.push_back(
+          array_writet{i, false, rhs.operands()[1], rhs.operands()[2]});
+        continue;
+      }
+      if(rhs.id() == ID_symbol && narrowing_base(rhs) == variable)
+        continue; // a copy of the previous version writes nothing new
+
+      const auto uniform = uniform_array_value(rhs);
+      if(uniform.has_value())
+      {
+        if(!initial.has_value())
+          initial = uniform;
+        decomposed.push_back(
+          array_writet{i, true, nil_exprt{}, uniform.value()});
+        continue;
+      }
+      if(getenv("LAZYPO_ARRAY_WHY") != nullptr)
+        std::cerr << "ARRAY_WHY_WRITE " << variable << " rhs is " << rhs.id()
+                  << (rhs.id() == ID_with && !rhs.operands().empty()
+                        ? " over " + id2string(narrowing_base(rhs.operands()[0]))
+                        : std::string{})
+                  << "\n";
+      ok = false; // a havoc, a copy, a non-uniform literal: no single value
+      break;
+    }
+    if(!ok || !initial.has_value())
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable << " declined: "
+                  << (ok ? "no uniform constant initialiser"
+                         : "a write is not a single-index update")
+                  << "\n";
+      continue;
+    }
+
+    // Cost model. The chain amortises over reads and wins on a narrow object
+    // read often; the nested selection wins on a wide object written rarely.
+    // Require a clear margin, so a formula is not perturbed for little.
+    const typet &t = ws.front().s_it->ssa_lhs.type();
+    const auto array_bits = pointer_offset_bits(t, ns);
+    const auto elem_bits = pointer_offset_bits(to_array_type(t).element_type(), ns);
+    if(!array_bits.has_value() || !elem_bits.has_value() || *elem_bits <= 0)
+      continue;
+    const double W = static_cast<double>(ws.size());
+    const double Rd =
+      reads.count(variable) ? static_cast<double>(reads.at(variable).size()) : 0;
+    const double R = static_cast<double>(rounds);
+    const double index_bits = 32;
+    const double chain_cost = (W + Rd) * R * static_cast<double>(array_bits->to_long());
+    // a read at round r sees the writes of every earlier round too, so the
+    // selection is W*R deep on average half the time
+    const double rf_cost =
+      Rd * R * (W * R / 2.0) * (static_cast<double>(elem_bits->to_long()) + index_bits);
+    if(rf_cost <= 0 || chain_cost < 2.0 * rf_cost)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined by the cost model: chain=" << chain_cost
+                  << " selection=" << rf_cost << " ratio="
+                  << (rf_cost > 0 ? chain_cost / rf_cost : 0)
+                  << " (W=" << W << " reads=" << Rd << " array_bits="
+                  << array_bits->to_long() << ")\n";
+      continue;
+    }
+
+    if(explain)
+      std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: chain=" << chain_cost
+                << " selection=" << rf_cost << " ratio=" << chain_cost / rf_cost
+                << "\n";
+    array_rf_writes.emplace(variable, std::move(decomposed));
+    array_rf_default.emplace(variable, initial.value());
+  }
+}
+
+void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
+{
+  if(array_rf_writes.empty())
+    return;
+
+  // position of an event in the schedule chain, for the "writes before this
+  // read" test; the same lexicographic order the chain is sorted by
+  const auto before = [](std::size_t ra, const shared_event &a,
+                         std::size_t rb, const shared_event &b) {
+    return std::make_tuple(ra, a.thread, a.label, a.num) <
+           std::make_tuple(rb, b.thread, b.label, b.num);
+  };
+
+  std::size_t fresh = 0;
+  std::map<std::pair<irep_idt, std::string>, ssa_exprt> replacement;
+
+  for(const auto &entry : array_rf_writes)
+  {
+    const irep_idt &variable = entry.first;
+    const auto &ws = writes.at(variable);
+    const exprt &dflt = array_rf_default.at(variable);
+    const typet elem_type = to_array_type(
+      ws.front().s_it->ssa_lhs.type()).element_type();
+
+    std::map<irep_idt, const shared_event *> read_of;
+    if(reads.count(variable))
+      for(const auto &r : reads.at(variable))
+        read_of.emplace(to_symbol_expr(r.s_it->ssa_lhs).get_identifier(), &r);
+
+    // rewrite every index(V#k, j) into a fresh scalar, and say what it holds
+    std::function<void(exprt &)> rewrite = [&](exprt &expr) {
+      if(expr.id() == ID_address_of)
+        return;
+
+      if(expr.id() == ID_index && expr.operands()[0].id() == ID_symbol &&
+         narrowing_base(expr.operands()[0]) == variable)
+      {
+        const irep_idt id =
+          to_symbol_expr(expr.operands()[0]).get_identifier();
+        const auto rd = read_of.find(id);
+        if(rd != read_of.end())
+        {
+          exprt index = expr.operands()[1];
+          rewrite(index);
+          const auto key =
+            std::make_pair(id, index.pretty());
+          auto it = replacement.find(key);
+          if(it == replacement.end())
+          {
+            // An ssa_exprt, not a plain symbol: this replaces an
+            // index() inside existing SSA steps, and build_goto_trace
+            // asserts that what it finds there carries ID_C_SSA_symbol.
+            // A bare symbol_exprt passes every solver path and then
+            // aborts in "Building error trace" -- so it only shows up
+            // when a counterexample is actually built, which is exactly
+            // what --graphml-witness does and what no SUCCESSFUL run
+            // ever reaches.
+            const ssa_exprt elt{symbol_exprt{
+              "arf_" + id2string(id) + "_" + std::to_string(fresh++),
+              elem_type}};
+
+            for(std::size_t round = 1; round <= rounds; ++round)
+            {
+              // The write that wins is the LAST one before this read in
+              // schedule order, so the candidates have to be folded in
+              // increasing position -- the one wrapped last ends up outermost
+              // and takes priority. Folding them in any other order silently
+              // elects the wrong write: with the writes walked backwards and
+              // the rounds forwards, the outermost became the FIRST write at
+              // the LAST round, i.e. the zero initialiser, which forced every
+              // read to 0 and proved away a reachable violation.
+              std::vector<std::pair<std::tuple<std::size_t, unsigned, unsigned, unsigned>,
+                                    std::size_t>> candidates;
+              for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
+              {
+                const auto &aw = entry.second[wi];
+                for(std::size_t wr = 1; wr <= rounds; ++wr)
+                {
+                  if(!before(wr, ws[aw.event], round, *rd->second))
+                    continue;
+                  candidates.emplace_back(
+                    std::make_tuple(wr, ws[aw.event].thread, ws[aw.event].label,
+                                    ws[aw.event].num),
+                    wi);
+                }
+              }
+              std::sort(candidates.begin(), candidates.end());
+
+              exprt selected = typecast_exprt::conditional_cast(dflt, elem_type);
+              for(const auto &candidate : candidates)
+              {
+                const auto &aw = entry.second[candidate.second];
+                const symbol_exprt wexec = create_exec_symbol(
+                  ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread,
+                  std::get<0>(candidate.first));
+                exprt matches = aw.whole_array
+                  ? static_cast<exprt>(wexec)
+                  : static_cast<exprt>(and_exprt{
+                      wexec,
+                      equal_exprt{
+                        typecast_exprt::conditional_cast(aw.index, index.type()),
+                        index}});
+                selected = if_exprt{
+                  matches,
+                  typecast_exprt::conditional_cast(aw.value, elem_type),
+                  selected};
+              }
+              const symbol_exprt rexec = create_exec_symbol(
+                rd->second->label, rd->second->num, rd->second->thread, round);
+              equation.constraint(
+                implies_exprt{rexec, equal_exprt{elt, selected}},
+                "array read-from " + id2string(variable),
+                rd->second->s_it->source);
+            }
+
+            it = replacement.emplace(key, elt).first;
+          }
+          expr = it->second;
+          return;
+        }
+      }
+
+      for(auto &op : expr.operands())
+        rewrite(op);
+    };
+
+    for(auto &step : equation.SSA_steps)
+    {
+      if(step.ignore)
+        continue;
+      // the assignments that build the array are no longer needed: nothing
+      // reads the array value any more
+      if(step.is_assignment() && !step.ssa_lhs.is_nil() &&
+         narrowing_base(step.ssa_lhs) == variable)
+      {
+        step.ignore = true;
+        continue;
+      }
+      if(!step.ssa_rhs.is_nil())
+        rewrite(step.ssa_rhs);
+      if(!step.cond_expr.is_nil())
+        rewrite(step.cond_expr);
+      if(!step.guard.is_nil())
+        rewrite(step.guard);
+    }
+  }
+}
+
+void lazy_pot::compute_private_objects()
+{
+  // LAZYPO_THREAD_TALLY reports the classification itself, independently of
+  // whether the flag then acts on it: how many threads actually touch each
+  // shared object, against the per-program decision goto-symex made.
+  if(getenv("LAZYPO_THREAD_TALLY") != nullptr)
+  {
+    for(const auto &gv : global_variables)
+    {
+      std::set<unsigned> write_threads, read_threads, all;
+      std::size_t nw = 0, nr = 0;
+      if(writes.count(gv))
+        for(const auto &w : writes.at(gv))
+        {
+          write_threads.insert(w.thread);
+          ++nw;
+        }
+      if(reads.count(gv))
+        for(const auto &r : reads.at(gv))
+        {
+          read_threads.insert(r.thread);
+          ++nr;
+        }
+      all = write_threads;
+      all.insert(read_threads.begin(), read_threads.end());
+      std::cerr << "THREAD_TALLY " << gv << " threads=" << all.size()
+                << " write_threads=" << write_threads.size()
+                << " read_threads=" << read_threads.size() << " writes=" << nw
+                << " reads=" << nr << "\n";
+    }
+  }
+
+  private_objects.clear();
+  if(!thread_private)
+    return;
+
+  // Classify first, and only act if the result is worth having. Rewriting the
+  // chain renumbers variables, and a multi-million-clause SAT search is
+  // chaotic in that respect: on elimination_backoff_stack only 38 of 9472
+  // shared accesses are private, the formula shrinks by 0.09%, and the search
+  // still lands on a trajectory 1.44x worse (283s -> 408s, three runs each).
+  // Measured against 13.4% of accesses on 28-race_reach_81-list_racing, where
+  // the same change takes 20.7% off the formula. So: do not perturb a formula
+  // this is not materially improving.
+  std::set<irep_idt> candidates;
+  double private_cost = 0, total_cost = 0;
+
+  for(const auto &variable : global_variables)
+  {
+    std::set<unsigned> threads;
+    std::size_t accesses = 0;
+    if(writes.count(variable) != 0)
+      for(const auto &w : writes.at(variable))
+      {
+        threads.insert(w.thread);
+        ++accesses;
+      }
+    if(reads.count(variable) != 0)
+      for(const auto &r : reads.at(variable))
+      {
+        threads.insert(r.thread);
+        ++accesses;
+      }
+
+    // Weigh an access by the width it carries, not by its count. A chain link
+    // costs width bits, so counting accesses alone misjudges a program whose
+    // private objects are many but narrow: on twalock more than 1% of the
+    // accesses are private and removing them takes 1491 clauses out of 212
+    // million -- 0.0007% -- while still renumbering every variable, which cost
+    // 12% of the runtime.
+    const typet *t = nullptr;
+    if(writes.count(variable) != 0 && !writes.at(variable).empty())
+      t = &writes.at(variable).front().s_it->ssa_lhs.type();
+    else if(reads.count(variable) != 0 && !reads.at(variable).empty())
+      t = &reads.at(variable).front().s_it->ssa_lhs.type();
+    double width = 32; // a type with no fixed size still costs something
+    if(t != nullptr)
+    {
+      const auto bits = pointer_offset_bits(*t, ns);
+      if(bits.has_value() && bits->to_long() > 0)
+        width = static_cast<double>(bits->to_long());
+    }
+    const double cost = static_cast<double>(accesses) * width;
+    total_cost += cost;
+    // One thread: no other thread can interleave a write, so the schedule
+    // cannot change what a read sees.
+    if(threads.size() <= 1)
+    {
+      candidates.insert(variable);
+      private_cost += cost;
+    }
+  }
+
+  // A hundredth of the chain's cost is the threshold. The three measured
+  // points: 28-race_reach_81 removes 13.4% and the formula drops 20.7%;
+  // elimination_backoff_stack removes 0.4% and the formula drops 0.09% while
+  // the search gets 1.44x worse; twalock removes 0.0007% and the search gets
+  // 12% worse. Below the threshold the chain being rewritten is too small to
+  // pay for renumbering every variable after it.
+  if(total_cost <= 0 || private_cost * 100 < total_cost)
+    return;
+
+  for(auto it = global_variables.begin(); it != global_variables.end();)
+  {
+    if(candidates.count(*it) != 0)
+    {
+      private_objects.insert(*it);
+      auto w = writes.find(*it);
+      if(w != writes.end())
+      {
+        private_writes.emplace(*it, std::move(w->second));
+        writes.erase(w);
+      }
+      auto r = reads.find(*it);
+      if(r != reads.end())
+      {
+        private_reads.emplace(*it, std::move(r->second));
+        reads.erase(r);
+      }
+      it = global_variables.erase(it);
+    }
+    else
+      ++it;
+  }
+}
+
+/// "this access happens at all", i.e. the thread reaches it within the round
+/// bound. Exactly the disjunction over rounds of the per-round exec, which is
+/// what a private object's read-from has to be guarded by: which round it lands
+/// in cannot change the answer, only whether it is reached.
+exprt lazy_pot::happens_in_any_round(const shared_event &event)
+{
+  exprt::operandst per_round;
+  per_round.reserve(rounds);
+  for(std::size_t round = 1; round <= rounds; ++round)
+    per_round.push_back(
+      create_exec_symbol(event.label, event.num, event.thread, round));
+  if(per_round.size() == 1)
+    return per_round.front();
+  return disjunction(per_round);
+}
+
+void lazy_pot::create_private_constraints(symex_target_equationt &equation)
+{
+  for(const auto &variable : private_objects)
+  {
+    if(private_writes.count(variable) == 0 || private_reads.count(variable) == 0)
+      continue; // nothing observes the object, so it needs no chain at all
+
+    const auto &ws = private_writes.at(variable);
+    const typet chain_type =
+      narrowed_type(variable, ws.front().s_it->ssa_lhs.type());
+
+    // Same convention as create_write_constraints: the value before any write
+    // is the first write's own ssa_lhs, and a read with nothing before it is
+    // left unconstrained rather than tied to that sentinel.
+    std::vector<exprt> chain;
+    chain.reserve(ws.size());
+    exprt previous = narrowed_value(variable, ws.front().s_it->ssa_lhs);
+
+    for(const auto &write : ws)
+    {
+      const symbol_exprt lazy_variable_exprt{
+        id2string(to_symbol_expr(write.s_it->ssa_lhs).get_identifier()) +
+          "_PRIV",
+        chain_type};
+
+      equation.constraint(
+        equal_exprt{
+          lazy_variable_exprt,
+          if_exprt{happens_in_any_round(write),
+                   narrowed_value(variable, write.s_it->ssa_lhs),
+                   typecast_exprt::conditional_cast(previous, chain_type)}},
+        "private write constraint " + id2string(variable),
+        write.s_it->source);
+
+      chain.push_back(lazy_variable_exprt);
+      previous = lazy_variable_exprt;
+    }
+
+    for(const auto &read : private_reads.at(variable))
+    {
+      // The last write before this read in the thread's own program order.
+      // Scanning the whole vector rather than stopping at the first write that
+      // is not earlier: the chain is built in collection order, and this does
+      // not have to assume that order is sorted by (label, num).
+      bool found = false;
+      std::size_t before = 0;
+      std::pair<unsigned, unsigned> best{0, 0};
+      for(std::size_t i = 0; i < ws.size(); ++i)
+      {
+        const std::pair<unsigned, unsigned> here{ws[i].label, ws[i].num};
+        if(here < std::make_pair(read.label, read.num) &&
+           (!found || best < here))
+        {
+          found = true;
+          best = here;
+          before = i;
+        }
+      }
+      if(!found)
+        continue; // reads the pre-first-write value, which constrains nothing
+
+      equation.constraint(
+        implies_exprt{
+          happens_in_any_round(read),
+          equal_exprt{narrowed_value(variable, read.s_it->ssa_lhs),
+                      typecast_exprt::conditional_cast(
+                        chain[before], chain_type)}},
+        "private read constraint " + id2string(variable),
+        read.s_it->source);
+    }
+  }
+}
+
+
+namespace
+{
+/// Collect every symbol identifier occurring in an expression.
+void dead_audit_symbols(const exprt &expr, std::set<irep_idt> &out)
+{
+  if(expr.id() == ID_symbol)
+    out.insert(to_symbol_expr(expr).get_identifier());
+  for(const auto &op : expr.operands())
+    dead_audit_symbols(op, out);
+}
+} // namespace
+
+void lazy_pot::dead_audit(const symex_target_equationt &equation)
+{
+  // every symbol the equation reads anywhere other than as a shared-read target
+  std::set<irep_idt> used;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(step.is_shared_read())
+      continue; // the read's own lhs is not a use of itself
+    if(!step.ssa_rhs.is_nil())
+      dead_audit_symbols(step.ssa_rhs, used);
+    if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
+      dead_audit_symbols(step.cond_expr, used);
+    if(!step.guard.is_nil())
+      dead_audit_symbols(step.guard, used);
+  }
+
+  std::size_t dead = 0, live = 0;
+  const auto report = [&](const irep_idt &variable,
+                          const std::vector<shared_event> &rs,
+                          const std::vector<shared_event> *ws) {
+    std::set<unsigned> lines;
+    std::size_t d = 0;
+    for(const auto &r : rs)
+    {
+      lines.insert(static_cast<unsigned>(
+        std::atoi(id2string(r.s_it->source.pc->source_location().get_line())
+                    .c_str())));
+      const irep_idt id =
+        to_symbol_expr(r.s_it->ssa_lhs).get_identifier();
+      if(used.count(id) == 0)
+      {
+        ++d;
+        ++dead;
+      }
+      else
+        ++live;
+    }
+    std::cerr << "DEAD_AUDIT " << variable << " reads=" << rs.size()
+              << " dead_reads=" << d << " distinct_read_lines=" << lines.size()
+              << " writes=" << (ws != nullptr ? ws->size() : 0) << "\n";
+  };
+
+  std::set<irep_idt> all;
+  for(const auto &e : reads)
+    all.insert(e.first);
+  for(const auto &e : writes)
+    all.insert(e.first);
+  for(const auto &e : private_reads)
+    all.insert(e.first);
+  for(const auto &e : private_writes)
+    all.insert(e.first);
+
+  static const std::vector<shared_event> none;
+  for(const auto &v : all)
+  {
+    const auto *rs = reads.count(v)           ? &reads.at(v)
+                     : private_reads.count(v) ? &private_reads.at(v)
+                                              : &none;
+    const auto *ws = writes.count(v)           ? &writes.at(v)
+                     : private_writes.count(v) ? &private_writes.at(v)
+                                               : nullptr;
+    report(v, *rs, ws);
+  }
+  std::cerr << "DEAD_AUDIT TOTAL dead_reads=" << dead << " live_reads=" << live
+            << "\n";
+
+  // Fan-out: one source-level access through a pointer that may alias k
+  // objects becomes k shared accesses, each with its own rounds-deep chain.
+  // The .i file puts whole statements on one line, so source lines cannot
+  // separate program points -- (thread, label, num) can.
+  // Key on the goto instruction itself. Label and num cannot answer this: the
+  // dereference of a pointer with k targets expands into k separate shared
+  // accesses, and each one is given its own label, so by label they all look
+  // like distinct program points. The instruction they came from is shared.
+  std::map<const void *, std::set<irep_idt>> at_point;
+  for(const auto *m : {&reads, &private_reads})
+    for(const auto &entry : *m)
+      for(const auto &r : entry.second)
+        at_point[static_cast<const void *>(&*r.s_it->source.pc)]
+          .insert(entry.first);
+
+  std::map<std::size_t, std::size_t> histogram;
+  std::size_t accesses = 0;
+  for(const auto &p : at_point)
+  {
+    ++histogram[p.second.size()];
+    accesses += p.second.size();
+  }
+  std::cerr << "DEAD_AUDIT FANOUT read program points=" << at_point.size()
+            << " shared reads=" << accesses << "\n";
+  for(const auto &h : histogram)
+    std::cerr << "DEAD_AUDIT FANOUT   " << h.second << " points read "
+              << h.first << " object(s)\n";
+}
+
 void lazy_pot::create_write_constraints(
   symex_target_equationt &equation)
 {
+  if(getenv("LAZYPO_DEAD_AUDIT") != nullptr)
+    dead_audit(equation);
+
+  // Both this chain and create_read_constraints, which runs straight after,
+  // are built from it.
+  compute_narrowings(equation);
+
   for(auto global_variable : global_variables)
   {
     if(this->writes.count(global_variable) == 0)
       continue;
-    exprt previous = this->writes.at(global_variable).front().s_it->ssa_lhs;
+    const ssa_exprt &initial =
+      this->writes.at(global_variable).front().s_it->ssa_lhs;
+    const typet chain_type = narrowed_type(global_variable, initial.type());
+
+    // The chain's round-0 element is the object's value before the first
+    // write. Unnarrowed that is the SSA symbol itself; narrowed it has to be a
+    // symbol of the slice's type, since the chain is typed symbol_exprt, so
+    // name one and tie it to the slice.
+    symbol_exprt sentinel = initial;
+    exprt previous = initial;
+    if(narrowings.count(global_variable) != 0)
+    {
+      sentinel = symbol_exprt{
+        id2string(initial.get_identifier()) + "_T0_L0_R0", chain_type};
+      equation.constraint(
+        equal_exprt{sentinel, narrowed_value(global_variable, initial)},
+        "write constraint " + id2string(global_variable),
+        this->writes.at(global_variable).front().s_it->source);
+      previous = sentinel;
+    }
 
     irep_idt sentinel_id_name = "id_T0_L0_N0_R0_V"+id2string(global_variable);
     symbol_exprt sentinel_id_symbol{sentinel_id_name, unsignedbv_typet(bit_writes[global_variable])};
     lazy_variable first_lazy_struct = lazy_variable{
-      0, 0, 0, 0, 0, this->writes.at(global_variable).front().s_it->ssa_lhs, sentinel_id_symbol};
+      0, 0, 0, 0, 0, sentinel, sentinel_id_symbol};
     this->lazy_variables[global_variable].emplace_back(first_lazy_struct);
 
     for(std::size_t round = 1; round <= rounds; ++round)
@@ -474,7 +1502,7 @@ void lazy_pot::create_write_constraints(
           write.thread,
           round,
           write.s_it->ssa_lhs,
-          write.s_it->ssa_lhs.type());
+          chain_type);
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
                              std::to_string(write.label) + "_N" + std::to_string(write.num) +
                              "_R" + std::to_string(round)+ "_V"+id2string(global_variable);
@@ -487,13 +1515,19 @@ void lazy_pot::create_write_constraints(
         const symbol_exprt exec =
           create_exec_symbol(write.label, write.num, write.thread, round);
 
-        equal_exprt constraint{
-          lazy_variable_exprt,
-          if_exprt{exec, write.s_it->ssa_lhs,
-                   typecast_exprt::conditional_cast(
-                     previous, write.s_it->ssa_lhs.type())}};
+        if(array_rf_writes.count(global_variable) == 0)
+        {
+          equal_exprt constraint{
+            lazy_variable_exprt,
+            if_exprt{exec,
+                     narrowed_value(global_variable, write.s_it->ssa_lhs),
+                     typecast_exprt::conditional_cast(previous, chain_type)}};
 
-        equation.constraint(constraint, "write constraint", write.s_it->source);
+          equation.constraint(
+            constraint,
+            "write constraint " + id2string(global_variable),
+            write.s_it->source);
+        }
 
         previous = lazy_variable_exprt;
       }
@@ -523,6 +1557,10 @@ void lazy_pot::create_read_constraints(
   {
     if(this->reads.count(global_variable) == 0)
       continue;
+    // an --array-rf object answers its element reads directly; it has no
+    // array value for a read to be tied to
+    if(array_rf_writes.count(global_variable) != 0)
+      continue;
     const bool implication_form = read_implication;
 
     for(const auto &read : this->reads.at(global_variable))
@@ -547,16 +1585,22 @@ void lazy_pot::create_read_constraints(
           implies_exprt constraint{
             exec,
             equal_exprt{
-              read.s_it->ssa_lhs,
+              narrowed_value(global_variable, read.s_it->ssa_lhs),
               typecast_exprt::conditional_cast(
-                previous.value(), read.s_it->ssa_lhs.type())}};
+                previous.value(),
+                narrowed_type(global_variable, read.s_it->ssa_lhs.type()))}};
           equation.constraint(
-            constraint, "read constraint", read.s_it->source);
+            constraint,
+            "read constraint " + id2string(global_variable),
+            read.s_it->source);
         }
         continue;
       }
 
-      exprt temp_constraint = read.s_it->ssa_lhs;
+      const exprt read_value = narrowed_value(global_variable, read.s_it->ssa_lhs);
+      const typet read_type =
+        narrowed_type(global_variable, read.s_it->ssa_lhs.type());
+      exprt temp_constraint = read_value;
       for(std::size_t round = rounds; round >= 1; --round)
       {
         const symbol_exprt exec =
@@ -567,17 +1611,18 @@ void lazy_pot::create_read_constraints(
         if(previous.has_value())
         {
           temp_constraint = if_exprt{exec,
-            typecast_exprt::conditional_cast(
-              previous.value(), read.s_it->ssa_lhs.type()),
+            typecast_exprt::conditional_cast(previous.value(), read_type),
             temp_constraint};
         }
         else {
-          temp_constraint = if_exprt{exec, read.s_it->ssa_lhs, temp_constraint};
+          temp_constraint = if_exprt{exec, read_value, temp_constraint};
         }
       }
-      equal_exprt final_constraint{read.s_it->ssa_lhs, temp_constraint};
+      equal_exprt final_constraint{read_value, temp_constraint};
       equation.constraint(
-        final_constraint, "read constraint", read.s_it->source);
+        final_constraint,
+        "read constraint " + id2string(global_variable),
+        read.s_it->source);
     }
     std::reverse(lazy_variables_read[global_variable].begin(), lazy_variables_read[global_variable].end());
   }
@@ -1323,8 +2368,16 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
         std::string func = id2string(write.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
-        if (write.thread != thread || is_pthread)
+        // pthread_create's own write to its thread-ID output parameter is
+        // user-visible data (the caller supplied that pointer), not library
+        // bookkeeping -- unlike pthread_mutex_lock/_unlock/_init, pthread_join,
+        // pthread_cond_wait and friends, which only ever touch their own
+        // internal state objects here. Excluding it hid a genuine race: see
+        // ~/tid_write_race.c, a 9-line reproducer where one thread's
+        // pthread_create races an unsynchronised read of the thread-ID global
+        // in another thread, reported SUCCESSFUL with the blanket exclusion.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
+        if (write.thread != thread || is_pthread || write.race_exempt)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
@@ -1398,8 +2451,10 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
         std::string func = id2string(write.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
-        if (write.thread != thread || is_pthread)
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
+        if (write.thread != thread || is_pthread || write.race_exempt)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -1445,8 +2500,10 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
         std::string func = id2string(read.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
-        if (read.thread != thread || is_pthread)
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
+        if (read.thread != thread || is_pthread || read.race_exempt)
           continue;
         irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -1665,8 +2722,10 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
         std::string func = id2string(read.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
-        if (read.thread != thread || is_pthread)
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
+        if (read.thread != thread || is_pthread || read.race_exempt)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
@@ -1743,8 +2802,10 @@ symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
         std::string func = id2string(write.s_it->source.pc->source_location().get_function());
-        bool is_pthread = (func.rfind("pthread", 0) == 0);
-        if (write.thread != thread || is_pthread)
+        // pthread_create is exempted above handling_datarace's first check of
+        // this shape -- see the comment there.
+        bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
+        if (write.thread != thread || is_pthread || write.race_exempt)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_swap_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -1926,6 +2987,121 @@ symbol_exprt lazy_pot::no_interf_swap(symex_target_equationt &equation) {
 }
 // __SZH_DR_ADD_END__
 
+
+// L'offset di un accesso puo' essere sepolto sotto un `if`.
+//
+// Un oggetto dinamico di dimensione *simbolica* non viene spezzato per
+// elemento dalla field sensitivity (che richiede una size costante), quindi
+// `datas[i] = v` arriva nella SSA come
+//
+//   obj#4 == (datas == &obj ? obj#3 WITH [0:=v] : obj#2)
+//
+// La destra non e' un `with`: e' un `if` che lo contiene, perche' il
+// puntatore potrebbe puntare altrove. Il test sulla forma falliva, `where`
+// restava al sentinella -1 per *ogni* accesso all'oggetto, e la condizione di
+// corsa confronta `dr_loc(1) == dr_loc(2)` -- quindi due thread che scrivono
+// elementi diversi finivano sulla stessa locazione e venivano dichiarati in
+// corsa. E' la famiglia per-thread-array-index / per-thread-index-* / sssc12,
+// e il riproduttore minimo e' ~/heapidx/c_constthreads.c (22 righe, con il
+// controllo a indice uguale che deve restare FAILED).
+//
+// Conservativo per costruzione: se i rami portano indici diversi non c'e' un
+// solo offset da attribuire all'accesso e si torna al sentinella, cioe' al
+// comportamento di prima.
+static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
+{
+  if(e.id() == ID_with && e.operands().size() == 3)
+  {
+    const exprt &w = to_with_expr(e).where();
+    if(found)
+      return out == w;
+    out = w;
+    found = true;
+    return true;
+  }
+  // A read through a symbolic-size malloc'd pointer goes through CBMC's own
+  // pointer-identity resolution (the #305 fix's value-set dereference),
+  // which wraps a plain indexed access -- not a with -- in the same
+  // if-chain shape: `ptr == &obj1 ? obj1[k] : (ptr == &obj2 ? obj2[k] :
+  // ...)`. Reading `arr[k]` as a function-call argument (e.g.
+  // `pthread_join(tids[k], ...)`) takes exactly this path, even when `k`
+  // is a compile-time constant -- it is the pointer, not the index, that
+  // is symbolic here. Recognising only `with` left this case at the
+  // sentinel, so a write (which does produce a `with`) and this kind of
+  // read could never be seen as the same location: see
+  // ~/tidrace_check/tid_symmalloc_only.c.
+  if(e.id() == ID_index)
+  {
+    const index_exprt &idx = to_index_expr(e);
+    if(found)
+      return out == idx.index();
+    out = idx.index();
+    found = true;
+    return true;
+  }
+  // `if`'s own condition is always its first operand, by construction --
+  // skip it by position, not by type. The previous type-based skip
+  // (`op.type().id() == ID_bool`) assumed the condition was the only
+  // bool-typed operand, which holds when the if's VALUE type is the array
+  // element type (the #305 pointer-identity chain this was written for).
+  // It breaks when the if itself computes a boolean result, as happens one
+  // level up from the `not`/`equal` case just below, inside a guard
+  // update: then the true/false branches are bool-typed too, and the old
+  // skip wrongly discarded them along with the condition.
+  if(e.id() == ID_if)
+  {
+    const if_exprt &ife = to_if_expr(e);
+    return with_index_under_if(ife.true_case(), out, found) &&
+           with_index_under_if(ife.false_case(), out, found);
+  }
+  // Reading `arr[k]` inside an `if`-condition (`if (arr[k] != 0) ...`),
+  // rather than materialising it into a plain temporary first, folds the
+  // dereference straight into the boolean test: `!(arr[k] == 0)`. The
+  // if-chain above is still there (that part was already handled), but
+  // each branch is now `not(equal(index_or_with, constant))`, not a bare
+  // `with`/`index` directly -- so the recursion stopped one layer too
+  // early and the read landed on the sentinel. `not`/`equal`/`notequal`
+  // carry the same offset as whichever operand resolves to one; the other
+  // operand is typically a plain constant (e.g. the `0` being compared
+  // against), which recurses here too but contributes nothing (falls to
+  // the catch-all below without touching `found`/`out`). See
+  // ~/tidrace_check/tid_ifcond_const.c.
+  if(e.id() == ID_not || e.id() == ID_equal || e.id() == ID_notequal)
+  {
+    for(const auto &op : e.operands())
+    {
+      if(!with_index_under_if(op, out, found))
+        return false;
+    }
+    return true;
+  }
+  // A _Bool element is one byte wide, so reading it as a value (rather than
+  // assigning it to a plain temporary) goes through an explicit byte
+  // extraction on top of everything above: `byte_extract(obj[k], 0,
+  // c_bool[8]) != 0`, not a bare `obj[k]` under the comparison. Recurse into
+  // the object being extracted from -- the offset we want is in there, not
+  // in the byte/type-width arguments alongside it. See
+  // ~/tidrace_check/flags_bool_ifcond.c.
+  if(
+    e.id() == ID_byte_extract_little_endian ||
+    e.id() == ID_byte_extract_big_endian)
+  {
+    return with_index_under_if(to_byte_extract_expr(e).op(), out, found);
+  }
+  return true;
+}
+
+/// \return l'offset dell'accesso se sotto gli `if` ce n'e' esattamente uno,
+///   altrimenti nil.
+static exprt access_offset(const exprt &rhs)
+{
+  exprt out = nil_exprt{};
+  bool found = false;
+  if(!with_index_under_if(rhs, out, found) || !found)
+    return nil_exprt{};
+  return out;
+}
+
 void lazy_pot::handling_datarace(
   symex_target_equationt &equation) {
 
@@ -1938,6 +3114,55 @@ void lazy_pot::handling_datarace(
   symbol_exprt phases_swap_symbl{phases_swap_name, bool_typet{}};
   exprt phases_swap_exp = false_exprt{};
   // __SZH_DR_ADD_END__
+  if(getenv("IEKKE_DUMP_GLOBALS") != nullptr)
+  {
+    std::cout << "=== shared objects seen by the race encoding ===\n";
+    for(auto v : global_variables)
+    {
+      std::set<unsigned> rt, wt;
+      if(reads.count(v))
+        for(const auto &e : reads.at(v))
+          rt.insert(e.thread);
+      if(writes.count(v))
+        for(const auto &e : writes.at(v))
+          wt.insert(e.thread);
+      std::cout << "  " << v << "  reads=" << (reads.count(v) ? reads.at(v).size() : 0)
+                << " from " << rt.size() << " thread(s)"
+                << "  writes=" << (writes.count(v) ? writes.at(v).size() : 0)
+                << " from " << wt.size() << " thread(s)";
+      if(getenv("IEKKE_DUMP_ACCESSES") != nullptr)
+      {
+        std::cout << "\n";
+        if(writes.count(v))
+          for(const auto &e : writes.at(v))
+            std::cout << "      W t=" << e.thread << " label=" << e.label
+                      << " num=" << e.num
+                      << " atomic=" << (e.s_it->atomic_section_id != 0)
+                      << " ultimo_del_blocco="
+                      << (e.label < labels[e.thread] ? "forse" : "si")
+                      << " fn=" << id2string(
+                           e.s_it->source.pc->source_location().get_function())
+                      << "\n";
+        if(reads.count(v))
+          for(const auto &e : reads.at(v))
+            std::cout << "      R t=" << e.thread << " label=" << e.label
+                      << " num=" << e.num
+                      << " atomic=" << (e.s_it->atomic_section_id != 0)
+                      << " primo_del_blocco="
+                      << (e.label > 1 ? "forse" : "si")
+                      << " fn=" << id2string(
+                           e.s_it->source.pc->source_location().get_function())
+                      << "\n";
+        std::cout << "   ";
+      }
+      if(v.starts_with("__CPROVER"))
+        std::cout << "   [skipped: __CPROVER]";
+      else if(equation.symbol_is_atomic(ns, v))
+        std::cout << "   [skipped: atomic]";
+      std::cout << "\n";
+    }
+    std::cout << "=== end shared objects ===\n";
+  }
   for (auto v : global_variables) {
     if (v.starts_with("__CPROVER"))
       continue;
@@ -2302,15 +3527,37 @@ void lazy_pot::collect_reads_and_writes(
            id == ID_pointer || id == ID_c_enum;
   };
 
-  // Only under --datarace: the filter reasons about racing pairs, and
-  // removing the events also thins the general interference encoding, which
-  // cost a correct unreach-call answer when it applied everywhere.
+  // Only under --datarace, the only mode that pairs accesses. The filter
+  // used to remove the events outright, which thinned the value flow as well
+  // and cost a correct unreach-call answer when it applied everywhere; it now
+  // only marks them race_exempt.
   const bool pubfilter_enabled =
     datarace && getenv("LAZYPO_NO_PUBFILTER") == nullptr;
 
-  // object -> (publishing thread, that thread's step ordinal)
-  std::unordered_map<std::string, std::pair<std::size_t, std::size_t>>
-    publication;
+  // The thread that allocated each dynamic object, read off malloc's own
+  // model: it stores the fresh address into a CPROVER-internal global, and
+  // that right-hand side is a literal address-of, so no points-to set can
+  // widen it and attribute the allocation elsewhere. "First thread to touch
+  // the object" was tried instead and does not work -- under
+  // --refined-pointer-analysis main writes through a pointer wide enough to
+  // reach every node, so all four objects of 28-race_reach_84 came out
+  // allocated by thread 0.
+  //
+  // Objects with no such record (not every dynamic object comes from the
+  // malloc model) fall back to first_publisher below, which is what this
+  // filter used before.
+  std::unordered_map<std::string, std::size_t> allocator;
+
+  // The first thread seen publishing each object, in equation order. Only
+  // used for the fallback just described.
+  std::unordered_map<std::string, std::size_t> first_publisher;
+
+  // (object, thread) -> that thread's own earliest step ordinal at which it
+  // makes the object's address visible to others. Keyed by thread because
+  // the ordinals below are per-thread counters: comparing one thread's
+  // ordinal against another's compares two different counters and means
+  // nothing.
+  std::map<std::pair<std::string, std::size_t>, std::size_t> publication;
   if(pubfilter_enabled)
   {
     std::map<unsigned, std::size_t> scan_ord;
@@ -2331,14 +3578,27 @@ void lazy_pot::collect_reads_and_writes(
       if(!it->is_shared_write())
         continue;
 
-      // Skip CBMC's own bookkeeping. malloc's model stores the fresh
-      // object's address into internal globals, which would otherwise date
-      // the publication to the allocation itself and leave every user-level
-      // initialisation of the object unexempted.
+      // CBMC's own bookkeeping is not a publication -- malloc's model
+      // stores the fresh object's address into internal globals, which would
+      // otherwise date the publication to the allocation itself and leave
+      // every user-level initialisation unexempted. It is, however, exactly
+      // where the allocating thread can be read off.
       if(can_cast_expr<symbol_exprt>(it->ssa_lhs) &&
          has_prefix(
            id2string(it->ssa_lhs.get_l1_object_identifier()), CPROVER_PREFIX))
+      {
+        auto alloc_next = it;
+        ++alloc_next;
+        if(alloc_next != ssa_steps.end() && alloc_next->is_assignment())
+        {
+          std::set<std::string> fresh;
+          value_objects(alloc_next->ssa_rhs, fresh);
+          for(const auto &k : fresh)
+            allocator.emplace(
+              k, static_cast<std::size_t>(it->source.thread_nr));
+        }
         continue;
+      }
 
       // the stored value lives in the assignment step that follows
       auto next = it;
@@ -2349,11 +3609,20 @@ void lazy_pot::collect_reads_and_writes(
       std::set<std::string> published;
       value_objects(next->ssa_rhs, published);
       for(const auto &k : published)
-        if(publication.find(k) == publication.end())
-          publication.emplace(
-            k,
-            std::make_pair(
-              static_cast<std::size_t>(it->source.thread_nr), my_ord));
+      {
+        // Earliest publication *by this thread*. A thread that only appears
+        // to publish the object records its own entry and leaves the
+        // allocating thread's window alone.
+        const auto key =
+          std::make_pair(k, static_cast<std::size_t>(it->source.thread_nr));
+        const auto pub = publication.find(key);
+        if(pub == publication.end())
+          publication.emplace(key, my_ord);
+        else if(my_ord < pub->second)
+          pub->second = my_ord;
+        first_publisher.emplace(
+          k, static_cast<std::size_t>(it->source.thread_nr));
+      }
     }
   }
 
@@ -2362,18 +3631,22 @@ void lazy_pot::collect_reads_and_writes(
   // 1002 -> 1006, wrong 9 -> 5, score +57. The five it fixes are the
   // 28-race_reach_8* family; the four libvsync false alarms are a different
   // problem (CBMC's unsound pointer-typed shared writes, issue #305) and are
-  // untouched. It costs one answer, 09-regions_03-list2_rc, whose FAILED
-  // verdict was itself spurious -- it came from a pre-pthread_create write
-  // that cannot race with anything -- so the filter is right to drop it and
-  // we simply cannot find that benchmark's real race; it is declined in the
-  // wrapper. Turn the filter off with LAZYPO_NO_PUBFILTER.
+  // untouched. 09-regions_03-list2_rc's FAILED was spurious before the
+  // filter -- it came from a pre-pthread_create write that cannot race with
+  // anything -- and its real race was lost with the filter until the excused
+  // accesses were kept in the value flow (see collect_reads_and_writes).
+  // Turn the filter off with LAZYPO_NO_PUBFILTER.
   const bool pubfilter_off = !pubfilter_enabled;
   const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
   if(pubfilter_debug)
+  {
+    for(const auto &a : allocator)
+      std::cerr << "PUBFILTER " << a.first << " allocated by thread "
+                << a.second << "\n";
     for(const auto &p : publication)
-      std::cerr << "PUBFILTER published " << p.first << " by thread "
-                << p.second.first << " at ordinal " << p.second.second
-                << "\n";
+      std::cerr << "PUBFILTER published " << p.first.first << " by thread "
+                << p.first.second << " at its ordinal " << p.second << "\n";
+  }
 
   const auto pre_publication_access =
     [&](const irep_idt &l1_id, std::size_t thread, std::size_t ordinal,
@@ -2383,16 +3656,35 @@ void lazy_pot::collect_reads_and_writes(
       const std::string k = dynamic_object_key(l1_id);
       if(k.empty())
         return false;
-      const auto pub = publication.find(k);
+      // The window must be closed by a publication this thread performs
+      // itself: an object whose address this thread never stores anywhere
+      // may still have escaped by a route this pass does not see (a thread
+      // argument, say), so no exemption is given at all.
+      const auto pub = publication.find(std::make_pair(k, thread));
       if(pub == publication.end())
         return false;
-      const bool exempt = pub->second.first == thread &&
-                          ordinal < pub->second.second &&
-                          is_scalar_data(access_type);
+      // And only the allocating thread may be exempted. Asking instead for a
+      // match on the *publisher* makes the filter fail exactly when the
+      // points-to set is wide enough to invent one: under
+      // --refined-pointer-analysis main appeared to publish both workers'
+      // nodes, which cost 28-race_reach_84 and _94 a false alarm each.
+      const auto alloc = allocator.find(k);
+      if(alloc != allocator.end())
+      {
+        if(alloc->second != thread)
+          return false;
+      }
+      else
+      {
+        const auto fp = first_publisher.find(k);
+        if(fp == first_publisher.end() || fp->second != thread)
+          return false;
+      }
+      const bool exempt = ordinal < pub->second && is_scalar_data(access_type);
       if(exempt && pubfilter_debug)
         std::cerr << "PUBFILTER exempt " << id2string(l1_id) << " thread "
-                  << thread << " ordinal " << ordinal << " < pub "
-                  << pub->second.second << "\n";
+                  << thread << " ordinal " << ordinal << " < its pub "
+                  << pub->second << "\n";
       return exempt;
     };
 
@@ -2549,8 +3841,20 @@ void lazy_pot::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
+        // A read/write whose value feeds an if-condition's guard update
+        // (`if (arr[k] != 0) ...`) has a GOTO step between it and the
+        // assignment that actually computes the guard -- the GOTO is the
+        // branch instruction itself, emitted before the guard is folded in.
+        // Skip exactly that one step, no further, before giving up. See
+        // ~/tidrace_check/tid_ifcond_const.c.
+        if(next != ssa_steps.end() && next->type == goto_trace_stept::typet::GOTO)
+          next++;
         if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
           where = to_with_expr(next->ssa_rhs).where();
+        }
+        else if (next != ssa_steps.end() && next->is_assignment() &&
+                 access_offset(next->ssa_rhs).is_not_nil()) { //ARRAY sotto un if
+          where = access_offset(next->ssa_rhs);
         }
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
@@ -2581,13 +3885,18 @@ void lazy_pot::collect_reads_and_writes(
         {
           const irep_idt access_id =
             shared_event.s_it->ssa_lhs.get_l1_object_identifier();
-          if(!pre_publication_access(
-               access_id, shared_event.thread, step_ord,
-               shared_event.s_it->ssa_lhs.type()))
-          {
-            this->writes[access_id].emplace_back(shared_event);
-            this->global_variables.emplace(access_id);
-          }
+          // Excused from race pairing only. Leaving the access out of
+          // `writes`/`reads` altogether also removed it from the value flow:
+          // the lazy chain then starts from the first *remaining* write, so a
+          // post-publication `p->datum++` read its own result and could
+          // never execute -- every run reaching it was pruned, with the race
+          // after it and any assertion after it. See the datarace-por tests
+          // publish-then-rmw-racy and publish-then-rmw-not-pruned.
+          shared_event.race_exempt = pre_publication_access(
+            access_id, shared_event.thread, step_ord,
+            shared_event.s_it->ssa_lhs.type());
+          this->writes[access_id].emplace_back(shared_event);
+          this->global_variables.emplace(access_id);
         }
         prev = s_it;
       }
@@ -2642,8 +3951,17 @@ void lazy_pot::collect_reads_and_writes(
         exprt where = from_integer(-1,size_type());
         auto next = s_it;
         next++;
+        // See the write-site comment above: skip exactly one GOTO step
+        // between this read and the assignment that consumes it, when the
+        // read feeds an if-condition's guard update directly.
+        if(next != ssa_steps.end() && next->type == goto_trace_stept::typet::GOTO)
+          next++;
         if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
           where = to_index_expr(next->ssa_rhs).index();
+        }
+        else if (next != ssa_steps.end() && next->is_assignment() &&
+                 access_offset(next->ssa_rhs).is_not_nil()) { //ARRAY sotto un if
+          where = access_offset(next->ssa_rhs);
         }
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
@@ -2676,13 +3994,12 @@ void lazy_pot::collect_reads_and_writes(
         {
           const irep_idt access_id =
             shared_event.s_it->ssa_lhs.get_l1_object_identifier();
-          if(!pre_publication_access(
-               access_id, shared_event.thread, step_ord,
-               shared_event.s_it->ssa_lhs.type()))
-          {
-            this->reads[access_id].emplace_back(shared_event);
-            this->global_variables.insert(access_id);
-          }
+          // See the write case above.
+          shared_event.race_exempt = pre_publication_access(
+            access_id, shared_event.thread, step_ord,
+            shared_event.s_it->ssa_lhs.type());
+          this->reads[access_id].emplace_back(shared_event);
+          this->global_variables.insert(access_id);
         }
         prev = s_it;
       }
@@ -3067,6 +4384,59 @@ void lazy_pot::create_low_tot_symbol(
   }
 }
 
+/// Data races are not preserved by the read-from equivalence that
+/// create_atomic_canonical quotients the schedules by. ABR and ABW are built
+/// from read-side witnesses only, so a write that no read observes is
+/// invisible to them; two schedules that differ just in the order of two such
+/// writes are read-from equivalent, yet one has a race and the other has not.
+/// Under --datarace an atomic block holding a conflicting access therefore
+/// cannot be pruned on those witnesses alone.
+///
+/// Only write/write conflicts need the exemption. A read-write pair leaves a
+/// read-from edge, which is what ABR and ABW are made of, so those races
+/// survive the reduction; a write/write pair leaves no edge at all. Measured:
+/// `ww` recovers every reproducer and semaphore-posix-race, and `wide`
+/// recovers nothing beyond it.
+///
+/// LAZYPO_POR_RACE_EXEMPT overrides the rule, for the ablation:
+///   ww (default) only write/write, the conflict the witnesses cannot see;
+///   wide         any conflicting pair, write/write or read/write;
+///   off          nothing, i.e. the behaviour before this fix.
+bool lazy_pot::block_can_race(const atomic_block &b) const
+{
+  static const std::string mode = []() -> std::string {
+    const char *e = getenv("LAZYPO_POR_RACE_EXEMPT");
+    return e == nullptr ? "ww" : e;
+  }();
+  if(mode == "off")
+    return false;
+  const bool ww_only = mode == "ww";
+
+  auto other_thread_accesses =
+    [&b](const std::unordered_map<irep_idt, std::vector<shared_event>> &events,
+         const irep_idt &object) {
+      const auto it = events.find(object);
+      if(it == events.end())
+        return false;
+      for(const auto &e : it->second)
+        if(e.thread != b.thread)
+          return true;
+      return false;
+    };
+
+  // A write conflicts with any other-thread access to the same object; a read
+  // conflicts only with another thread's write.
+  for(const auto &entry : b.writes)
+    if(other_thread_accesses(writes, entry.first) ||
+       (!ww_only && other_thread_accesses(reads, entry.first)))
+      return true;
+  if(!ww_only)
+    for(const auto &entry : b.reads)
+      if(other_thread_accesses(writes, entry.first))
+        return true;
+  return false;
+}
+
 void lazy_pot::create_atomic_canonical(
   symex_target_equationt &equation) {
   for(std::size_t round = 2; round <= rounds; ++round){
@@ -3076,6 +4446,10 @@ void lazy_pot::create_atomic_canonical(
       if(b.label == 0)
         continue;
       if(b.reads.empty() && b.writes.empty())
+        continue;
+      // Canonicality is justified by read-from equivalence, which does not
+      // preserve data races; see block_can_race.
+      if(datarace && block_can_race(b))
         continue;
       const auto &src = !b.reads.empty()
         ? b.reads.begin()->second.front().s_it->source

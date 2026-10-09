@@ -1,0 +1,39 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+`with_index_under_if` (used by `access_offset()` for the read-side `where`
+computation) recognises `with`/`index` directly nested under the #305
+pointer-identity if-chain, and recurses through further nested `if`s -- but
+reading `arr[k]` inside an `if`-condition (`if (arr[k] != 0) ...`), rather
+than materialising it into a plain temporary first, folds the dereference
+straight into the boolean test instead: `!(arr[k] == 0)`. Two separate gaps
+combined to leave this at the sentinel:
+
+1. `with_index_under_if` had no case for `ID_not`/`ID_equal`/`ID_notequal`,
+   so it never looked inside the comparison to find the nested index.
+2. Even after adding that, the `if`-chain's own operand-skip
+   (`op.type().id() == ID_bool`, meant to skip only the if's condition) was
+   wrong here: when the if itself computes a *boolean* result (as happens
+   one level up, in a guard update), the true/false branches are bool-typed
+   too and were wrongly skipped along with the condition. Fixed to skip by
+   position (always operand 0) instead of by type.
+3. A read consumed by an if-condition also has a `GOTO` step (the branch
+   instruction itself) between the read and the assignment that computes
+   the guard, where the generic write/read site code only ever looked at
+   the immediate next step.
+
+Reproducer: one thread's `pthread_create` writes a symbolic-size malloc'd
+`pthread_t` array element, another reads it inside `if (tids[0] != 0)`,
+protected by a mutex only on the reading side (so still racy against the
+unsynchronised write). Reported SUCCESSFUL before this fix (the read never
+matched the write's location), FAILED after.
+
+See `if_condition_read_race_ordered`, the negative control: same shape but
+the write happens-before the reader thread is created, so there is no race
+-- must stay SUCCESSFUL before and after.

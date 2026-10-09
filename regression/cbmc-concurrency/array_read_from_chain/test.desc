@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --no-array-rf
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+The same program as array_read_from with --no-array-rf, i.e. with the array
+still carried through the lazy chain. --array-rf is on by default now, so this
+arm has to ask for the old encoding explicitly. The two encodings have to agree; this is
+the arm that says so.
+
+--no-array-rf also reproduces the pre-change formula to the digit on the
+benchmarks the change was measured on (25_stack_longer-1 at u2 r3: 144700
+variables, 538556 clauses either way).

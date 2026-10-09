@@ -1,0 +1,15 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Negative control for `pthread_create_output_param_race`: two threads
+correctly take turns through the same mutex around the same shared
+variable. Confirms that narrowing `is_pthread` to exempt only
+`pthread_create` did not also expose `pthread_mutex_lock`/`_unlock`'s own
+internal state (owner/count/recursive) to false-positive races -- this must
+stay SUCCESSFUL before and after the fix.

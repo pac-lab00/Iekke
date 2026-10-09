@@ -200,6 +200,19 @@ public:
   /// target up.  Reproduction: ~/bench-minrepro/p305.c.
   bool seed_value_set_from_overall = false;
 
+  /// Hand \ref overall_value_set to the state so that a *shared read of a
+  /// pointer* can top up that one object's points-to set, and nothing else
+  /// is widened.
+  ///
+  /// This is the precise half of what \ref seed_value_set_from_overall does.
+  /// It exists on its own because the two have opposite risks: topping up a
+  /// shared read repairs CBMC issue #305, where the reading thread was
+  /// symexed before the publishing one and so never learned the target;
+  /// seeding the entry state from the union instead widens every pointer in
+  /// the program, which suppresses real races (measured: it costs
+  /// per-thread-array-join-counter-race-4).
+  bool seed_published_reads = false;
+
   /// Set whenever a union into \ref overall_value_set actually changed it.
   /// The caller clears it before a collection pass and stops iterating once
   /// a whole pass leaves it false, i.e. at the fixpoint.

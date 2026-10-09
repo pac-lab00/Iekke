@@ -11,6 +11,12 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include "multi_path_symex_only_checker.h"
 
+#include <optional>
+
+#include <vector>
+
+#include <algorithm>
+
 #include <util/ui_message.h>
 
 #include <goto-symex/show_program.h>
@@ -133,15 +139,49 @@ void multi_path_symex_only_checkert::generate_equation()
         }
       }
 
+      std::vector<std::size_t> handle_array_sizes;
       symex.thread_management_loops = compute_thread_management_loops(
-        goto_model.get_goto_functions(), ns);
+        goto_model.get_goto_functions(), ns, &handle_array_sizes);
 
       if(!symex.thread_management_loops.empty())
       {
-        symex.thread_creation_bound = bound;
+        // Do not bound below what the program can actually create. The
+        // analysis exists for families declared `pthread_t t_ids[10000]`,
+        // where bounding is the only way to finish; a family of four is the
+        // opposite case, and cutting it at two turns a real race into a
+        // vacuous SUCCESSFUL (measured: -32 on
+        // pthread-race-challenges/thread-join-array-const-race, whose race is
+        // between the fourth, unjoined thread and main's unguarded read).
+        //
+        // Only raised when *every* recognised family has a known size and the
+        // largest is still cheap, because the bound is a single global: one
+        // 10000-element family and the default stands.
+        unsigned effective_bound = bound;
+        const std::size_t affordable = 16;
+        if(!handle_array_sizes.empty())
+        {
+          std::size_t largest = 0;
+          for(const std::size_t n : handle_array_sizes)
+          {
+            if(n == 0 || n > affordable)
+            {
+              largest = 0;
+              break;
+            }
+            largest = std::max(largest, n);
+          }
+          if(largest > effective_bound)
+            effective_bound = static_cast<unsigned>(largest);
+        }
+
+        symex.thread_creation_bound = effective_bound;
         log.statistics() << "Thread-management loops recognised: "
                          << symex.thread_management_loops.size()
-                         << "; bounding thread creation at " << bound
+                         << "; bounding thread creation at "
+                         << symex.thread_creation_bound
+                         << (symex.thread_creation_bound != bound
+                               ? " (raised to the declared handle-array size)"
+                               : "")
                          << messaget::eom;
       }
     }
@@ -154,6 +194,57 @@ void multi_path_symex_only_checkert::generate_equation()
     goto_symext::get_goto_function(goto_model), symex_symbol_table);
 
 
+  // CBMC issue #305, in the configuration that actually ships.
+  //
+  // Value sets are built in symex order, which for a concurrent program is
+  // not an execution order: a thread spawned first is symexed first, so a
+  // pointer another thread publishes later is not in its set, the
+  // dereference resolves against the stale entry, and the interleaving is
+  // never encoded. The 13-line reproduction is ~/bench-minrepro/p305.c,
+  // where the reader is spawned before the publisher and the reachable
+  // assertion was reported SUCCESSFUL.
+  //
+  // The repair is a second pass: the first collects what every pointer may
+  // point to, the second builds the equation with that collection available
+  // so a *shared read of a pointer* can top up its own entry
+  // (goto_symex_statet::seed_published_targets). try_finding_value_set stays
+  // on, which is deliberate -- it is what keeps value_set_dereferencet
+  // resolving against the state's own set rather than the global union.
+  // Widening the dereference is what --refined-pointer-analysis does below,
+  // and it suppresses real races.
+  //
+  // Only for programs that have threads: without them there is no ordering
+  // mismatch and the second pass would be pure cost.
+  if(symex.target.has_threads() &&
+     !options.get_bool_option("refined-pointer-analysis"))
+  {
+    symex.path_storage.clear();
+    symex.target.clear();
+    symex.dynamic_counter = 0;
+    symex.try_finding_value_set = true;
+    symex.seed_published_reads = true;
+
+    symex.symex_from_entry_point_of(
+      goto_symext::get_goto_function(goto_model), symex_symbol_table);
+  }
+
+  // NOT suitable as a default, measured over the whole 3220-pair corpus on
+  // 2026-10-08. It removes every false alarm the corpus has -- mcslock,
+  // rec_mcslock, cnalock and 28-race_reach_82-list_racefree, 4 -> 0 -- and
+  // pays for them with two wrong "this program is safe" answers, which are
+  // worse: hemlock (recoverable, it is only a truncation -- the race is
+  // found again at --unwind 3) and per-thread-array-join-counter-race-4
+  // (not recoverable at any bound tried: 2, 3, 4 rounds 3 and 4). Net -11.
+  //
+  // And the two halves do not separate, which was the obvious thing to try:
+  // running the collection passes to a fixpoint *without* seeding the final
+  // pass from the union keeps hemlock and repairs only
+  // 28-race_reach_82-list_racefree, still loses race-4, and comes out worse
+  // than not using the flag at all (-14). The reason race-4 goes either way
+  // is that value_set_dereferencet already resolves against
+  // overall_value_set in the final pass, so merely *growing* the union is
+  // enough to widen the dereference: there is no configuration in which the
+  // extra passes teach the analysis something without also widening it.
   if(options.get_bool_option("refined-pointer-analysis") && symex.target.has_threads())
   {
     // Was: exactly one further pass with try_finding_value_set off.  That is
@@ -225,6 +316,21 @@ void multi_path_symex_only_checkert::generate_equation()
   }
   else
     std::cout << "Unwinding successfully\n";
+
+  // The thread-creation bound is an under-approximation of the same kind: a
+  // counterexample found under it is real, the absence of one is not a proof.
+  // It used to say so only through log.statistics(), invisible at normal
+  // verbosity, so a vacuous safe answer looked exactly like a proof.
+  //
+  // NB, as above: this message must not contain the literal strings callers
+  // grep for to read the verdict.
+  if(symex.thread_creation_bound_hit)
+  {
+    std::cout << "Thread creation incomplete: bound "
+              << symex.thread_creation_bound
+              << " reached; a counterexample is still real, but a safe result"
+                 " here is not a proof\n";
+  }
   // __SZH_ADD_END__
 
   symex.remove_dummy_accesses();
@@ -249,6 +355,76 @@ void multi_path_symex_only_checkert::generate_equation()
                << messaget::eom;
 
   postprocess_equation(symex, equation, options, ns, ui_message_handler);
+}
+
+void multi_path_symex_only_checkert::note_nothing_verified(
+  propertiest &properties,
+  std::unordered_set<irep_idt> &updated_properties)
+{
+  // A run that was cut short and then produced no property at all has not
+  // proved anything. determine_result() folds the statuses starting from
+  // PASS, so an empty set comes out as PASS and the tool announces
+  // VERIFICATION SUCCESSFUL having checked nothing -- which on an
+  // expected-false task is the worst answer available, not the mildest.
+  //
+  // The shape that causes it is a setup loop longer than the bound: the
+  // unwinding *assumption* makes every path past the bound infeasible, so
+  // execution never reaches the code under test. `pthread/indexer`
+  // initialises 128 mutexes before creating a thread, and at every bound
+  // below 129 it answers SUCCESSFUL with no verification condition
+  // generated at all.
+  //
+  // An empty set on its own is legitimate -- a program with no shared
+  // access has nothing to check under --datarace -- so it is the
+  // truncation that makes this unsound.
+  if(!properties.empty())
+    return;
+  if(!symex.unwinding_incomplete && !symex.thread_creation_bound_hit)
+    return;
+  // An empty set is only suspicious when the truncation is what emptied it,
+  // and that question only has an answer when something was being looked
+  // for. Under --datarace every shared access becomes a property, so an
+  // empty set means execution never reached a shared access at all; without
+  // it, a program with no assertion legitimately has nothing to check.
+  //
+  // Both regressions a wider rule caused were of the second kind:
+  // `cbmc-concurrency/memory_barrier1` has no assertion and does not use
+  // --datarace, and `cbmc/Recursion2` is sequential. An earlier attempt keyed
+  // on "no spawn reached the equation" instead, which looked right and was
+  // not: simplify_pthread_create_join collapses a create immediately
+  // followed by a join into a direct call, so memory_barrier1 has no spawn
+  // step either.
+  if(!options.get_bool_option("datarace"))
+    return;
+
+  std::optional<goto_programt::const_targett> pc;
+  if(!equation.SSA_steps.empty())
+    pc = equation.SSA_steps.begin()->source.pc;
+  else
+  {
+    const auto entry = goto_model.get_goto_functions().function_map.find(
+      goto_functionst::entry_point());
+    if(
+      entry != goto_model.get_goto_functions().function_map.end() &&
+      entry->second.body_available())
+    {
+      pc = entry->second.body.instructions.begin();
+    }
+  }
+  if(!pc.has_value())
+    return;
+
+  const irep_idt id = "truncated.nothing.verified.1";
+  properties.emplace(
+    id,
+    property_infot{*pc,
+                   "the bound cut every path before any property was "
+                   "reached, so nothing was verified",
+                   property_statust::UNKNOWN});
+  updated_properties.insert(id);
+  log.status() << "No property was generated and the run was truncated:"
+                  " nothing has been verified"
+               << messaget::eom;
 }
 
 void multi_path_symex_only_checkert::update_properties(

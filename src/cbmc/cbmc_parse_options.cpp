@@ -116,6 +116,41 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // On by default: 2.09x over the ten slowest unreach-call tasks, verdicts
   // unchanged. --no-read-implication restores the nested-mux form.
   options.set_option("read-implication", true);
+  // A shared object is carried through the lazy chain once per round at its
+  // full width -- but a pthread_mutex_t is 192 bits of which CBMC's own model
+  // reads one byte. Carrying only the bytes some read observes costs nothing
+  // where it does not apply and is most of the formula where it does.
+  // --no-narrow-shared restores the full-width chain.
+  options.set_option("narrow-shared", true);
+  // Sharedness is decided per program, not per object, so an object only one
+  // thread ever touches still gets a rounds-deep chain for a read-from that
+  // program order already fixes. --thread-private states it once instead.
+  //
+  // OFF by default: it makes 77 of the 398 tuned tasks more than 10% faster
+  // but loses one answer -- elimination_backoff_stack goes 283s -> 408s, a
+  // real 1.44x slowdown in isolation, not a timeout flake. The formula gets
+  // smaller and the search gets longer, the same variable-numbering effect
+  // already recorded for POR. A lost answer outranks a time gain here, so
+  // this waits until that is understood. See src/goto-symex/lazy_po.md.
+  options.set_option("thread-private", false);
+  // An array write is a read-modify-write of the whole array in the SSA, so the
+  // chain carries every element once per round, and array objects are 64-90% of
+  // the formula across the data-race family. --array-rf answers an element read
+  // by matching the writes instead, which stops the cost depending on the
+  // array's size.
+  //
+  // On by default. Evaluated at the competition timeout over 537 runs -- the 76
+  // array-heavy tasks under no-data-race and again under unreach-call, the 398
+  // tuned tasks, and a POR on/off x array-rf on/off grid -- with ZERO verdict
+  // differences anywhere, including on every expected-false task, which is the
+  // direction that catches an encoding that proves a violation away. Best
+  // 13.75x on the clause count, median 1.43x per task, and the cost model
+  // leaves a formula untouched where it would not pay: twalock is identical to
+  // the digit either way. Orthogonal to partial order reduction, which is worth
+  // 1.26x with this off and 1.29x with it on.
+  //
+  // --no-array-rf restores the array-valued chain.
+  options.set_option("array-rf", true);
   options.set_option("glucose", false);
   options.set_option("kissat", false);
 
@@ -182,6 +217,24 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-read-implication"))
       options.set_option("read-implication", false);
+
+    if(cmdline.isset("narrow-shared"))
+      options.set_option("narrow-shared", true);
+
+    if(cmdline.isset("no-narrow-shared"))
+      options.set_option("narrow-shared", false);
+
+    if(cmdline.isset("thread-private"))
+      options.set_option("thread-private", true);
+
+    if(cmdline.isset("no-thread-private"))
+      options.set_option("thread-private", false);
+
+    if(cmdline.isset("array-rf"))
+      options.set_option("array-rf", true);
+
+    if(cmdline.isset("no-array-rf"))
+      options.set_option("array-rf", false);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))

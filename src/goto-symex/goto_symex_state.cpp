@@ -10,6 +10,7 @@ Author: Daniel Kroening, kroening@kroening.com
 /// Symbolic Execution
 
 #include "goto_symex_state.h"
+#include <util/arith_tools.h>
 #include "goto_symex_is_constant.h"
 
 #include <iostream>
@@ -284,6 +285,76 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
       expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
     }
+    // A load at a symbolic index, after field sensitivity has already
+    // expanded the array into its elements: `{a[[0]], a[[1]], ...}[i]`.
+    //
+    // Renaming the elements with the plain walk emits a shared read event for
+    // every one of them, carrying only the path guard. The program reads one
+    // element. For reachability the extra events cost nothing -- only the
+    // value is consumed -- but where the property is about accesses they are
+    // false alarms: a thread holding mutex[1] and touching data[1] is
+    // reported racing on data[0] against a thread holding mutex[0] (the
+    // 09-regions and 06-symbeq families).
+    //
+    // Rename each element under `i == k` instead, so the event lazy_po
+    // collects carries that condition and `exec = Enabled & guard` switches
+    // off the elements this load does not touch. The index is renamed first
+    // because the condition has to be in terms of the renamed index.
+    //
+    // This belongs here and not in field_sensitivityt::apply, which runs
+    // *after* this walk (see the call at the end of this function): by then
+    // the events have already been emitted. Conditioning them inside apply
+    // was tried and measured inert.
+    else if(
+      level == L2 && expr.id() == ID_index &&
+      to_index_expr(expr).array().id() == ID_array &&
+      !to_index_expr(expr).index().is_constant())
+    {
+      index_exprt &index_expr = to_index_expr(expr);
+      index_expr.index() =
+        rename<level>(std::move(index_expr.index()), ns).get();
+      const exprt renamed_index = index_expr.index();
+
+      // Renaming can resolve what was a syntactically non-constant index (a
+      // thread's own parameter, say, always called with the same literal
+      // argument) to an actual constant once constant propagation has run.
+      // When that happens there is no ambiguity left to guard against -- the
+      // element read is already pinned down -- so fall back to the plain,
+      // unconditioned rename every element got before this guard existed.
+      // Adding an `index == k` conjunct for an index that is already a
+      // decided constant leaves an un-simplified equality in the guard that
+      // goto_symex_statet::l2_thread_read_encoding's atomic-section
+      // bookkeeping does not always fold away structurally: the generation
+      // it mints for a never-touched element then ends up tied to its old
+      // value only through an implication the solver can vacuously
+      // discharge by setting that guard false -- which is exactly what
+      // happens on the real (only) path, leaving the element's value free.
+      // See ~/framing_check/framing_two_threads.c, 18 lines, reproduces with
+      // `--unwind 1 --rounds 2 --por` (needs an atomic section and >=2
+      // threads; the per-element guard conditioning below is unaffected
+      // when the index is genuinely symbolic, so the 09-regions/06-symbeq
+      // false-alarm fix this guard exists for is untouched).
+      if(renamed_index.is_constant())
+      {
+        for(auto &op : to_array_expr(index_expr.array()).operands())
+          op = rename<level>(std::move(op), ns).get();
+      }
+      else
+      {
+        std::size_t element = 0;
+        for(auto &op : to_array_expr(index_expr.array()).operands())
+        {
+          // Restored rather than popped: nothing else expects the guard to
+          // have changed across this call.
+          guardt saved = guard;
+          guard.add(equal_exprt{
+            renamed_index, from_integer(element, renamed_index.type())});
+          op = rename<level>(std::move(op), ns).get();
+          guard = std::move(saved);
+          ++element;
+        }
+      }
+    }
     else
     {
       Forall_operands(it, expr)
@@ -526,6 +597,12 @@ if(atomic_section_id!=0)
     INVARIANT(!check_renaming(ssa_l2), "expr should be renamed to L2");
     expr = std::move(ssa_l2);
 
+    // Same reason as on the plain path below: a pointer published by a
+    // thread symexed later is not in this read's set. Atomic sections need
+    // it at least as much, since every atomic operation is one -- an MCS
+    // lock hands its successor a node through vatomicptr_xchg.
+    seed_published_targets(expr, l1_identifier, ns);
+
     a_s_read.second.push_back(guard);
     if(!no_write.op().is_false())
       a_s_read.second.back().add(no_write);
@@ -544,12 +621,38 @@ if(atomic_section_id!=0)
   level2.increase_generation(l1_identifier, ssa_l1, fresh_l2_name_provider);
   expr = set_indices<L2>(std::move(ssa_l1), ns).get();
 
+  seed_published_targets(expr, l1_identifier, ns);
+
   // and record that
   INVARIANT_STRUCTURED(
     symex_target!=nullptr, nullptr_exceptiont, "symex_target is null");
   symex_target->shared_read(guard_as_expr, expr, atomic_section_id, source);
 
   return true;
+}
+
+void goto_symex_statet::seed_published_targets(
+  const ssa_exprt &expr,
+  const irep_idt &l1_identifier,
+  const namespacet &ns)
+{
+  // Only a pointer can be published, and only a previous pass can know what
+  // was published: value sets are built in symex order, so a read carries
+  // only the targets that existed when it was symexed (CBMC issue #305).
+  (void)ns;
+  if(published_value_set == nullptr || expr.type().id() != ID_pointer)
+    return;
+
+  const auto *entry = published_value_set->find_entry(l1_identifier);
+  if(entry == nullptr)
+    return;
+
+  // Merge, never replace: what this read already knows is right, the
+  // published targets are additional. And only this object is touched --
+  // widening every pointer at every step is what makes
+  // --refined-pointer-analysis suppress real races as well as spurious ones.
+  value_sett::entryt target{l1_identifier, entry->suffix};
+  value_set.update_entry(target, expr.type(), entry->object_map, true);
 }
 
 goto_symex_statet::write_is_shared_resultt goto_symex_statet::write_is_shared(

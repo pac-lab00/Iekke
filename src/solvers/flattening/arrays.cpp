@@ -7,6 +7,9 @@ Author: Daniel Kroening, kroening@kroening.com
 \*******************************************************************/
 
 #include "arrays.h"
+#include <vector>
+#include <iostream>
+#include <cstdlib>
 
 #include <util/arith_tools.h>
 #include <util/json.h>
@@ -330,6 +333,42 @@ void arrayst::add_array_Ackermann_constraints()
   std::cout << "arrays.size(): " << arrays.size() << '\n';
 #endif
 
+  // CBMC_ARRAY_SIZES: the Ackermann constraints are |index set| squared per
+  // array term, so the cost is driven by two numbers that are otherwise only
+  // visible under #ifdef DEBUG -- how many array terms there are, and how
+  // large their index sets are. Worth having when a run spends minutes in
+  // finish_eager_conversion.
+  if(getenv("CBMC_ARRAY_SIZES") != nullptr)
+  {
+    std::size_t total = 0, biggest = 0, pairs = 0;
+    std::size_t consts = 0, nonconsts = 0, useful_pairs = 0;
+    for(std::size_t i = 0; i < arrays.size(); i++)
+    {
+      const index_sett &is = index_map[arrays.find_number(i)];
+      const std::size_t n = is.size();
+      total += n;
+      if(n > biggest)
+        biggest = n;
+      pairs += n * (n + 1) / 2;
+      std::size_t c = 0;
+      for(const auto &idx : is)
+        if(idx.is_constant())
+          ++c;
+      consts += c;
+      const std::size_t nc = n - c;
+      nonconsts += nc;
+      // pairs the loop does not skip: anything with a non-constant in it
+      useful_pairs += nc * c + nc * (nc + 1) / 2;
+    }
+    std::cerr << "ARRAY_SIZES terms=" << arrays.size()
+              << " total_index_entries=" << total
+              << " biggest_index_set=" << biggest
+              << " ackermann_pairs=" << pairs
+              << " constant_indices=" << consts
+              << " nonconstant_indices=" << nonconsts
+              << " pairs_not_skipped=" << useful_pairs << "\n";
+  }
+
   // iterate over arrays
   for(std::size_t i=0; i<arrays.size(); i++)
   {
@@ -339,19 +378,60 @@ void arrayst::add_array_Ackermann_constraints()
     std::cout << "index_set.size(): " << index_set.size() << '\n';
 #endif
 
-    // iterate over indices, 2x!
-    for(index_sett::const_iterator
-        i1=index_set.begin();
-        i1!=index_set.end();
+    // Two constant indices are either equal or provably different, so the pair
+    // below is skipped -- but the double loop still visits it. On a program
+    // that indexes an array at many constant positions that is nearly all of
+    // the work: twalock reaches 196634 constant indices against 266
+    // non-constant ones, so of 403538598 pairs only 787084 survive the skip,
+    // and 99.8% of the iterations exist to be thrown away.
+    //
+    // So visit only the pairs that survive. The non-constant indices are
+    // collected in set order, and for a constant i1 the inner loop walks just
+    // those that come after it. The pairs produced, and the order they are
+    // produced in, are exactly as before -- which matters, because the
+    // constraint order fixes the SAT variable numbering.
+    std::vector<index_sett::const_iterator> non_constant;
+    for(index_sett::const_iterator it = index_set.begin();
+        it != index_set.end();
+        it++)
+    {
+      if(!it->is_constant())
+        non_constant.push_back(it);
+    }
+
+    std::size_t after = 0;
+    for(index_sett::const_iterator i1 = index_set.begin();
+        i1 != index_set.end();
         i1++)
-      for(index_sett::const_iterator
-          i2=i1;
-          i2!=index_set.end();
-          i2++)
-        if(i1!=i2)
+    {
+      // non_constant[after..] are the non-constant indices strictly after i1
+      if(after < non_constant.size() && non_constant[after] == i1)
+        after++;
+
+      const bool i1_constant = i1->is_constant();
+      const std::size_t inner_end =
+        i1_constant ? non_constant.size() : index_set.size();
+      index_sett::const_iterator i2 =
+        i1_constant ? index_set.end() : std::next(i1);
+      std::size_t k = after;
+
+      for(;;)
+      {
+        if(i1_constant)
         {
-          if(i1->is_constant() && i2->is_constant())
-            continue;
+          if(k >= inner_end)
+            break;
+          i2 = non_constant[k];
+          k++;
+        }
+        else
+        {
+          if(i2 == index_set.end())
+            break;
+        }
+
+        if(i1 != i2 && !(i1->is_constant() && i2->is_constant()))
+        {
 
           // index equality
           const equal_exprt indices_equal(
@@ -381,6 +461,11 @@ void arrayst::add_array_Ackermann_constraints()
 #endif
           }
         }
+
+        if(!i1_constant)
+          i2++;
+      }
+    }
   }
 }
 

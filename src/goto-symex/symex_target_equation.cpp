@@ -11,6 +11,11 @@ Author: Daniel Kroening, kroening@kroening.com
 /// Implementation of functions to build SSA equation.
 
 #include "symex_target_equation.h"
+#include <map>
+
+#include <iostream>
+
+#include <string>
 
 #include <cstdlib>
 
@@ -346,8 +351,60 @@ void symex_target_equationt::convert_without_assertions(
   convert_constraints(decision_procedure);
 }
 
+/// Categories to skip, from LAZYPO_ABLATE: comma-separated substrings matched
+/// against each constraint's description. Measurement only.
+static bool ablate_constraint(const std::string &comment)
+{
+  static const char *const spec = getenv("LAZYPO_ABLATE");
+  if(spec == nullptr)
+    return false;
+
+  const std::string want(spec);
+  std::size_t pos = 0;
+  while(pos <= want.size())
+  {
+    const std::size_t next = want.find(',', pos);
+    const std::string piece = want.substr(
+      pos, next == std::string::npos ? std::string::npos : next - pos);
+    if(!piece.empty() && comment.find(piece) != std::string::npos)
+      return true;
+    if(next == std::string::npos)
+      break;
+    pos = next + 1;
+  }
+  return false;
+}
+
 void symex_target_equationt::convert(decision_proceduret &decision_procedure)
 {
+  // Mark before either conversion pass runs: the POR/canonicality categories
+  // are deliberately skipped by convert_constraints and placed by a later
+  // pass, and both test !step.ignore.
+  if(getenv("LAZYPO_ABLATE_LIST") != nullptr)
+  {
+    std::map<std::string, std::size_t> tally;
+    for(const auto &step : SSA_steps)
+      if(step.is_constraint())
+        ++tally[id2string(step.comment)];
+    for(const auto &entry : tally)
+      std::cerr << "ABLATE_LIST " << entry.second << "\t" << entry.first
+                << "\n";
+  }
+
+  if(getenv("LAZYPO_ABLATE") != nullptr)
+  {
+    std::size_t n = 0;
+    for(auto &step : SSA_steps)
+    {
+      if(step.is_constraint() && ablate_constraint(id2string(step.comment)))
+      {
+        step.ignore = true;
+        ++n;
+      }
+    }
+    std::cerr << "ABLATE skipped " << n << " constraints matching \""
+              << getenv("LAZYPO_ABLATE") << "\"\n";
+  }
   const auto convert_SSA_start = std::chrono::steady_clock::now();
 
   convert_without_assertions(decision_procedure);
