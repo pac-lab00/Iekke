@@ -50,6 +50,7 @@
 # reported last, after the budget has been spent trying to refute it.
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -127,6 +128,35 @@ def verdict_of(text):
     return None
 
 
+def kill_bound(proc):
+    """Kill everything one bound started: the shell, the tool, its solver.
+
+    Killing only the shell -- what subprocess.run does on a timeout -- leaves
+    the tool and the external glucose it spawned running. They then overlap
+    the next bound and outlive the wrapper, spending CPU that SV-COMP charges
+    to this run (seen at 1.85x wall time). Each bound therefore gets its own
+    process group, and the group is what is killed.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+current = None
+
+
+def on_signal(signum, frame):
+    # The bound's group is no longer ours, so a signal that ends the wrapper
+    # would not reach it. Pass it on before going.
+    if current is not None:
+        kill_bound(current)
+    sys.exit(128 + signum)
+
+
+for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(s, on_signal)
+
 started = time.time()
 bounded_safe = None
 
@@ -140,20 +170,24 @@ for unwind, rounds in SCHEDULE:
            % (program_path, flags, unwind, rounds))
     print("try unwind=%d rounds=%d (%.0fs for this bound, %.0fs left)"
           % (unwind, rounds, slice_, left))
+    # Merged, not concatenated: the verdict is the last line of the run,
+    # and stdout + stderr glued end to end puts every warning after it, so
+    # the verdict stops being last and every run reads as "no verdict".
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
     try:
-        # Merged, not concatenated: the verdict is the last line of the run,
-        # and stdout + stderr glued end to end puts every warning after it, so
-        # the verdict stops being last and every run reads as "no verdict".
-        proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT,
-                              text=True, errors="replace", timeout=slice_)
-        out = proc.stdout
+        out, _ = current.communicate(timeout=slice_)
     except subprocess.TimeoutExpired:
         # Out of reach at this bound -- but not necessarily at the next one,
         # which may be cheaper on the axis that matters for this program. Keep
         # going; the budget check at the top of the loop ends the search.
+        kill_bound(current)
+        current.communicate()
+        current = None
         print("  -> timeout")
         continue
+    current = None
 
     verdict = verdict_of(out)
     print("  -> %s" % verdict)
