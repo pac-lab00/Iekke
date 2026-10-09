@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Negative control for `symbolic_malloc_pointer_identity_index_read`: the
+write to `tids[0]` happens-before the reader thread is even created, so
+there is no race. Must stay SUCCESSFUL before and after the fix -- confirms
+recognising `ID_index` under the if-chain does not turn correctly-ordered
+accesses into false alarms.

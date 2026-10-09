@@ -3019,6 +3019,26 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
     found = true;
     return true;
   }
+  // A read through a symbolic-size malloc'd pointer goes through CBMC's own
+  // pointer-identity resolution (the #305 fix's value-set dereference),
+  // which wraps a plain indexed access -- not a with -- in the same
+  // if-chain shape: `ptr == &obj1 ? obj1[k] : (ptr == &obj2 ? obj2[k] :
+  // ...)`. Reading `arr[k]` as a function-call argument (e.g.
+  // `pthread_join(tids[k], ...)`) takes exactly this path, even when `k`
+  // is a compile-time constant -- it is the pointer, not the index, that
+  // is symbolic here. Recognising only `with` left this case at the
+  // sentinel, so a write (which does produce a `with`) and this kind of
+  // read could never be seen as the same location: see
+  // ~/tidrace_check/tid_symmalloc_only.c.
+  if(e.id() == ID_index)
+  {
+    const index_exprt &idx = to_index_expr(e);
+    if(found)
+      return out == idx.index();
+    out = idx.index();
+    found = true;
+    return true;
+  }
   if(e.id() == ID_if)
   {
     for(const auto &op : e.operands())
