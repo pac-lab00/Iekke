@@ -1,0 +1,64 @@
+**** WARNING: Context-bounded analysis may yield unsound verification results
+Enabling Partial Order Reduction
+Deagle version 4.1.0 64-bit x86_64 linux
+which contains:
+CBMC version 5.67.0 (29571c48-dirty) 64-bit x86_64 linux
+Parsing main.c
+Converting
+Type-checking main
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+file <builtin-library-__spawned_thread> line 34 function __spawned_thread: replacing function pointer by 1 possible targets
+Generic Property Instrumentation
+Running with 8 object bits, 24 offset bits (default)
+Starting Bounded Model Checking
+Unwinding successfully
+Start removing dummy accesses: 182 steps before removal
+182 steps after removal
+Runtime Symex: 0.0110767s
+Adding Iekke constraints with 2 rounds
+lazy_po phase active-threads: 0ms
+lazy_po phase collect-events: 0ms
+lazy_po phase private-objects: 0ms
+lazy_po phase array-rf-plan: 0ms
+lazy_po phase atomic-blocks: 0ms
+lazy_po phase base-writes: 0ms
+lazy_po phase base-reads: 0ms
+lazy_po phase private-reads: 0ms
+lazy_po phase array-read-from: 0ms
+lazy_po phase lazy-reads: 0ms
+lazy_po phase context-switch: 2ms
+lazy_po phase enumerate+validate: 0ms
+lazy_po phase tags-LW-WINR: 0ms
+lazy_po phase canonicality+NRP/LOW: 0ms
+lazy_po phase guards: 0ms
+Datarace Enabled 
+lazy_po phase datarace: 1ms
+lazy_po phase pointer-alignment: 1ms
+lazy_po total: 7ms
+size of program expression: 941 steps
+no slicing due to threads
+Generated 0 VCC(s), 0 remaining after simplification
+Runtime Postprocess Equation: 0.0079672s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00693485s
+POR provenance: 23 SAT variables classified from 23 of 89 auxiliary symbols
+Running propositional reduction
+Post-processing
+Runtime Post-process: 0.000187458s
+Solving with Glucose Syrup with simplifier
+7060 variables, 14402 clauses
+decisions: 73 total, 0 from the POR fallback tier, 0 landing on a POR variable; conflicts: 31, propagations: 6057; CS-first: on
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00864814s
+Runtime decision procedure: 0.0158897s
+
+** Results:
+[.recursion] datarace: SUCCESS
+
+** 0 of 1 failed (1 iterations)
+VERIFICATION SUCCESSFUL
+EXIT=0
+SIGNAL=0

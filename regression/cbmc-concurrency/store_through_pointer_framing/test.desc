@@ -1,0 +1,28 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`*d = 8`, with `d` pointing to `dA` or `dB` and the matching mutex held,
+is lowered to one guarded assignment per target:
+
+    dA#3 == (d == &dA ? 8 : dA#2)
+    dB#3 == (d == &dA ? dB#2 : 8)
+
+The write events were already conditioned on the target. Renaming the old
+value (`dA#2`, `dB#2`) still recorded a shared READ of it, carrying only the
+path guard. So when `d == &dB`, main was seen reading `dA` while holding
+`mB`, and that read was paired with the thread's write of `dA` under `mA`:
+a race that no execution has. The program reads neither old value; it is
+the lowering framing the untouched target back over itself.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+goblint-regression/06-symbeq_11-equ_nr, which the fix also corrects (so does
+06-symbeq_13-equ_proc_nr).
+
+See `store_through_pointer_framing_race`: the same program with the locks
+swapped really races, and must stay FAILED.
