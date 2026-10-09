@@ -3075,6 +3075,19 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
     }
     return true;
   }
+  // A _Bool element is one byte wide, so reading it as a value (rather than
+  // assigning it to a plain temporary) goes through an explicit byte
+  // extraction on top of everything above: `byte_extract(obj[k], 0,
+  // c_bool[8]) != 0`, not a bare `obj[k]` under the comparison. Recurse into
+  // the object being extracted from -- the offset we want is in there, not
+  // in the byte/type-width arguments alongside it. See
+  // ~/tidrace_check/flags_bool_ifcond.c.
+  if(
+    e.id() == ID_byte_extract_little_endian ||
+    e.id() == ID_byte_extract_big_endian)
+  {
+    return with_index_under_if(to_byte_extract_expr(e).op(), out, found);
+  }
   return true;
 }
 
