@@ -1213,8 +1213,8 @@ void lazy_pot::compute_private_objects()
     }
     const double cost = static_cast<double>(accesses) * width;
     total_cost += cost;
-    // One thread, or none left after the publication filter: no other thread
-    // can interleave a write, so the schedule cannot change what a read sees.
+    // One thread: no other thread can interleave a write, so the schedule
+    // cannot change what a read sees.
     if(threads.size() <= 1)
     {
       candidates.insert(variable);
@@ -2377,7 +2377,7 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
         // pthread_create races an unsynchronised read of the thread-ID global
         // in another thread, reported SUCCESSFUL with the blanket exclusion.
         bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
-        if (write.thread != thread || is_pthread)
+        if (write.thread != thread || is_pthread || write.race_exempt)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
@@ -2454,7 +2454,7 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
         // pthread_create is exempted above handling_datarace's first check of
         // this shape -- see the comment there.
         bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
-        if (write.thread != thread || is_pthread)
+        if (write.thread != thread || is_pthread || write.race_exempt)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -2503,7 +2503,7 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
         // pthread_create is exempted above handling_datarace's first check of
         // this shape -- see the comment there.
         bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
-        if (read.thread != thread || is_pthread)
+        if (read.thread != thread || is_pthread || read.race_exempt)
           continue;
         irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -2725,7 +2725,7 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
         // pthread_create is exempted above handling_datarace's first check of
         // this shape -- see the comment there.
         bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
-        if (read.thread != thread || is_pthread)
+        if (read.thread != thread || is_pthread || read.race_exempt)
           continue;
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
@@ -2805,7 +2805,7 @@ symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v
         // pthread_create is exempted above handling_datarace's first check of
         // this shape -- see the comment there.
         bool is_pthread = (func.rfind("pthread", 0) == 0) && func != "pthread_create";
-        if (write.thread != thread || is_pthread)
+        if (write.thread != thread || is_pthread || write.race_exempt)
           continue;
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_swap_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
@@ -3527,9 +3527,10 @@ void lazy_pot::collect_reads_and_writes(
            id == ID_pointer || id == ID_c_enum;
   };
 
-  // Only under --datarace: the filter reasons about racing pairs, and
-  // removing the events also thins the general interference encoding, which
-  // cost a correct unreach-call answer when it applied everywhere.
+  // Only under --datarace, the only mode that pairs accesses. The filter
+  // used to remove the events outright, which thinned the value flow as well
+  // and cost a correct unreach-call answer when it applied everywhere; it now
+  // only marks them race_exempt.
   const bool pubfilter_enabled =
     datarace && getenv("LAZYPO_NO_PUBFILTER") == nullptr;
 
@@ -3630,11 +3631,11 @@ void lazy_pot::collect_reads_and_writes(
   // 1002 -> 1006, wrong 9 -> 5, score +57. The five it fixes are the
   // 28-race_reach_8* family; the four libvsync false alarms are a different
   // problem (CBMC's unsound pointer-typed shared writes, issue #305) and are
-  // untouched. It costs one answer, 09-regions_03-list2_rc, whose FAILED
-  // verdict was itself spurious -- it came from a pre-pthread_create write
-  // that cannot race with anything -- so the filter is right to drop it and
-  // we simply cannot find that benchmark's real race; it is declined in the
-  // wrapper. Turn the filter off with LAZYPO_NO_PUBFILTER.
+  // untouched. 09-regions_03-list2_rc's FAILED was spurious before the
+  // filter -- it came from a pre-pthread_create write that cannot race with
+  // anything -- and its real race was lost with the filter until the excused
+  // accesses were kept in the value flow (see collect_reads_and_writes).
+  // Turn the filter off with LAZYPO_NO_PUBFILTER.
   const bool pubfilter_off = !pubfilter_enabled;
   const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
   if(pubfilter_debug)
@@ -3884,13 +3885,18 @@ void lazy_pot::collect_reads_and_writes(
         {
           const irep_idt access_id =
             shared_event.s_it->ssa_lhs.get_l1_object_identifier();
-          if(!pre_publication_access(
-               access_id, shared_event.thread, step_ord,
-               shared_event.s_it->ssa_lhs.type()))
-          {
-            this->writes[access_id].emplace_back(shared_event);
-            this->global_variables.emplace(access_id);
-          }
+          // Excused from race pairing only. Leaving the access out of
+          // `writes`/`reads` altogether also removed it from the value flow:
+          // the lazy chain then starts from the first *remaining* write, so a
+          // post-publication `p->datum++` read its own result and could
+          // never execute -- every run reaching it was pruned, with the race
+          // after it and any assertion after it. See the datarace-por tests
+          // publish-then-rmw-racy and publish-then-rmw-not-pruned.
+          shared_event.race_exempt = pre_publication_access(
+            access_id, shared_event.thread, step_ord,
+            shared_event.s_it->ssa_lhs.type());
+          this->writes[access_id].emplace_back(shared_event);
+          this->global_variables.emplace(access_id);
         }
         prev = s_it;
       }
@@ -3988,13 +3994,12 @@ void lazy_pot::collect_reads_and_writes(
         {
           const irep_idt access_id =
             shared_event.s_it->ssa_lhs.get_l1_object_identifier();
-          if(!pre_publication_access(
-               access_id, shared_event.thread, step_ord,
-               shared_event.s_it->ssa_lhs.type()))
-          {
-            this->reads[access_id].emplace_back(shared_event);
-            this->global_variables.insert(access_id);
-          }
+          // See the write case above.
+          shared_event.race_exempt = pre_publication_access(
+            access_id, shared_event.thread, step_ord,
+            shared_event.s_it->ssa_lhs.type());
+          this->reads[access_id].emplace_back(shared_event);
+          this->global_variables.insert(access_id);
         }
         prev = s_it;
       }

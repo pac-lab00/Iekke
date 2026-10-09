@@ -73,6 +73,9 @@ private:
     unsigned label;
     unsigned num;
     unsigned thread;
+    /// Excused from race pairing by the publication filter. Still part of
+    /// the value flow: see collect_reads_and_writes.
+    bool race_exempt = false;
   };
   struct lazy_variable
   {
