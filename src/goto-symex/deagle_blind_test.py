@@ -15,6 +15,12 @@
 # Case "model": the --32/--64 BenchExec passes as the third argument reaches
 # the tool. Before the fix it was dropped, so every task ran in the host's
 # default data model (ILP32) whatever its yml said.
+# Case "memory": a bound that outgrows the run's memory is stopped on its own,
+# and the SUCCESSFUL an earlier bound found is still reported. Before the fix
+# the bound grew until the run's limit killed the whole run from outside,
+# taking that answer with it.
+# Case "buffer": a wrapper killed from outside still leaves its "try" lines
+# in the log. Before the fix they sat in a block buffer and were lost.
 import os
 import signal
 import subprocess
@@ -31,6 +37,20 @@ here = os.path.dirname(os.path.abspath(__file__))
 mode = open(os.path.join(here, "mode")).read().strip()
 with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
+calls = len(open(os.path.join(here, "args")).read().splitlines())
+if mode == "hog":
+    if calls == 1:
+        print("VERIFICATION SUCCESSFUL")
+        sys.exit(0)
+    with open(os.path.join(here, "pids"), "a") as f:
+        f.write("%d\n" % os.getpid())
+    held = []
+    for mb in range(50, 1250, 50):        # 1.2 GB, touched, in 50 MB steps
+        held.append(b"\x01" * (50 << 20))
+        with open(os.path.join(here, "peak"), "w") as f:
+            f.write(str(mb))
+        time.sleep(0.2)
+    time.sleep(120)
 solver = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
 with open(os.path.join(here, "pids"), "a") as f:
     f.write("%d\n%d\n" % (os.getpid(), solver.pid))
@@ -55,7 +75,8 @@ def alive(pid):
         return True
 
 
-def run(mode, budget, term_after=None, extra=()):
+def run(mode, budget, term_after=None, extra=(), env_extra=None,
+        kill_after=None):
     d = tempfile.mkdtemp(prefix="deagle_blind_test_")
     tool = os.path.join(d, "iekke_exe")
     with open(tool, "w") as f:
@@ -63,15 +84,21 @@ def run(mode, budget, term_after=None, extra=()):
     os.chmod(tool, 0o755)
     with open(os.path.join(d, "mode"), "w") as f:
         f.write(mode)
-    env = dict(os.environ, DEAGLE_BUDGET=str(budget))
+    env = dict(os.environ, DEAGLE_BUDGET=str(budget), **(env_extra or {}))
+    log = open(os.path.join(d, "wrapper.log"), "w")
     w = subprocess.Popen([sys.executable, WRAPPER, "no-data-race.prp", "prog.c"]
                          + list(extra),
-                         cwd=d, env=env, stdout=subprocess.PIPE,
+                         cwd=d, env=env, stdout=log,
                          stderr=subprocess.STDOUT, text=True)
     if term_after is not None:
         time.sleep(term_after)
         w.send_signal(signal.SIGTERM)
-    out = w.communicate(timeout=budget + 30)[0]
+    if kill_after is not None:
+        time.sleep(kill_after)
+        w.kill()
+    w.wait(timeout=budget + 30)
+    log.close()
+    out = open(os.path.join(d, "wrapper.log")).read()
     time.sleep(0.5)
     pids = [int(p) for p in open(os.path.join(d, "pids")).read().split()] \
         if os.path.exists(os.path.join(d, "pids")) else []
@@ -84,6 +111,8 @@ def run(mode, budget, term_after=None, extra=()):
     args = open(os.path.join(d, "args")).read().splitlines() \
         if os.path.exists(os.path.join(d, "args")) else []
     run.args = args
+    run.peak = int(open(os.path.join(d, "peak")).read()) \
+        if os.path.exists(os.path.join(d, "peak")) else 0
     return out, pids, survivors
 
 
@@ -138,5 +167,28 @@ for model in ("--32", "--64"):
     else:
         print("ok   model %s: reached the tool on all %d calls"
               % (model, len(run.args)))
+
+out, pids, survivors = run("hog", 30, env_extra={"DEAGLE_MEMLIMIT": str(600 << 20)})
+last = out.strip().splitlines()[-1] if out.strip() else ""
+if len(run.args) < 2:
+    print("FAIL memory: the growing bound never ran")
+    ok = False
+elif run.peak >= 600 or last != "SUCCESSFUL" or survivors:
+    print("FAIL memory: bound reached %d MB of a 600 MB limit, last line %r, "
+          "survivors %s" % (run.peak, last, survivors))
+    ok = False
+else:
+    print("ok   memory: bound stopped at %d MB of 600, SUCCESSFUL kept"
+          % run.peak)
+
+out, pids, survivors = run("hang", 60, kill_after=2)
+if not pids:
+    print("FAIL buffer: the fake tool never ran")
+    ok = False
+elif "try unwind=" not in out:
+    print("FAIL buffer: the killed wrapper left no 'try' line in its log")
+    ok = False
+else:
+    print("ok   buffer: the killed wrapper's log still shows its bound")
 
 sys.exit(0 if ok else 1)
