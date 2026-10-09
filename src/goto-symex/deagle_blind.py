@@ -55,7 +55,10 @@ import subprocess
 import sys
 import time
 
-BUDGET = float(os.environ.get("DEAGLE_BUDGET", "900"))
+# Below the 900 s CPU limit on purpose. The budget is measured in wall time,
+# and a bounded SUCCESSFUL is only reported once it is spent, so a budget of
+# 900 reports it at about 900 s of CPU -- which SV-COMP scores as a timeout.
+BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
 MIN_SLICE = 3.0
 # No single bound may eat the whole budget. The schedule deliberately mixes two
 # regimes -- deep unwind at few rounds, and deep rounds at modest unwind -- and
