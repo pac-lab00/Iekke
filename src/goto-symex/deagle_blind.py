@@ -92,13 +92,24 @@ if sys.argv[1] == "--witness":
     sys.exit(0)
 
 if len(sys.argv) < 3:
-    print("Usage: ./deagle property_path program_path")
+    print("Usage: ./deagle property_path program_path [--32|--64]")
     sys.exit(0)
 
 property_path = sys.argv[1]
 program_path = sys.argv[2]
 
+# The data model comes from the task's yml, and BenchExec passes it as the
+# third argument. Dropping it runs every task in the tool's default model,
+# which Deagle fixes at ILP32 (config.cpp, "default --32") -- so an LP64 task
+# is analysed with 4-byte longs and pointers, which changes overflows, offsets
+# and sizes in the program.
+data_model = sys.argv[3] if len(sys.argv) > 3 else ""
+if data_model not in ("", "--32", "--64"):
+    print("Unknown data model: %s" % data_model)
+    sys.exit(0)
+
 flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
+flags += data_model + " "
 if "unreach-call.prp" in property_path:
     flags += ""
 elif "no-data-race.prp" in property_path:

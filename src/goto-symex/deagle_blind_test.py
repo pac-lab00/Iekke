@@ -12,6 +12,9 @@
 # the tool and its solver kept running into the next bound and past the end.
 # Case "fail": a verdict on the last line still reaches the wrapper's output.
 # Case "term": a SIGTERM to the wrapper mid-bound must also end that bound.
+# Case "model": the --32/--64 BenchExec passes as the third argument reaches
+# the tool. Before the fix it was dropped, so every task ran in the host's
+# default data model (ILP32) whatever its yml said.
 import os
 import signal
 import subprocess
@@ -26,6 +29,8 @@ FAKE_TOOL = r'''#! /usr/bin/env python3
 import os, subprocess, sys, time
 here = os.path.dirname(os.path.abspath(__file__))
 mode = open(os.path.join(here, "mode")).read().strip()
+with open(os.path.join(here, "args"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
 solver = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
 with open(os.path.join(here, "pids"), "a") as f:
     f.write("%d\n%d\n" % (os.getpid(), solver.pid))
@@ -50,7 +55,7 @@ def alive(pid):
         return True
 
 
-def run(mode, budget, term_after=None):
+def run(mode, budget, term_after=None, extra=()):
     d = tempfile.mkdtemp(prefix="deagle_blind_test_")
     tool = os.path.join(d, "iekke_exe")
     with open(tool, "w") as f:
@@ -59,7 +64,8 @@ def run(mode, budget, term_after=None):
     with open(os.path.join(d, "mode"), "w") as f:
         f.write(mode)
     env = dict(os.environ, DEAGLE_BUDGET=str(budget))
-    w = subprocess.Popen([sys.executable, WRAPPER, "no-data-race.prp", "prog.c"],
+    w = subprocess.Popen([sys.executable, WRAPPER, "no-data-race.prp", "prog.c"]
+                         + list(extra),
                          cwd=d, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True)
     if term_after is not None:
@@ -75,6 +81,9 @@ def run(mode, budget, term_after=None):
             os.kill(p, signal.SIGKILL)
         except ProcessLookupError:
             pass
+    args = open(os.path.join(d, "args")).read().splitlines() \
+        if os.path.exists(os.path.join(d, "args")) else []
+    run.args = args
     return out, pids, survivors
 
 
@@ -116,5 +125,18 @@ elif survivors:
     ok = False
 else:
     print("ok   term: SIGTERM to the wrapper took its bound down with it")
+
+for model in ("--32", "--64"):
+    out, pids, survivors = run("fail", 30, extra=(model,))
+    if not run.args:
+        print("FAIL model %s: the fake tool never ran" % model)
+        ok = False
+    elif any(model not in a.split() for a in run.args):
+        print("FAIL model %s: the tool was called without it: %r"
+              % (model, run.args[0]))
+        ok = False
+    else:
+        print("ok   model %s: reached the tool on all %d calls"
+              % (model, len(run.args)))
 
 sys.exit(0 if ok else 1)
