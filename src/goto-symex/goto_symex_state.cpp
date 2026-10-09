@@ -315,17 +315,44 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
         rename<level>(std::move(index_expr.index()), ns).get();
       const exprt renamed_index = index_expr.index();
 
-      std::size_t element = 0;
-      for(auto &op : to_array_expr(index_expr.array()).operands())
+      // Renaming can resolve what was a syntactically non-constant index (a
+      // thread's own parameter, say, always called with the same literal
+      // argument) to an actual constant once constant propagation has run.
+      // When that happens there is no ambiguity left to guard against -- the
+      // element read is already pinned down -- so fall back to the plain,
+      // unconditioned rename every element got before this guard existed.
+      // Adding an `index == k` conjunct for an index that is already a
+      // decided constant leaves an un-simplified equality in the guard that
+      // goto_symex_statet::l2_thread_read_encoding's atomic-section
+      // bookkeeping does not always fold away structurally: the generation
+      // it mints for a never-touched element then ends up tied to its old
+      // value only through an implication the solver can vacuously
+      // discharge by setting that guard false -- which is exactly what
+      // happens on the real (only) path, leaving the element's value free.
+      // See ~/framing_check/framing_two_threads.c, 18 lines, reproduces with
+      // `--unwind 1 --rounds 2 --por` (needs an atomic section and >=2
+      // threads; the per-element guard conditioning below is unaffected
+      // when the index is genuinely symbolic, so the 09-regions/06-symbeq
+      // false-alarm fix this guard exists for is untouched).
+      if(renamed_index.is_constant())
       {
-        // Restored rather than popped: nothing else expects the guard to
-        // have changed across this call.
-        guardt saved = guard;
-        guard.add(equal_exprt{
-          renamed_index, from_integer(element, renamed_index.type())});
-        op = rename<level>(std::move(op), ns).get();
-        guard = std::move(saved);
-        ++element;
+        for(auto &op : to_array_expr(index_expr.array()).operands())
+          op = rename<level>(std::move(op), ns).get();
+      }
+      else
+      {
+        std::size_t element = 0;
+        for(auto &op : to_array_expr(index_expr.array()).operands())
+        {
+          // Restored rather than popped: nothing else expects the guard to
+          // have changed across this call.
+          guardt saved = guard;
+          guard.add(equal_exprt{
+            renamed_index, from_integer(element, renamed_index.type())});
+          op = rename<level>(std::move(op), ns).get();
+          guard = std::move(saved);
+          ++element;
+        }
       }
     }
     else

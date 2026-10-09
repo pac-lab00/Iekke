@@ -1,0 +1,45 @@
+CORE
+main.c
+--unwind 1 --rounds 2 --por
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`goto_symex_statet::rename<L2>`'s per-element guard-conditioned rename for a
+load at a symbolic index on a field-sensitivity-expanded array (added to fix
+the 09-regions/06-symbeq false-alarm family: a thread touching `data[1]`
+under `mutex[1]` must not be paired against a write under `mutex[0]`) adds
+`index == k` as a guard conjunct before renaming each element `k`, so the
+event lazy_po records for the elements the load does not touch carries that
+condition. When the index renames to an actual constant -- a thread's own
+parameter, here, always called with the same literal argument, so there is
+no real ambiguity left -- that conjunct is a decided equality
+(`renamed_index == k`) that the atomic-section read bookkeeping in
+`l2_thread_read_encoding` does not fold away structurally. The generation it
+mints for the never-touched element is then tied to its old value only
+through an implication the solver discharges vacuously by setting that
+decided-false guard false -- exactly what happens on the one real path --
+leaving the element's value free. A later plain, constant-index read of that
+element (here, an overflow-check instrumented invariant) sees the free
+generation and a provably-true invariant is reported violated.
+
+Reproducer: two threads call `bump(1)` (always index 1, never 0) inside an
+atomic section; `checkInv`'s invariant only involves `arr[0]` (never written)
+and `arr[1]`. Reported FAILED before this fix (`arr[0]` found unconstrained),
+SUCCESSFUL after.
+
+Real-corpus trigger: `elimination_backoff_stack` under `no-overflow`
+(`checkInvariant.overflow.1`/`.2` at line 1543, `PushDone[0] + PushOpen[0]`)
+-- `localPush1` is a function parameter always called with the literal
+argument `1`, syntactically non-constant but always resolving to one after
+renaming; same mechanism exactly. Verified via the real `deagle_escalate`
+wrapper: `VERIFICATION SUCCESSFUL` after this fix, matching the expected
+answer.
+
+See `atomic_section_const_index_framing_race`, the control: same
+constant-resolved-index-under-atomic-section shape, but a third,
+unprotected write actually does touch the "never-touched" element --
+must stay FAILED before and after, proving the fix does not swallow a
+real race in this same code path.
