@@ -13,6 +13,7 @@ Author: Michael Tautschnig
 
 #include <util/mp_arith.h>
 #include <util/nodiscard.h>
+#include <util/std_expr.h>
 
 class exprt;
 class ssa_exprt;
@@ -181,13 +182,21 @@ private:
 
   const bool should_simplify;
 
+  /// \p lo is the byte at which \p lhs_fs starts within the object being
+  /// assigned, or negative when it is not known; see \ref store_offset.
   void field_assignments_rec(
     const namespacet &ns,
     goto_symex_statet &state,
     const exprt &lhs_fs,
     const exprt &ssa_rhs,
     symex_targett &target,
-    bool allow_pointer_unsoundness);
+    bool allow_pointer_unsoundness,
+    const mp_integer &lo = 0);
+
+  /// While \ref field_assignments splits a `byte_update(o, offset, v)` at an
+  /// undecided offset: that offset (else nil) and the size of v in bytes.
+  exprt store_offset = nil_exprt{};
+  mp_integer store_size = 0;
 
   exprt simplify_opt(exprt e, const namespacet &ns) const;
 };

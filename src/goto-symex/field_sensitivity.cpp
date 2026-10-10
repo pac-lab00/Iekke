@@ -300,8 +300,38 @@ void field_sensitivityt::field_assignments(
   {
     bool run_apply_bak = run_apply;
     run_apply = false;
+    // A store through a pointer at an undecided offset is lowered to
+    // `o' == byte_update(o, offset, v)`, which the split below turns into one
+    // assignment per field and element of o -- each of them, untouched ones
+    // included, an unconditional shared write carrying the value this thread
+    // read when the statement started. Any field another thread updated in
+    // between is reset to that stale value: a lost update that exists only in
+    // the lowering. In goblint 28-race_reach_74..76 a pthread_mutex_lock on
+    // a[3].mutex republished a[4].datum and broke an assertion protected by
+    // a[4]'s own mutex. As for a `with` at a non-constant index (below),
+    // publish only the leaves whose bytes the store meets.
+    const exprt saved_offset = store_offset;
+    const mp_integer saved_size = store_size;
+    store_offset = nil_exprt{};
+    if(
+      (rhs.id() == ID_byte_update_little_endian ||
+       rhs.id() == ID_byte_update_big_endian) &&
+      rhs.operands().size() == 3 &&
+      (rhs.op1().type().id() == ID_signedbv ||
+       rhs.op1().type().id() == ID_unsignedbv) &&
+      !simplify_expr(rhs.op1(), ns).is_constant())
+    {
+      const auto size = pointer_offset_size(rhs.op2().type(), ns);
+      if(size.has_value() && *size > 0)
+      {
+        store_offset = rhs.op1();
+        store_size = *size;
+      }
+    }
     field_assignments_rec(
       ns, state, lhs_fs, rhs, target, allow_pointer_unsoundness);
+    store_offset = saved_offset;
+    store_size = saved_size;
     run_apply = run_apply_bak;
   }
 }
@@ -322,10 +352,28 @@ void field_sensitivityt::field_assignments_rec(
   const exprt &lhs_fs,
   const exprt &ssa_rhs,
   symex_targett &target,
-  bool allow_pointer_unsoundness)
+  bool allow_pointer_unsoundness,
+  const mp_integer &lo)
 {
   if(is_ssa_expr(lhs_fs))
   {
+    // See field_assignments: publish this leaf only if the store meets it.
+    exprt meets = true_exprt{};
+    const auto leaf_size = pointer_offset_size(lhs_fs.type(), ns);
+    if(store_offset.is_not_nil() && lo >= 0 && leaf_size.has_value())
+    {
+      const exprt &offset = store_offset;
+      meets = binary_relation_exprt{
+        offset, ID_lt, from_integer(lo + *leaf_size, offset.type())};
+      if(lo - store_size >= 0 || offset.type().id() == ID_signedbv)
+        meets = and_exprt{
+          meets,
+          binary_relation_exprt{
+            offset, ID_gt, from_integer(lo - store_size, offset.type())}};
+    }
+    const goto_symex_statet::shared_write_condition_scopet write_cond{
+      state, meets};
+
     const ssa_exprt ssa_lhs = state
                                 .assignment(
                                   to_ssa_expr(lhs_fs),
@@ -362,9 +410,17 @@ void field_sensitivityt::field_assignments_rec(
       const exprt member_rhs =
         simplify_opt(member_exprt{ssa_rhs, comp.get_name(), comp.type()}, ns);
       const exprt &member_lhs = *fs_it;
+      const auto at = lo < 0 ? optionalt<mp_integer>{}
+                             : member_offset(type, comp.get_name(), ns);
 
       field_assignments_rec(
-        ns, state, member_lhs, member_rhs, target, allow_pointer_unsoundness);
+        ns,
+        state,
+        member_lhs,
+        member_rhs,
+        target,
+        allow_pointer_unsoundness,
+        at.has_value() ? lo + *at : mp_integer{-1});
       ++fs_it;
     }
   }
@@ -406,6 +462,8 @@ void field_sensitivityt::field_assignments_rec(
         partial_update = &with_expr;
     }
 
+    const auto element_size = pointer_offset_size(type->element_type(), ns);
+
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
     for(std::size_t i = 0; i < array_size; ++i)
     {
@@ -425,7 +483,14 @@ void field_sensitivityt::field_assignments_rec(
           state, element_cond};
 
         field_assignments_rec(
-          ns, state, index_lhs, index_rhs, target, allow_pointer_unsoundness);
+          ns,
+          state,
+          index_lhs,
+          index_rhs,
+          target,
+          allow_pointer_unsoundness,
+          lo >= 0 && element_size.has_value() ? lo + *element_size * i
+                                              : mp_integer{-1});
       }
       ++fs_it;
     }
@@ -440,8 +505,9 @@ void field_sensitivityt::field_assignments_rec(
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
     for(const exprt &op : ssa_rhs.operands())
     {
+      // Position of the parts unknown here: no store condition below.
       field_assignments_rec(
-        ns, state, *fs_it, op, target, allow_pointer_unsoundness);
+        ns, state, *fs_it, op, target, allow_pointer_unsoundness, -1);
       ++fs_it;
     }
   }
