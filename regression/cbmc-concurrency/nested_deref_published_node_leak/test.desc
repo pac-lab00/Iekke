@@ -1,0 +1,25 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --pointer-check --alloc-check --memory-leak-check
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+main links one node behind `slot` and spawns a thread that links a second
+one in front of it, so at the end `slot -> thread node -> main node` and
+nothing is lost. The leak check at the end of main compares the last
+allocation with `slot`, `slot->next`, `slot->next->next`, ... Main is
+symexed before the thread, and in `slot->next->next` the inner pointer
+`slot->next` was dereferenced against main's own points-to set, which
+cannot hold the thread's node: its shared read, which tops the set up from
+what other threads publish, came only after the dereference. So main's
+node, now behind the thread's, was unreachable and reported leaked. The
+shared pointers inside a dereferenced pointer are now topped up first.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+goblint-regression/09-regions_13-arraycollapse_nr (valid-memtrack).
+
+See `nested_deref_published_node_leak_real`: the thread's node really is
+lost, which must stay FAILED.

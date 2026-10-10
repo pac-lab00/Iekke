@@ -328,6 +328,13 @@ public:
     const irep_idt &l1_identifier,
     const namespacet &ns);
 
+  /// As \ref seed_published_targets, for every shared pointer that \p expr,
+  /// an L1 pointer about to be dereferenced, contains. Its shared read -- and
+  /// the top-up that comes with it -- happens only when the dereferenced
+  /// expression is renamed to L2, after the dereference has already used the
+  /// stale set.
+  void seed_published_targets_in(const exprt &expr, const namespacet &ns);
+
   /// Shared variables that a static, whole-program analysis has proven to be
   /// accessed by at most one thread over any execution (see
   /// thread_exclusivity.h). Such a variable cannot be interfered with by any

@@ -785,6 +785,23 @@ if(atomic_section_id!=0)
   return true;
 }
 
+void goto_symex_statet::seed_published_targets_in(
+  const exprt &expr,
+  const namespacet &ns)
+{
+  if(published_value_set == nullptr)
+    return;
+
+  for(auto it = expr.depth_cbegin(); it != expr.depth_cend(); ++it)
+  {
+    if(!is_ssa_expr(*it) || it->type().id() != ID_pointer)
+      continue;
+    const ssa_exprt &ssa = to_ssa_expr(*it);
+    if(write_is_shared(ssa, ns) != write_is_shared_resultt::NOT_SHARED)
+      seed_published_targets(ssa, ssa.get_identifier(), ns);
+  }
+}
+
 void goto_symex_statet::seed_published_targets(
   const ssa_exprt &expr,
   const irep_idt &l1_identifier,
