@@ -198,6 +198,11 @@ private:
   exprt store_offset = nil_exprt{};
   mp_integer store_size = 0;
 
+  /// While \ref field_assignments runs: the object assigned to (its L1
+  /// object identifier), so that its own old value can be told apart from a
+  /// value stored into it.
+  irep_idt store_object;
+
   exprt simplify_opt(exprt e, const namespacet &ns) const;
 };
 

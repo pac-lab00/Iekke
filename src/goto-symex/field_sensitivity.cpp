@@ -312,7 +312,9 @@ void field_sensitivityt::field_assignments(
     // publish only the leaves whose bytes the store meets.
     const exprt saved_offset = store_offset;
     const mp_integer saved_size = store_size;
+    const irep_idt saved_object = store_object;
     store_offset = nil_exprt{};
+    store_object = lhs.get_l1_object_identifier();
     if(
       (rhs.id() == ID_byte_update_little_endian ||
        rhs.id() == ID_byte_update_big_endian) &&
@@ -332,6 +334,7 @@ void field_sensitivityt::field_assignments(
       ns, state, lhs_fs, rhs, target, allow_pointer_unsoundness);
     store_offset = saved_offset;
     store_size = saved_size;
+    store_object = saved_object;
     run_apply = run_apply_bak;
   }
 }
@@ -346,6 +349,55 @@ void field_sensitivityt::field_assignments(
 /// \param ssa_rhs: right-hand-side value to assign
 /// \param target: symbolic execution equation store
 /// \param allow_pointer_unsoundness: allow pointer unsoundness
+/// The condition under which the store \p rhs, assigned to an array that is
+/// a part of \p object, writes element \p k -- or nullopt when that is not
+/// known, in which case the element counts as written, as before:
+///   with(b, i, v)  at an undecided i:   i == k, or k is written in b (b is
+///                                      taken as the old value, as before,
+///                                      unless it is itself a store)
+///   c ? x : y                          c ? (k in x) : (k in y)
+///   object's own old value             false
+/// The `if` is what a store through a pointer with more than one target
+/// leaves, the old value being the other target's case.
+static optionalt<exprt> element_written(
+  const exprt &rhs,
+  const irep_idt &object,
+  std::size_t k)
+{
+  if(rhs.id() == ID_with && rhs.operands().size() == 3)
+  {
+    const with_exprt &with = to_with_expr(rhs);
+    if(with.where().is_constant())
+      return {};
+    const exprt here =
+      equal_exprt{with.where(), from_integer(k, with.where().type())};
+    // The base is taken to be the array's old value unless it is itself a
+    // recognised store, as 6c5dd7e4 always took it.
+    const auto in_base = element_written(with.old(), object, k);
+    if(!in_base.has_value() || in_base->is_false())
+      return {here};
+    return {or_exprt{here, *in_base}};
+  }
+  if(rhs.id() == ID_if)
+  {
+    const if_exprt &ite = to_if_expr(rhs);
+    const auto t = element_written(ite.true_case(), object, k);
+    const auto f = element_written(ite.false_case(), object, k);
+    if(!t.has_value() || !f.has_value())
+      return {};
+    if(t->is_false() && f->is_false())
+      return {false_exprt{}};
+    return {if_exprt{ite.cond(), *t, *f}};
+  }
+  if(
+    is_ssa_expr(rhs) && !object.empty() &&
+    to_ssa_expr(rhs).get_l1_object_identifier() == object)
+  {
+    return {false_exprt{}};
+  }
+  return {};
+}
+
 void field_sensitivityt::field_assignments_rec(
   const namespacet &ns,
   goto_symex_statet &state,
@@ -454,13 +506,13 @@ void field_sensitivityt::field_assignments_rec(
     // a[[k]] is unaffected, so this thread's own view of the array stays
     // exactly as before.  Framed-away elements simply keep whatever value the
     // interleaving gave them.
-    const with_exprt *partial_update = nullptr;
-    if(ssa_rhs.id() == ID_with && ssa_rhs.operands().size() == 3)
-    {
-      const with_exprt &with_expr = to_with_expr(ssa_rhs);
-      if(!with_expr.where().is_constant())
-        partial_update = &with_expr;
-    }
+    //
+    // A store through a pointer with more than one target arrives as
+    // `c ? with(a, i, v) : a#old`, not as a bare `with`, and was not
+    // recognised: every element's write was published, so on
+    // workstealqueue_mutex-2 one thread's `r->field++` on items[2] republished
+    // items[0] over the other thread's update of it. element_written sees
+    // through the `if`.
 
     const auto element_size = pointer_offset_size(type->element_type(), ns);
 
@@ -471,12 +523,9 @@ void field_sensitivityt::field_assignments_rec(
         index_exprt{ssa_rhs, from_integer(i, type->index_type())}, ns);
       const exprt &index_lhs = *fs_it;
 
+      const auto written = element_written(ssa_rhs, store_object, i);
       const exprt element_cond =
-        partial_update == nullptr
-          ? static_cast<exprt>(true_exprt{})
-          : static_cast<exprt>(equal_exprt{
-              partial_update->where(),
-              from_integer(i, partial_update->where().type())});
+        written.has_value() ? *written : static_cast<exprt>(true_exprt{});
 
       {
         const goto_symex_statet::shared_write_condition_scopet write_cond{
