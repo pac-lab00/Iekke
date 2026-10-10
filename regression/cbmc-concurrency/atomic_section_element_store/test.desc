@@ -1,0 +1,22 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`pa->id = ++uid` inside an atomic section, with `pa = &th[i]`, while main
+writes `pb->op`, `pb = &th[j]`, j != i. The store loads th[i] at the
+undecided index, and that load reads element k under `i == k`
+(shared_read_cond). Inside an atomic section l2_thread_read_encoding dropped
+that condition, so the load was recorded as reading every element of `th`
+and paired with main's write of th[j].op: a race no execution has. The same
+program without the atomic section was already SUCCESSFUL.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+pthread-complex/elimination_backoff_stack (no-data-race).
+
+See `atomic_section_element_store_race`: i == j and both write `id`, which
+must stay FAILED.

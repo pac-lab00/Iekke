@@ -13,6 +13,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/arith_tools.h>
 #include "goto_symex_is_constant.h"
 
+#include <functional>
 #include <iostream>
 
 #include <util/as_const.h>
@@ -22,6 +23,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/exception_utils.h>
 #include <util/expr_util.h>
 #include <util/invariant.h>
+#include <util/pointer_offset_size.h>
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
 
@@ -319,6 +321,92 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       else
         expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
     }
+    // A load of |T| bytes at an undecided offset of an object field
+    // sensitivity has already expanded: `byte_extract({...}, off, T)`, among
+    // others the lowering of `p->n` with `p = &a[i].cell`. Renamed with the
+    // plain walk, every leaf of the object emitted a shared read event, the
+    // other members of every element too, so a thread reading a[0].cell.n
+    // was paired with one writing a[0].op (pthread-complex/
+    // elimination_backoff_stack, no-data-race). Rename each leaf under the
+    // condition that [off, off + |T|) meets its bytes, on the read events
+    // only (see shared_read_cond), as a load at a symbolic index is renamed
+    // under `i == k` below. A leaf whose position or size is not known keeps
+    // the plain path guard: leaving a condition out only adds a read.
+    else if(
+      level == L2 &&
+      (expr.id() == ID_byte_extract_little_endian ||
+       expr.id() == ID_byte_extract_big_endian) &&
+      (to_byte_extract_expr(expr).op().id() == ID_array ||
+       to_byte_extract_expr(expr).op().id() == ID_struct) &&
+      !to_byte_extract_expr(expr).offset().is_constant())
+    {
+      byte_extract_exprt &byte_extract_expr = to_byte_extract_expr(expr);
+      byte_extract_expr.offset() =
+        rename<level>(std::move(byte_extract_expr.offset()), ns).get();
+      const exprt &offset = byte_extract_expr.offset();
+      const auto size = pointer_offset_size(byte_extract_expr.type(), ns);
+      // Decided by renaming: no condition, as at the symbolic index below.
+      const bool condition =
+        !offset.is_constant() && size.has_value() &&
+        (offset.type().id() == ID_signedbv ||
+         offset.type().id() == ID_unsignedbv);
+
+      std::function<void(exprt &, const mp_integer &)> rename_leaves =
+        [&](exprt &e, const mp_integer &lo) {
+          if(condition && e.id() == ID_array && e.type().id() == ID_array)
+          {
+            const auto element_size = pointer_offset_size(
+              to_array_type(e.type()).element_type(), ns);
+            if(element_size.has_value())
+            {
+              rename<level>(e.type(), irep_idt(), ns);
+              mp_integer at = lo;
+              for(auto &op : e.operands())
+              {
+                rename_leaves(op, at);
+                at += *element_size;
+              }
+              return;
+            }
+          }
+          else if(condition && e.id() == ID_struct)
+          {
+            const struct_typet &type = to_struct_type(ns.follow(e.type()));
+            if(e.operands().size() == type.components().size())
+            {
+              rename<level>(e.type(), irep_idt(), ns);
+              auto c_it = type.components().begin();
+              for(auto &op : e.operands())
+              {
+                const auto at = member_offset(type, c_it->get_name(), ns);
+                if(at.has_value())
+                  rename_leaves(op, lo + *at);
+                else
+                  op = rename<level>(std::move(op), ns).get();
+                ++c_it;
+              }
+              return;
+            }
+          }
+
+          const auto leaf_size = pointer_offset_size(e.type(), ns);
+          if(!condition || !leaf_size.has_value())
+          {
+            e = rename<level>(std::move(e), ns).get();
+            return;
+          }
+          exprt meets = binary_relation_exprt{
+            offset, ID_lt, from_integer(lo + *leaf_size, offset.type())};
+          if(lo - *size >= 0 || offset.type().id() == ID_signedbv)
+            meets = and_exprt{
+              meets,
+              binary_relation_exprt{
+                offset, ID_gt, from_integer(lo - *size, offset.type())}};
+          const shared_read_condition_scopet read_cond{*this, meets};
+          e = rename<level>(std::move(e), ns).get();
+        };
+      rename_leaves(byte_extract_expr.op(), 0);
+    }
     // A load at a symbolic index, after field sensitivity has already
     // expanded the array into its elements: `{a[[0]], a[[1]], ...}[i]`.
     //
@@ -538,6 +626,20 @@ bool goto_symex_statet::l2_thread_read_encoding(
   const irep_idt &l1_identifier=ssa_l1.get_identifier();
   const exprt guard_as_expr = guard.as_expr();
 
+  // No event and no fresh index, but avoid constant propagation -- inside an
+  // atomic section too. Tested only after the atomic section's bookkeeping
+  // before, so a read made with events off there (the framed old value of a
+  // store through a pointer, see symex_assign) still emitted a shared read
+  // event for every target: `p->id = v` with `p = &a[i]`, in an atomic
+  // section, was recorded as reading every element of `a`, and paired with
+  // another thread's write of a[j].op (pthread-complex/
+  // elimination_backoff_stack, no-data-race).
+  if(!record_events.top())
+  {
+    expr = set_indices<L2>(std::move(ssa_l1), ns).get();
+    return true;
+  }
+
   // see whether we are within an atomic section
 if(atomic_section_id!=0)
   {
@@ -612,8 +714,18 @@ if(atomic_section_id!=0)
       symex_target != nullptr, nullptr_exceptiont, "symex_target is null");
     ssa_exprt r = ssa_l1;
     r.set_level_2(a_s_read.first);
+    // See shared_read_cond, as on the plain path below. Dropped here before,
+    // so inside an atomic section a load at a symbolic index -- `p->id = v`
+    // with `p = &a[i]` reads a[i] -- was recorded as reading every element of
+    // `a`, and paired with another thread's write of a[j].op
+    // (pthread-complex/elimination_backoff_stack, no-data-race).
     symex_target->shared_read(
-      guard_as_expr, r, atomic_section_id, source);
+      shared_read_cond.is_true()
+        ? guard_as_expr
+        : static_cast<exprt>(and_exprt{guard_as_expr, shared_read_cond}),
+      r,
+      atomic_section_id,
+      source);
 
     record_events.push(false);
     ssa_exprt ssa_l2 = assignment(std::move(ssa_l1), tmp, ns, true, true).get();
@@ -637,17 +749,17 @@ if(atomic_section_id!=0)
     // lock hands its successor a node through vatomicptr_xchg.
     seed_published_targets(expr, l1_identifier, ns);
 
-    a_s_read.second.push_back(guard);
-    if(!no_write.op().is_false())
-      a_s_read.second.back().add(no_write);
+    // A read under a narrower condition does not stand for later reads of
+    // the same object in this section: where its condition is false its
+    // event is off and its value unconstrained, and a later read reusing it
+    // would read that value with no event of its own.
+    if(shared_read_cond.is_true())
+    {
+      a_s_read.second.push_back(guard);
+      if(!no_write.op().is_false())
+        a_s_read.second.back().add(no_write);
+    }
 
-    return true;
-  }
-
-  // No event and no fresh index, but avoid constant propagation
-  if(!record_events.top())
-  {
-    expr = set_indices<L2>(std::move(ssa_l1), ns).get();
     return true;
   }
 

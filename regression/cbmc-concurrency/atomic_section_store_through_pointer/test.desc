@@ -1,0 +1,20 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+As `store_through_pointer_framing`, inside an atomic section: `*d = 8`,
+with `d` pointing to `dA` or `dB`, frames the target it does not write back
+over itself, and the old value is renamed with events off. Inside an atomic
+section l2_thread_read_encoding ignored that and recorded the read anyway,
+so with `d == &dB` main was seen reading `dA`, paired with the thread's
+write of `dA` (made only when `d == &dB`): a race no execution has.
+
+Reported FAILED before the fix, SUCCESSFUL after.
+
+See `atomic_section_store_through_pointer_race`: the thread writes `dA`
+whatever `d` is, which must stay FAILED.
