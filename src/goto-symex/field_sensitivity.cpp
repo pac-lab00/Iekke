@@ -9,6 +9,7 @@ Author: Michael Tautschnig
 #include "field_sensitivity.h"
 
 #include <util/arith_tools.h>
+#include <util/pointer_offset_size.h>
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
 
@@ -49,6 +50,34 @@ exprt field_sensitivityt::apply(
     const bool framing_base = expr.id() == ID_with &&
                               expr.operands().size() == 3 &&
                               !to_with_expr(expr).where().is_constant();
+#ifdef ENABLE_ARRAY_FIELD_SENSITIVITY
+    // A load `a[i]` at an undecided i of an array still in symbol form --
+    // among others the base of `with(a[i], member, v)`, the lowering of
+    // `p->member = v` with `p = &a[i]`. Expanded by the plain walk below,
+    // every element of `a` was renamed with the path guard, so the load was
+    // recorded as reading all of them: a thread working on a[1] under a[1]'s
+    // mutex was paired, on a[0], with a thread storing a[0] under a[0]'s
+    // (goblint 06-symbeq_06..08). Expand it reading element k only under the
+    // condition that the load meets it: the bytes [i * s, i * s + s), for
+    // elements of size s, meet element k's exactly when i == k. (Were i * s
+    // to overflow it would only add reads, never remove one.)
+    // goto_symex_statet::rename does the same for an array that is already
+    // expanded when it walks the expression.
+    const bool index_load =
+      !write && expr.id() == ID_index && is_ssa_expr(expr.op0()) &&
+      is_divisible(to_ssa_expr(expr.op0())) &&
+      expr.op0().type().id() == ID_array &&
+      !simplify_expr(expr.op1(), ns).is_constant() &&
+      (expr.op1().type().id() == ID_signedbv ||
+       expr.op1().type().id() == ID_unsignedbv);
+    const auto element_size =
+      index_load
+        ? pointer_offset_size(to_array_type(expr.op0().type()).element_type(), ns)
+        : optionalt<mp_integer>{};
+#else
+    const bool index_load = false;
+    const optionalt<mp_integer> element_size;
+#endif
     bool is_base = true;
     Forall_operands(it, expr)
     {
@@ -57,6 +86,18 @@ exprt field_sensitivityt::apply(
         state.record_events.push(false);
         *it = apply(ns, state, std::move(*it), write);
         state.record_events.pop();
+      }
+      else if(
+        index_load && is_base && element_size.has_value() && *element_size > 0)
+      {
+        *it = get_fields_in_range(
+          ns,
+          state,
+          to_ssa_expr(*it),
+          mult_exprt{
+            expr.op1(), from_integer(*element_size, expr.op1().type())},
+          *element_size,
+          0);
       }
       else
         *it = apply(ns, state, std::move(*it), write);
@@ -408,6 +449,98 @@ void field_sensitivityt::field_assignments_rec(
   {
     UNREACHABLE;
   }
+}
+
+exprt field_sensitivityt::get_fields_in_range(
+  const namespacet &ns,
+  goto_symex_statet &state,
+  const ssa_exprt &ssa_expr,
+  const exprt &offset,
+  const mp_integer &size,
+  const mp_integer &lo,
+  bool l2) const
+{
+  // Unlike get_fields, which renames each part as a whole once it is built,
+  // rename every leaf here, under the conditions of all the parts that hold
+  // it: renamed as a whole, a part would emit its leaves' events after the
+  // inner conditions were gone.
+  const bool rename_leaves = l2 || !ssa_expr.get_level_2().empty();
+
+  // One part, starting at byte `at`, under "[offset, offset + size) meets
+  // its bytes", when its size is known and the condition applies.
+  auto part = [&](ssa_exprt tmp, const mp_integer &at, bool condition) {
+    const auto part_size = pointer_offset_size(tmp.type(), ns);
+    exprt meets = true_exprt{};
+    if(condition && part_size.has_value())
+    {
+      meets = binary_relation_exprt{
+        offset, ID_lt, from_integer(at + *part_size, offset.type())};
+      if(at - size >= 0 || offset.type().id() == ID_signedbv)
+        meets = and_exprt{
+          meets,
+          binary_relation_exprt{
+            offset, ID_gt, from_integer(at - size, offset.type())}};
+    }
+    // On the read events only: see goto_symex_statet::shared_read_cond.
+    const goto_symex_statet::shared_read_condition_scopet read_cond{
+      state, meets};
+    return is_divisible(tmp)
+             ? get_fields_in_range(
+                 ns, state, tmp, offset, size, at, rename_leaves)
+             : rename_leaves ? state.rename(exprt{tmp}, ns).get()
+                             : static_cast<exprt>(tmp);
+  };
+
+  if(ssa_expr.type().id() == ID_struct || ssa_expr.type().id() == ID_struct_tag)
+  {
+    const struct_typet &type = to_struct_type(ns.follow(ssa_expr.type()));
+    struct_exprt::operandst fields;
+    fields.reserve(type.components().size());
+    const exprt &struct_op = ssa_expr.get_original_expr();
+    for(const auto &comp : type.components())
+    {
+      ssa_exprt tmp = ssa_expr;
+      tmp.remove_level_2();
+      tmp.set_expression(member_exprt{struct_op, comp.get_name(), comp.type()});
+      const auto at = member_offset(type, comp.get_name(), ns);
+      // Members are not conditioned: a load of one member of an element
+      // still reads the element, and the untouched members of a store's
+      // base are written back from what was read, which has to be current.
+      fields.push_back(part(std::move(tmp), at.has_value() ? lo + *at : lo,
+                            false));
+    }
+    return struct_exprt(std::move(fields), ssa_expr.type());
+  }
+#ifdef ENABLE_ARRAY_FIELD_SENSITIVITY
+  else if(
+    ssa_expr.type().id() == ID_array &&
+    to_array_type(ssa_expr.type()).size().id() == ID_constant)
+  {
+    const mp_integer mp_array_size = numeric_cast_v<mp_integer>(
+      to_constant_expr(to_array_type(ssa_expr.type()).size()));
+    if(mp_array_size < 0 || mp_array_size > max_field_sensitivity_array_size)
+      return ssa_expr;
+    const array_typet &type = to_array_type(ssa_expr.type());
+    const auto element_size = pointer_offset_size(type.element_type(), ns);
+    const std::size_t array_size = numeric_cast_v<std::size_t>(mp_array_size);
+    array_exprt::operandst elements;
+    elements.reserve(array_size);
+    const exprt &array = ssa_expr.get_original_expr();
+    for(std::size_t i = 0; i < array_size; ++i)
+    {
+      ssa_exprt tmp = ssa_expr;
+      tmp.remove_level_2();
+      tmp.set_expression(index_exprt{array, from_integer(i, type.index_type())});
+      elements.push_back(part(
+        std::move(tmp),
+        element_size.has_value() ? lo + *element_size * i : lo,
+        element_size.has_value()));
+    }
+    return array_exprt(std::move(elements), type);
+  }
+#endif // ENABLE_ARRAY_FIELD_SENSITIVITY
+  else
+    return ssa_expr;
 }
 
 bool field_sensitivityt::is_divisible(const ssa_exprt &expr) const

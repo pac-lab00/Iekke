@@ -11,6 +11,7 @@ Author: Michael Tautschnig
 
 #include <cstddef>
 
+#include <util/mp_arith.h>
 #include <util/nodiscard.h>
 
 class exprt;
@@ -157,6 +158,22 @@ public:
   bool is_divisible(const ssa_exprt &expr) const;
 
 private:
+  /// As \ref get_fields, for a load that touches only the bytes
+  /// [\p offset, \p offset + \p size) of \p ssa_expr: each array element
+  /// whose own bytes, starting at \p lo, may meet that range is read under
+  /// the condition that they do, so its read events carry it. Struct members
+  /// are not conditioned. Each leaf is renamed on its own, under the
+  /// conditions of the elements that hold it, when \p ssa_expr is L2 or
+  /// \p l2 is set.
+  exprt get_fields_in_range(
+    const namespacet &ns,
+    goto_symex_statet &state,
+    const ssa_exprt &ssa_expr,
+    const exprt &offset,
+    const mp_integer &size,
+    const mp_integer &lo,
+    bool l2 = false) const;
+
   /// whether or not to invoke \ref field_sensitivityt::apply
   bool run_apply = true;
 

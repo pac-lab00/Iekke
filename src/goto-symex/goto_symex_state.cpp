@@ -22,6 +22,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/exception_utils.h>
 #include <util/expr_util.h>
 #include <util/invariant.h>
+#include <util/simplify_expr.h>
 #include <util/std_expr.h>
 
 #include <analyses/dirty.h>
@@ -282,8 +283,41 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
     else if(expr.id() == ID_if)
     {
       expr.op0() = rename<level>(std::move(expr.op0()), ns).get();
+      // A dereference `*p` is lowered to `p == &a ? a : (p == &b ? b : ...)`,
+      // and the program reads only the object p points to. Renamed with the
+      // plain path guard, every link emitted a shared read event, so a load
+      // through a pointer to one of two locked objects was recorded as
+      // reading the other too, under the wrong lock, and paired with its
+      // writer as a race. Rename the object of each link under its own
+      // `p == &a`, on the read events only (see shared_read_cond), as a load
+      // at a symbolic index is renamed under `i == k` below.
+      //
+      // Only the links' own objects are conditioned. `p != &a` is not
+      // conjoined onto the rest of the chain: the objects further down are
+      // other objects, which their own conditions already separate, and
+      // conjoining it made the k-th target's condition k terms long. The
+      // chain's last branch, the unknown object, keeps the plain path guard.
+      // Nor are other `if`s conditioned: on per-thread-array-join-counter-2
+      // at u2 r2, conditioning every `if` took 46 s against 10.5 s for the
+      // links only (8.7 s before any of this), with the same verdicts on
+      // every test here. Leaving a condition out only adds a read, so none
+      // of this can lose a race.
+      //
+      // A condition that renaming has already decided (`&a == &a` once the
+      // pointer is constant-propagated) is left alone, for the reason given
+      // at the symbolic-index case below.
+      const exprt &cond = expr.op0();
+      const bool link = level == L2 && cond.id() == ID_equal &&
+                        to_equal_expr(cond).lhs().type().id() == ID_pointer &&
+                        !simplify_expr(cond, ns).is_constant();
       expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
-      expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
+      if(link)
+      {
+        const shared_read_condition_scopet read_cond{*this, exprt{cond}};
+        expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
+      }
+      else
+        expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
     }
     // A load at a symbolic index, after field sensitivity has already
     // expanded the array into its elements: `{a[[0]], a[[1]], ...}[i]`.
@@ -626,7 +660,15 @@ if(atomic_section_id!=0)
   // and record that
   INVARIANT_STRUCTURED(
     symex_target!=nullptr, nullptr_exceptiont, "symex_target is null");
-  symex_target->shared_read(guard_as_expr, expr, atomic_section_id, source);
+  // See shared_read_cond: the condition under which the program performs
+  // this read, when it is narrower than the path.
+  symex_target->shared_read(
+    shared_read_cond.is_true()
+      ? guard_as_expr
+      : static_cast<exprt>(and_exprt{guard_as_expr, shared_read_cond}),
+    expr,
+    atomic_section_id,
+    source);
 
   return true;
 }
