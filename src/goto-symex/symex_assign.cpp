@@ -153,15 +153,28 @@ void symex_assignt::assign_non_struct_symbol(
   const exprt &rhs,
   const exprt::operandst &guard)
 {
-  exprt l2_rhs =
-    state
-      .rename(
-        // put assignment guard into the rhs
-        guard.empty()
-          ? rhs
-          : static_cast<exprt>(if_exprt{conjunction(guard), rhs, lhs}),
-        ns)
-      .get();
+  exprt l2_rhs;
+  if(guard.empty())
+    l2_rhs = state.rename(rhs, ns).get();
+  else
+  {
+    // Put the assignment guard into the rhs: `(c ? p : q) = e` stores e to p
+    // under c and frames the old value of p back over p under !c. That old
+    // value is not read by the program -- on the branch where it is used,
+    // the program accesses q, not p -- so rename it without recording a
+    // shared read, exactly as the write below is made conditional on the
+    // guard. Recorded, it carried only the path guard: a store through a
+    // pointer to one of two locked objects was seen reading the other while
+    // holding the wrong lock, and paired with its writer as a race.
+    // Reads inside an atomic section are recorded regardless (see
+    // goto_symex_statet::rename), so those are unchanged.
+    const exprt l2_cond = state.rename(conjunction(guard), ns).get();
+    const exprt l2_new = state.rename(rhs, ns).get();
+    state.record_events.push(false);
+    const exprt l2_old = state.rename(exprt{lhs}, ns).get();
+    state.record_events.pop();
+    l2_rhs = if_exprt{l2_cond, l2_new, l2_old};
+  }
 
   assignmentt assignment{lhs, full_lhs, l2_rhs};
 

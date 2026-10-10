@@ -1,0 +1,21 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`ph->n`, with `ph = &th[i].cell` for an undecided i, is lowered to a 4-byte
+extract of all of `th` at POINTER_OFFSET(ph). Renaming the extract's operand
+recorded a shared read of every leaf of `th` with the path guard alone, so
+the reader was paired with main's write of th[0].op, a field it never
+reads: a race no execution has. Each leaf is now read under the condition
+that the extracted bytes meet it.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+pthread-complex/elimination_backoff_stack (no-data-race).
+
+See `byte_extract_member_read_race`: main writes th[0].cell.n, the field
+read, and that must stay FAILED.

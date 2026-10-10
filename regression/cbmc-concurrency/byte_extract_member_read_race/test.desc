@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Racy control for `byte_extract_member_read`: main writes th[0].cell.n,
+which the reader may read through `ph`. Must stay FAILED before and after
+the fix.

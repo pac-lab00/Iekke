@@ -1,0 +1,21 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`sink = *d`, with `d` pointing to `dA` or `dB` and the matching mutex
+held, is lowered to `d == &dA ? dA : dB`. Renaming both branches with the
+plain path guard recorded a shared READ of both objects, so with
+`d == &dB` main was seen reading `dA` while holding `mB`, and paired with
+the thread's write of `dA` under `mA`. The program reads only what `d`
+points to: each branch of an `if` is now renamed under its condition.
+
+Reported FAILED before the fix, SUCCESSFUL after. Also fixes the
+`ctl_local` reduction of the goblint 09-regions family.
+
+See `pointer_read_target_race`: the same read with the locks swapped
+really races, and must stay FAILED.

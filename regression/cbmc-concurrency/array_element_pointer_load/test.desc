@@ -1,0 +1,23 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Each thread picks an element by a nondeterministic index and updates it
+under that element's own mutex; the thread does it through `p = &a[i]`.
+`p->datum++` is lowered to a store `with(a[i], datum, ...)` whose base
+`a[i]` is a load at a symbolic index from an array still in symbol form.
+Field sensitivity expanded that array with the plain path guard, so the
+thread was recorded as reading every element, and paired, on the element it
+did not touch, with main's update of it under the other mutex. Each element
+is now read only under `i == k`.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from goblint
+06-symbeq_06-tricky_address1, which the fix also corrects, with _07 and _08.
+
+See `array_element_pointer_load_race`: the thread always takes a[0]'s
+mutex, so with `i == 1` it really races with main, and must stay FAILED.

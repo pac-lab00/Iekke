@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 6 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `store_through_pointer_lost_update`: the threads do not take
+a[i]'s mutex, so one can increment a[i].datum while another asserts it is
+0. The stores' own bytes must still be published, so this must stay FAILED
+before and after.

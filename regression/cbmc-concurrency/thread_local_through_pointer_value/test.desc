@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Value counterpart of `thread_local_through_pointer`: each thread increments
+its own copy of `static __thread unsigned slot = 7` through `&slot` and
+checks it is 8. With the initialisation recorded in the spawning thread
+after the spawn, it could take effect after the increment, and the check
+failed.
+
+Reported FAILED before the fix, SUCCESSFUL after. See
+`thread_local_through_pointer_value_real`, which must stay FAILED.

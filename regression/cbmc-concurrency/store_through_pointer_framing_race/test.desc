@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Racy control for `store_through_pointer_framing`: main locks `mB` when it
+writes `dA`, while the thread writes `dA` under `mA`. The race is on the
+store itself, not on any framing read, so it must stay FAILED before and
+after the fix.

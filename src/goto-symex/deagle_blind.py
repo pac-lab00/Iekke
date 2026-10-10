@@ -55,12 +55,22 @@ import subprocess
 import sys
 import time
 
-BUDGET = float(os.environ.get("DEAGLE_BUDGET", "900"))
+# Line by line, not in blocks. Under BenchExec stdout is a file, and a run
+# killed from outside loses whatever was still in the buffer -- every
+# "try ..." line included, so the log cannot say which bound it died in.
+sys.stdout.reconfigure(line_buffering=True)
+
+# Below the 900 s CPU limit on purpose. The budget is measured in wall time,
+# and a bounded SUCCESSFUL is only reported once it is spent, so a budget of
+# 900 reports it at about 900 s of CPU -- which SV-COMP scores as a timeout.
+BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
 MIN_SLICE = 3.0
 # No single bound may eat the whole budget. The schedule deliberately mixes two
 # regimes -- deep unwind at few rounds, and deep rounds at modest unwind -- and
 # one slow attempt in the first regime must not starve the second.
 SLICE = BUDGET / 3.0
+# How often a running bound's memory is checked, in seconds.
+POLL = 0.25
 
 # Declared up front, identical for every program, ordered by rising cost.
 # Two regimes have to be covered, because the benchmark set contains both:
@@ -89,13 +99,24 @@ if sys.argv[1] == "--witness":
     sys.exit(0)
 
 if len(sys.argv) < 3:
-    print("Usage: ./deagle property_path program_path")
+    print("Usage: ./deagle property_path program_path [--32|--64]")
     sys.exit(0)
 
 property_path = sys.argv[1]
 program_path = sys.argv[2]
 
+# The data model comes from the task's yml, and BenchExec passes it as the
+# third argument. Dropping it runs every task in the tool's default model,
+# which Deagle fixes at ILP32 (config.cpp, "default --32") -- so an LP64 task
+# is analysed with 4-byte longs and pointers, which changes overflows, offsets
+# and sizes in the program.
+data_model = sys.argv[3] if len(sys.argv) > 3 else ""
+if data_model not in ("", "--32", "--64"):
+    print("Unknown data model: %s" % data_model)
+    sys.exit(0)
+
 flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
+flags += data_model + " "
 if "unreach-call.prp" in property_path:
     flags += ""
 elif "no-data-race.prp" in property_path:
@@ -157,6 +178,84 @@ def on_signal(signum, frame):
 for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(s, on_signal)
 
+
+def memory_limit():
+    """The memory this run may use, in bytes.
+
+    DEAGLE_MEMLIMIT if set, else the tightest cgroup limit on the way up from
+    this process's cgroup (where BenchExec puts its limit, often on a parent),
+    else the machine's RAM. Both cgroup versions occur: the cluster nodes keep
+    memory on v1, iekke-lab is v2.
+    """
+    if os.environ.get("DEAGLE_MEMLIMIT"):
+        return int(os.environ["DEAGLE_MEMLIMIT"])
+    limits = []
+    try:
+        with open("/proc/self/cgroup") as f:
+            entries = [l.rstrip("\n").split(":", 2) for l in f]
+    except OSError:
+        entries = []
+    for _, controllers, path in entries:
+        if controllers == "":
+            root, name = "/sys/fs/cgroup", "memory.max"
+        elif "memory" in controllers.split(","):
+            root, name = "/sys/fs/cgroup/memory", "memory.limit_in_bytes"
+        else:
+            continue
+        while True:
+            try:
+                with open("%s%s/%s" % (root, path.rstrip("/"), name)) as f:
+                    v = f.read().strip()
+                # v2 writes "max" for no limit, v1 a number near 2**63.
+                if v != "max" and int(v) < 1 << 60:
+                    limits.append(int(v))
+            except (OSError, ValueError):
+                pass
+            if path in ("/", ""):
+                break
+            path = os.path.dirname(path.rstrip("/")) or "/"
+    if limits:
+        return min(limits)
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError):
+        return None
+
+
+def group_rss(pgid):
+    """Resident memory of every process in group pgid, in bytes."""
+    total = 0
+    page = os.sysconf("SC_PAGE_SIZE")
+    try:
+        pids = os.listdir("/proc")
+    except OSError:          # no /proc: memory cannot be watched
+        return 0
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % pid) as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            if int(fields[2]) != pgid:
+                continue
+            with open("/proc/%s/statm" % pid) as f:
+                total += int(f.read().split()[1]) * page
+        except (OSError, IndexError, ValueError):
+            pass
+    return total
+
+
+# One bound that outgrows the run's memory gets the whole run killed from
+# outside, and with it every answer the earlier bounds found: a remembered
+# SUCCESSFUL is lost, and the run scores as a memory-out. On the 40-node
+# cluster that was 150 of the first 190 unknowns. So each bound is held below
+# the run's limit, with room left for the wrapper and for growth between two
+# checks, and a bound that crosses it fails alone, as a timed-out one does.
+limit = memory_limit()
+CAP = limit - max(256 << 20, limit // 10) if limit else None
+print("memory cap per bound: %s"
+      % ("%.0f MB" % (CAP / 2**20) if CAP else "none (limit unknown)"))
+
 started = time.time()
 bounded_safe = None
 
@@ -176,18 +275,31 @@ for unwind, rounds in SCHEDULE:
     current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True,
                                errors="replace", start_new_session=True)
-    try:
-        out, _ = current.communicate(timeout=slice_)
-    except subprocess.TimeoutExpired:
-        # Out of reach at this bound -- but not necessarily at the next one,
-        # which may be cheaper on the axis that matters for this program. Keep
-        # going; the budget check at the top of the loop ends the search.
-        kill_bound(current)
-        current.communicate()
-        current = None
-        print("  -> timeout")
-        continue
+    deadline = time.time() + slice_
+    out = None
+    stop = None
+    while out is None:
+        try:
+            # A timed-out communicate() keeps what it has read so far.
+            out, _ = current.communicate(
+                timeout=max(0.01, min(POLL, deadline - time.time())))
+        except subprocess.TimeoutExpired:
+            if time.time() >= deadline:
+                stop = "timeout"
+            elif CAP and group_rss(current.pid) > CAP:
+                stop = "memory"
+            if stop:
+                # Out of reach at this bound -- but not necessarily at the
+                # next one, which may be cheaper on the axis that matters for
+                # this program. Keep going; the budget check at the top of the
+                # loop ends the search.
+                kill_bound(current)
+                current.communicate()
+                break
     current = None
+    if stop:
+        print("  -> %s" % stop)
+        continue
 
     verdict = verdict_of(out)
     print("  -> %s" % verdict)

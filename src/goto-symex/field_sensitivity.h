@@ -11,7 +11,9 @@ Author: Michael Tautschnig
 
 #include <cstddef>
 
+#include <util/mp_arith.h>
 #include <util/nodiscard.h>
+#include <util/std_expr.h>
 
 class exprt;
 class ssa_exprt;
@@ -157,6 +159,22 @@ public:
   bool is_divisible(const ssa_exprt &expr) const;
 
 private:
+  /// As \ref get_fields, for a load that touches only the bytes
+  /// [\p offset, \p offset + \p size) of \p ssa_expr: each array element
+  /// whose own bytes, starting at \p lo, may meet that range is read under
+  /// the condition that they do, so its read events carry it. Struct members
+  /// are not conditioned. Each leaf is renamed on its own, under the
+  /// conditions of the elements that hold it, when \p ssa_expr is L2 or
+  /// \p l2 is set.
+  exprt get_fields_in_range(
+    const namespacet &ns,
+    goto_symex_statet &state,
+    const ssa_exprt &ssa_expr,
+    const exprt &offset,
+    const mp_integer &size,
+    const mp_integer &lo,
+    bool l2 = false) const;
+
   /// whether or not to invoke \ref field_sensitivityt::apply
   bool run_apply = true;
 
@@ -164,13 +182,26 @@ private:
 
   const bool should_simplify;
 
+  /// \p lo is the byte at which \p lhs_fs starts within the object being
+  /// assigned, or negative when it is not known; see \ref store_offset.
   void field_assignments_rec(
     const namespacet &ns,
     goto_symex_statet &state,
     const exprt &lhs_fs,
     const exprt &ssa_rhs,
     symex_targett &target,
-    bool allow_pointer_unsoundness);
+    bool allow_pointer_unsoundness,
+    const mp_integer &lo = 0);
+
+  /// While \ref field_assignments splits a `byte_update(o, offset, v)` at an
+  /// undecided offset: that offset (else nil) and the size of v in bytes.
+  exprt store_offset = nil_exprt{};
+  mp_integer store_size = 0;
+
+  /// While \ref field_assignments runs: the object assigned to (its L1
+  /// object identifier), so that its own old value can be told apart from a
+  /// value stored into it.
+  irep_idt store_object;
 
   exprt simplify_opt(exprt e, const namespacet &ns) const;
 };

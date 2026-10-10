@@ -268,6 +268,46 @@ public:
     exprt saved;
   };
 
+  /// Extra condition conjoined onto the guard of the shared_read events
+  /// emitted by \ref l2_thread_read_encoding outside atomic sections -- the
+  /// read-side counterpart of \ref shared_write_cond. Set to the condition
+  /// under which the program performs the read: the branch condition of an
+  /// `if`, or `i == k` for element k of a load at a symbolic index. It is
+  /// conjoined as one binary `and`, not added to \ref guard: guardt::add
+  /// flattens, so every conditioned read rebuilt the whole path condition as
+  /// a new term, and the solver encoded it afresh each time.
+  exprt shared_read_cond = true_exprt{};
+
+  /// RAII helper: conjoins \p cond onto \ref shared_read_cond for its
+  /// lifetime.
+  class shared_read_condition_scopet
+  {
+  public:
+    shared_read_condition_scopet(goto_symex_statet &state, const exprt &cond)
+      : state(state), saved(state.shared_read_cond)
+    {
+      if(!cond.is_true())
+      {
+        state.shared_read_cond = saved.is_true()
+                                   ? cond
+                                   : static_cast<exprt>(and_exprt{saved, cond});
+      }
+    }
+
+    ~shared_read_condition_scopet()
+    {
+      state.shared_read_cond = saved;
+    }
+
+    shared_read_condition_scopet(const shared_read_condition_scopet &) = delete;
+    shared_read_condition_scopet &
+    operator=(const shared_read_condition_scopet &) = delete;
+
+  private:
+    goto_symex_statet &state;
+    exprt saved;
+  };
+
   const incremental_dirtyt *dirty = nullptr;
 
   /// Points-to targets collected for shared pointers by an earlier symex
@@ -287,6 +327,13 @@ public:
     const ssa_exprt &expr,
     const irep_idt &l1_identifier,
     const namespacet &ns);
+
+  /// As \ref seed_published_targets, for every shared pointer that \p expr,
+  /// an L1 pointer about to be dereferenced, contains. Its shared read -- and
+  /// the top-up that comes with it -- happens only when the dereferenced
+  /// expression is renamed to L2, after the dereference has already used the
+  /// stale set.
+  void seed_published_targets_in(const exprt &expr, const namespacet &ns);
 
   /// Shared variables that a static, whole-program analysis has proven to be
   /// accessed by at most one thread over any execution (see

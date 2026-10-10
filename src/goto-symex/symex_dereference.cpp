@@ -315,6 +315,16 @@ void goto_symext::dereference_rec(
 
     tmp1 = state.field_sensitivity.apply(ns, state, std::move(tmp1), false);
 
+    // A pointer read from shared memory inside the pointer being
+    // dereferenced -- `slot->next` in `slot->next->next` -- is read, and its
+    // points-to set topped up from what other threads publish, only when the
+    // result is renamed to L2, which is after this dereference has resolved
+    // against the stale set. A node another thread linked in behind it was
+    // then unreachable: Deagle's leak check at the end of main, which reads
+    // `slot->next->next...`, reported it leaked (goblint-regression/
+    // 09-regions_13-arraycollapse_nr, valid-memtrack). Top the sets up now.
+    state.seed_published_targets_in(tmp1, ns);
+
     // we need to set up some elaborate call-backs
     symex_dereference_statet symex_dereference_state(state, ns);
 

@@ -138,9 +138,31 @@ void goto_symext::symex_start_thread(statet &state)
       rhs = *zero;
     }
 
+    // As for the copies of the locals above, the initialisation belongs to
+    // the new thread, not to the spawning one. Recorded in the spawning
+    // thread, after its spawn event, it was a write concurrent with the new
+    // thread's own accesses to its copy, and once the copy's address was
+    // taken (so that it is shared) it was paired with them as a race:
+    // `static __thread unsigned slot;`, written through `&slot` by each
+    // thread (libvsync/arraylock, no-data-race).
     exprt::operandst lhs_conditions;
+    state.record_events.push(false);
     symex_assignt{
       state, symex_targett::assignment_typet::HIDDEN, ns, symex_config, target}
       .assign_symbol(lhs, expr_skeletont{}, rhs, lhs_conditions);
+    const ssa_exprt lhs_l1 = state.rename_ssa<L1>(lhs, ns).get();
+    const exprt l2_lhs = state.rename(lhs_l1, ns).get();
+    state.record_events.pop();
+
+    if(
+      state.write_is_shared(lhs_l1, ns) ==
+        goto_symex_statet::write_is_shared_resultt::SHARED &&
+      is_ssa_expr(l2_lhs))
+    {
+      state.source.thread_nr = new_thread_nr;
+      target.shared_write(
+        state.guard.as_expr(), to_ssa_expr(l2_lhs), 0, state.source);
+      state.source.thread_nr = current_thread_nr;
+    }
   }
 }
