@@ -3689,6 +3689,12 @@ void lazy_pot::collect_reads_and_writes(
     };
 
   std::map<unsigned, std::size_t> step_ordinal;
+  // Whether each thread is between an atomic_begin and its atomic_end. An
+  // ASSERT or ASSUME step does not carry an atomic_section_id --
+  // symex_target_equationt::assertion and ::assumption never set one,
+  // unlike shared_read and shared_write -- so this is the only way to tell
+  // that it lies inside an atomic section.
+  std::map<unsigned, bool> in_atomic_section;
 
   for(symex_target_equationt::SSA_stepst::iterator s_it =
         ssa_steps.begin();
@@ -3714,7 +3720,16 @@ void lazy_pot::collect_reads_and_writes(
 
     if(s_it->is_assert() || s_it->is_assume())
     {
-      if (labels[s_it->source.thread_nr] == 0  || s_it->atomic_section_id == 0)
+      // Was `s_it->atomic_section_id == 0`, which is always true for these
+      // steps (see in_atomic_section). So every check inside an atomic
+      // section started a block of its own and split the section: with
+      // --signed-overflow-check, the check on `count + 1` in
+      // pthread_mutex_lock let another thread run between the lock's write
+      // of its owner and of its count, and two threads held the mutex at once
+      // (pthread-complex/workstealqueue_mutex-2, no-overflow).
+      if(
+        labels[s_it->source.thread_nr] == 0 ||
+        !in_atomic_section[s_it->source.thread_nr])
       {
         labels[s_it->source.thread_nr]++;
         num = 0;
@@ -3746,6 +3761,7 @@ void lazy_pot::collect_reads_and_writes(
 
     if(s_it->is_atomic_begin())
     {
+      in_atomic_section[s_it->source.thread_nr] = true;
       if(getenv("LAZYPO_ACCESS_DEBUG") && s_it->source.thread_nr == 1)
       {
         exprt g = s_it->guard;
@@ -3783,6 +3799,7 @@ void lazy_pot::collect_reads_and_writes(
 
     if(s_it->is_atomic_end())
     {
+      in_atomic_section[s_it->source.thread_nr] = false;
       // un atomic_end senza begin corrispondente lascerebbe il vector vuoto
       if(!atomic_sections.empty())
         atomic_sections.back().second.second = labels[s_it->source.thread_nr];
