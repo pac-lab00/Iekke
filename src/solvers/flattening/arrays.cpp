@@ -372,6 +372,14 @@ void arrayst::add_array_Ackermann_constraints()
   // iterate over arrays
   for(std::size_t i=0; i<arrays.size(); i++)
   {
+    // x = c ? a : b and x = a with [i:=v] are functionally consistent once
+    // a and b are: every index of the class is tied to a (or b, or v) by the
+    // if/with constraints, so their own pairs are implied.
+    if(
+      (arrays[i].id() == ID_if ||
+       (arrays[i].id() == ID_with && arrays[i].operands().size() == 3)))
+      continue;
+
     const index_sett &index_set=index_map[arrays.find_number(i)];
 
 #ifdef DEBUG
@@ -711,6 +719,20 @@ void arrayst::add_array_constraints_with(
       }
 
       literalt guard_lit = convert(disjunction(disjuncts));
+
+      // Without Ackermann pairs on x, an index equal in value to the
+      // updated one must be tied to the new value here.
+      if(operands.size() == 3)
+      {
+        index_exprt same_index(
+          expr, other_index, to_array_type(expr.type()).element_type());
+        lazy_constraintt same(
+          lazy_typet::ARRAY_WITH,
+          or_exprt(
+            literal_exprt(!guard_lit), equal_exprt(same_index, operands[2])));
+        add_array_constraint(same, false); // added immediately
+        array_constraint_count[constraint_typet::ARRAY_WITH]++;
+      }
 
       if(guard_lit!=const_literal(true))
       {

@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `array_theory_lock_array`: thread 1 writes data[0] outside the
+lock thread 0 holds while writing it. Must stay FAILED, with the derived
+array terms' Ackermann pairs left out (163 -> 101 pairs here).
