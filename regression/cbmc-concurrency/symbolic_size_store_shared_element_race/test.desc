@@ -1,0 +1,15 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The atomic section around a store into a symbolic-size array (see
+`symbolic_size_store_own_element`) is for values only. Counted as an atomic
+access by the data-race encoding, it made both conflicting stores atomic and
+the race between them disappeared (SUCCESSFUL), as it did for
+pthread-race-challenges/per-thread-array-index-race and four other tasks.
+Must stay FAILED.

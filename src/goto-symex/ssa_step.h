@@ -183,6 +183,19 @@ public:
   // for SHARED_READ/SHARED_WRITE and ATOMIC_BEGIN/ATOMIC_END
   unsigned atomic_section_id = 0;
 
+  /// Ids from here up name the sections symex opens itself around a store
+  /// into a shared object it cannot split (see assign_non_struct_symbol):
+  /// they make the store atomic for values, not the program's accesses.
+  static constexpr unsigned first_store_atomic_section = 1u << 30;
+
+  /// Whether this access is inside an atomic section of the program's own,
+  /// which is what the data-race encoding asks.
+  bool in_program_atomic_section() const
+  {
+    return atomic_section_id != 0 &&
+           atomic_section_id < first_store_atomic_section;
+  }
+
   // for LazyCSeq/Round Robin trace reconstruction
   std::vector<symbol_exprt> round_robin_exec_symbols;
   unsigned round_robin_label = 0;

@@ -2384,7 +2384,7 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
 
         phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
 
-        int atom = write.s_it->atomic_section_id != 0;
+        int atom = write.s_it->in_program_atomic_section();
         exprt phase_1_t_v_exp =
           and_exprt{
             equal_exprt{create_dr_thread_symbol(1), from_integer({thread}, unsignedbv_typet{threads_bits})},
@@ -2461,7 +2461,7 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        int atom = write.s_it->atomic_section_id != 0;
+        int atom = write.s_it->in_program_atomic_section();
         exprt phase_2_t_v_exp =
           and_exprt{
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
@@ -2510,7 +2510,7 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        int atom = read.s_it->atomic_section_id != 0;
+        int atom = read.s_it->in_program_atomic_section();
         exprt phase_2_t_v_exp =
           and_exprt{
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
@@ -2732,7 +2732,7 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
 
         phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
 
-        int atom = read.s_it->atomic_section_id != 0;
+        int atom = read.s_it->in_program_atomic_section();
         exprt phase_1_t_v_exp =
           and_exprt{
             equal_exprt{create_dr_thread_symbol(3), from_integer({thread}, unsignedbv_typet{threads_bits})},
@@ -2812,7 +2812,7 @@ symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v
 
         phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
 
-        int atom = write.s_it->atomic_section_id != 0;
+        int atom = write.s_it->in_program_atomic_section();
         exprt phase_2_t_v_exp =
           and_exprt{
             equal_exprt{create_dr_thread_symbol(4), from_integer({thread}, unsignedbv_typet{threads_bits})},

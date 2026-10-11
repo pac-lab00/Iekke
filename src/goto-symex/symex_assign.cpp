@@ -153,8 +153,63 @@ void symex_assignt::assign_non_struct_symbol(
   const exprt &rhs,
   const exprt::operandst &guard)
 {
+  // A store into one element of a shared object that field sensitivity cannot
+  // split -- an array whose size is symbolic, `malloc(n * sizeof(int))` with
+  // n nondet -- is `a#new == with(a#old, i, v)`: the whole object, rebuilt
+  // from this thread's last view of it. Published as a whole, it put back
+  // elements another thread had stored to since that view: a lost update.
+  // Two threads filling disjoint halves of `a` each erased the other's half
+  // (weaver/popl20-more-vector-add, pthread-lit/sssc12_variant, unreach-call).
+  // Read the old value and write the new one in an atomic section of their
+  // own, so the elements copied back are the current ones -- exactly what a
+  // store to element i alone leaves in the others. The index and the stored
+  // value are renamed first, outside it: they are reads the program makes on
+  // their own, and making them atomic with the store would hide races.
+  // The section is atomic for values only: the data-race encoding still
+  // sees a plain store (SSA_stept::in_program_atomic_section).
+  static unsigned monolithic_store_section =
+    SSA_stept::first_store_atomic_section;
+  const bool monolithic_store =
+    state.atomic_section_id == 0 && lhs.type().id() == ID_array &&
+    !to_array_type(lhs.type()).size().is_constant() &&
+    !state.field_sensitivity.is_divisible(lhs) &&
+    (rhs.id() == ID_with || rhs.id() == ID_byte_update_little_endian ||
+     rhs.id() == ID_byte_update_big_endian) &&
+    rhs.operands().size() == 3 && rhs.op0() == lhs &&
+    state.write_is_shared(lhs, ns) ==
+      goto_symex_statet::write_is_shared_resultt::SHARED;
+
   exprt l2_rhs;
-  if(guard.empty())
+  if(monolithic_store)
+  {
+    // Through a pointer that may point elsewhere the store is guarded, as in
+    // the branch below; the old value is then the one read here.
+    const exprt l2_cond =
+      guard.empty() ? static_cast<exprt>(true_exprt{})
+                    : state.rename(conjunction(guard), ns).get();
+    exprt l2_where = state.rename(rhs.op1(), ns).get();
+    exprt l2_value = state.rename(rhs.op2(), ns).get();
+    state.atomic_section_id = ++monolithic_store_section;
+    state.read_in_atomic_section.clear();
+    state.written_in_atomic_section.clear();
+    target.atomic_begin(
+      state.guard.as_expr(), state.atomic_section_id, state.source);
+    exprt l2_old;
+    {
+      // Read only where the store reaches this object (see shared_read_cond).
+      const goto_symex_statet::shared_read_condition_scopet read_cond{
+        state, l2_cond};
+      l2_old = state.rename(rhs.op0(), ns).get();
+    }
+    exprt l2_new = rhs;
+    l2_new.op0() = l2_old;
+    l2_new.op1() = std::move(l2_where);
+    l2_new.op2() = std::move(l2_value);
+    l2_rhs = guard.empty()
+               ? std::move(l2_new)
+               : static_cast<exprt>(if_exprt{l2_cond, l2_new, l2_old});
+  }
+  else if(guard.empty())
     l2_rhs = state.rename(rhs, ns).get();
   else
   {
@@ -226,6 +281,13 @@ void symex_assignt::assign_non_struct_symbol(
     assignment.rhs,
     state.source,
     current_assignment_type);
+
+  if(monolithic_store)
+  {
+    const unsigned section = state.atomic_section_id;
+    state.atomic_section_id = 0;
+    target.atomic_end(state.guard.as_expr(), section, state.source);
+  }
 
   const ssa_exprt &l1_lhs = assignment.lhs;
   if(state.field_sensitivity.is_divisible(l1_lhs))
