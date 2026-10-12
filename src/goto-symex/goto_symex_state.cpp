@@ -712,8 +712,17 @@ if(atomic_section_id!=0)
 
     INVARIANT_STRUCTURED(
       symex_target != nullptr, nullptr_exceptiont, "symex_target is null");
+    // Where no earlier read or write of this section stands for this one,
+    // the read takes the fresh generation, so its event goes on that: on the
+    // first read's generation, as before, the value read here was
+    // unconstrained, and the event, placed after a write of this section,
+    // contradicted it.  `A[k]++; assert(A[0] == 0);` in an atomic section,
+    // with k read from shared memory, failed for k != 0
+    // (pthread-complex/elimination_backoff_stack, no-overflow).
     ssa_exprt r = ssa_l1;
     r.set_level_2(a_s_read.first);
+    if(!cond.is_true())
+      r = l2_false_case.get();
     // See shared_read_cond, as on the plain path below. Dropped here before,
     // so inside an atomic section a load at a symbolic index -- `p->id = v`
     // with `p = &a[i]` reads a[i] -- was recorded as reading every element of
@@ -898,7 +907,14 @@ bool goto_symex_statet::l2_thread_write_encoding(
     return false;
   case write_is_shared_resultt::IN_ATOMIC_SECTION:
   {
-      written_in_atomic_section[remove_level_2(expr)].first.push_back(guard);
+      // Recorded under the event's condition (see shared_write_cond), as a
+      // read is: where it is false the write only carries the old value, so
+      // it does not stand for a later read in this section.
+      guardt write_guard = guard;
+      if(!shared_write_cond.is_true())
+        write_guard.add(shared_write_cond);
+      written_in_atomic_section[remove_level_2(expr)].first.push_back(
+        write_guard);
       symex_target->shared_write(
         event_guard,
         expr,

@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+As atomic_symbolic_index_reread, but the re-read is of A[2], the element this
+thread has just written: when the other thread runs first, A[2] == 2. A first
+version of the fix put the re-read event on the first read generation, which
+then had to equal both the value before the write and the value after it, so
+the path was dropped and this failure was missed.
