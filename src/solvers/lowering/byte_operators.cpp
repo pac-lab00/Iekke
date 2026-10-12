@@ -15,6 +15,8 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/namespace.h>
 #include <util/narrow.h>
 #include <util/pointer_offset_size.h>
+#include <util/find_symbols.h>
+#include <util/replace_symbol.h>
 #include <util/simplify_expr.h>
 #include <util/string_constant.h>
 
@@ -1855,6 +1857,95 @@ static exprt lower_byte_update_array_vector(
 ///   as to at most update \p non_const_update_bound elements
 /// \param ns: Namespace
 /// \return Struct expression reflecting all updates.
+/// Rewrite \p src, a chain of with_exprt over an array_exprt, as one
+/// array_exprt whose element j is `where == j ? value : old`, for each update
+/// in order. Lowering a byte_extract from the with chain indexes it once per
+/// byte, and each index simplifies the whole chain again: quadratic in the
+/// size of the array. A value that is not a symbol or a constant is bound to
+/// a fresh variable, added to \p bindings, so that the elements share the
+/// variable and the simplifier does not walk the value once per element; see
+/// bind_where_used.
+/// \return The array, or an empty optional if \p src is not of that form.
+static optionalt<array_exprt> with_chain_as_array(
+  const exprt &src,
+  replace_symbolt &bindings,
+  const namespacet &ns)
+{
+  if(src.id() == ID_array)
+    return to_array_expr(src);
+  if(src.id() != ID_with)
+    return {};
+
+  auto result = with_chain_as_array(to_with_expr(src).old(), bindings, ns);
+  if(!result.has_value())
+    return {};
+
+  // TODO as for array comprehensions: the variables need a symbol table or a
+  // scope of their own to be unique
+  static std::size_t with_value_counter = 0;
+
+  exprt::operandst &elements = result->operands();
+  for(std::size_t i = 1; i + 1 < src.operands().size(); i += 2)
+  {
+    const exprt &where = src.operands()[i];
+    exprt value = src.operands()[i + 1];
+    if(value.id() != ID_symbol && !value.is_constant())
+    {
+      symbol_exprt variable{
+        "$with_value" + std::to_string(++with_value_counter), value.type()};
+      bindings.insert(variable, value);
+      value = std::move(variable);
+    }
+    for(std::size_t j = 0; j < elements.size(); ++j)
+    {
+      const exprt is_j =
+        simplify_expr(equal_exprt{where, from_integer(j, where.type())}, ns);
+      if(is_j.is_true())
+        elements[j] = value;
+      else if(!is_j.is_false())
+        elements[j] = if_exprt{is_j, value, elements[j]};
+    }
+  }
+
+  return result;
+}
+
+/// Bind the variables of \p bindings in \p expr by let_exprt, placed at the
+/// innermost expressions using them that are not struct or array literals:
+/// the array theory does not look through a let, so a let must not stand
+/// where it expects an array.
+/// \return False if a variable is used in an array-typed expression that is
+///   not an array literal.
+static bool bind_where_used(exprt &expr, const replace_symbolt &bindings)
+{
+  if(expr.id() == ID_array || expr.id() == ID_struct)
+  {
+    for(auto &op : expr.operands())
+      if(!bind_where_used(op, bindings))
+        return false;
+    return true;
+  }
+
+  binding_exprt::variablest variables;
+  exprt::operandst values;
+  for(const auto &symbol : find_symbols(expr))
+  {
+    auto it = bindings.get_expr_map().find(symbol.get_identifier());
+    if(it != bindings.get_expr_map().end())
+    {
+      variables.push_back(symbol);
+      values.push_back(it->second);
+    }
+  }
+  if(variables.empty())
+    return true;
+  if(expr.type().id() == ID_array)
+    return false;
+
+  expr = let_exprt{std::move(variables), std::move(values), expr};
+  return true;
+}
+
 static exprt lower_byte_update_struct(
   const byte_update_exprt &src,
   const struct_typet &struct_type,
@@ -1917,14 +2008,30 @@ static exprt lower_byte_update_struct(
       bu.set_op(lower_byte_extract(byte_extract_expr, ns));
       bu.type() = bu.op().type();
 
-      return lower_byte_extract(
+      exprt updated =
+        lower_byte_update(bu, value_as_byte_array, non_const_update_bound, ns);
+      replace_symbolt bindings;
+      auto updated_array = with_chain_as_array(updated, bindings, ns);
+      if(updated_array.has_value())
+        updated = std::move(*updated_array);
+
+      exprt result = lower_byte_extract(
         byte_extract_exprt{
           extract_opcode,
-          lower_byte_update(
-            bu, value_as_byte_array, non_const_update_bound, ns),
+          std::move(updated),
           from_integer(0, src.offset().type()),
           src.type()},
         ns);
+
+      if(!bindings.empty())
+      {
+        exprt bound = result;
+        if(bind_where_used(bound, bindings))
+          result = std::move(bound);
+        else
+          bindings(result);
+      }
+      return result;
     }
 
     // We now need to figure out how many bytes to consume from the update

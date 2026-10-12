@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --unwind 5
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+As byte_update_struct_symbolic_offset, but asserts that c.mutex[k], k != j,
+is locked too: it is not. Reported SUCCESSFUL when the lowering wrote the
+value into every element regardless of the offset.
