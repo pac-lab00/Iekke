@@ -308,10 +308,24 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       // A condition that renaming has already decided (`&a == &a` once the
       // pointer is constant-propagated) is left alone, for the reason given
       // at the symbolic-index case below.
+      //
+      // A link is `p == &a` only where the value set knows p points at offset
+      // 0 of a; at any other or an unknown offset value_set_dereferencet
+      // writes it `POINTER_OBJECT(p) == POINTER_OBJECT(&a)` and reads a at
+      // that offset. That is the same link: missed, both objects of
+      // `c.slots[j]->next` were read, and a thread writing the other one was
+      // reported racing (goblint-regression/09-regions_19-nested_nr).
+      // Recognised under --datarace only (see datarace): on
+      // weaver/popl20-prod-cons-eq.wvr-oob, valid-memsafety at u2 r2, the
+      // 114 conditions it adds took the formula from 7.0M clauses to 12.9M
+      // and the run from 38 s to 188 s, with the same verdict.
       const exprt &cond = expr.op0();
-      const bool link = level == L2 && cond.id() == ID_equal &&
-                        to_equal_expr(cond).lhs().type().id() == ID_pointer &&
-                        !simplify_expr(cond, ns).is_constant();
+      const bool link =
+        level == L2 && cond.id() == ID_equal &&
+        (to_equal_expr(cond).lhs().type().id() == ID_pointer ||
+         (datarace && to_equal_expr(cond).lhs().id() == ID_pointer_object &&
+          to_equal_expr(cond).rhs().id() == ID_pointer_object)) &&
+        !simplify_expr(cond, ns).is_constant();
       expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
       if(link)
       {

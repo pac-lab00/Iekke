@@ -443,6 +443,7 @@ std::unique_ptr<goto_symext::statet> goto_symext::initialize_entry_point_state(
 
   CHECK_RETURN(!state->threads.empty());
   CHECK_RETURN(!state->call_stack().empty());
+  state->datarace = enable_datarace;
 
   goto_programt::const_targett limit =
     std::prev(start_function->body.instructions.end());

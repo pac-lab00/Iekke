@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 3 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Racy control for `pointer_read_target_object`: main reads slots[1]->next
+holding mutex[1] while the thread writes it holding mutex[0]. The read goes
+through the same `POINTER_OBJECT(p) == POINTER_OBJECT(&a)` chain. Must stay
+FAILED before and after.

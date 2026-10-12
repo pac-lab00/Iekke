@@ -278,6 +278,12 @@ public:
   /// a new term, and the solver encoded it afresh each time.
   exprt shared_read_cond = true_exprt{};
 
+  /// The property is about accesses (--datarace). Only then does a read
+  /// event recorded for an object the program does not read change the
+  /// answer -- for any other property only the value read is consumed -- so
+  /// conditions that only remove such events are added under it alone.
+  bool datarace = false;
+
   /// RAII helper: conjoins \p cond onto \ref shared_read_cond for its
   /// lifetime.
   class shared_read_condition_scopet
