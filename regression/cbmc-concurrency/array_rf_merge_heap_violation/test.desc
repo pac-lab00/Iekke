@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 3 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] .*the writer cannot run first -- false: FAILURE$
+^VERIFICATION FAILED$
+--
+--
+The over-constraining direction: a read-from that lost the writer's element
+write would make this pass.

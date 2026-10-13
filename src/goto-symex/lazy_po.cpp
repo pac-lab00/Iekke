@@ -783,6 +783,64 @@ conditional_point_update(const exprt &rhs, const irep_idt &variable)
   return match(ite.false_case(), ite.true_case(), not_exprt{ite.cond()});
 }
 
+/// `c ? V#a : V#b`, both versions of \p variable: the merge symex makes where
+/// two paths of one thread meet. It selects the version the path that ran left
+/// behind, and every write on either path is an event of its own, executed only
+/// where its guard -- which includes the path condition -- holds. So in the
+/// read-from encoding it observes nothing but its condition. (Symex merges a
+/// shared object only while one thread runs, so a merge is never a write event
+/// of its own.)
+static bool own_version_merge(const exprt &rhs, const irep_idt &variable)
+{
+  if(rhs.id() != ID_if)
+    return false;
+  const if_exprt &ite = to_if_expr(rhs);
+  return ite.true_case().id() == ID_symbol &&
+         ite.false_case().id() == ID_symbol &&
+         narrowing_base(ite.true_case()) == variable &&
+         narrowing_base(ite.false_case()) == variable;
+}
+
+/// `V#a = V#b` for every candidate V: symex copies a version it has read into
+/// a fresh one before indexing it (`#6 = #5; t = #6[i]`). An SSA assignment is
+/// an unconditional equality, so an element of the copy is that element of the
+/// version copied, and the read-from of the read event it came from applies.
+static std::map<irep_idt, irep_idt> own_version_copies(
+  const symex_target_equationt &equation,
+  const std::set<irep_idt> &variables)
+{
+  std::map<irep_idt, irep_idt> copy_of;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(
+      step.is_assignment() && !step.ssa_lhs.is_nil() &&
+      step.ssa_rhs.id() == ID_symbol &&
+      narrowing_base(step.ssa_rhs) == narrowing_base(step.ssa_lhs) &&
+      variables.count(narrowing_base(step.ssa_lhs)) != 0)
+    {
+      copy_of.emplace(
+        to_symbol_expr(step.ssa_lhs).get_identifier(),
+        to_symbol_expr(step.ssa_rhs).get_identifier());
+    }
+  }
+  return copy_of;
+}
+
+/// Follow \p copy_of from \p id to the version it was copied from, until one
+/// that is not a copy.
+static irep_idt
+copied_from(const std::map<irep_idt, irep_idt> &copy_of, irep_idt id)
+{
+  for(std::size_t hops = 0; hops <= copy_of.size(); ++hops)
+  {
+    const auto it = copy_of.find(id);
+    if(it == copy_of.end())
+      break;
+    id = it->second;
+  }
+  return id;
+}
+
 void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
 {
   array_rf_writes.clear();
@@ -813,6 +871,16 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     [&](const exprt &expr, const irep_idt &parent) {
     if(expr.id() == ID_address_of)
       return;
+
+    // `(T *)a` with a an array is the address of its first element, as for
+    // address_of: memory-leak tracking records `(const void *)dynamic_object1`
+    if(
+      expr.id() == ID_typecast && expr.type().id() == ID_pointer &&
+      to_typecast_expr(expr).op().id() == ID_symbol &&
+      to_typecast_expr(expr).op().type().id() == ID_array)
+    {
+      return;
+    }
 
     if(expr.id() == ID_index)
     {
@@ -870,6 +938,13 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       step.is_assignment() && !step.ssa_lhs.is_nil() &&
       candidates.count(narrowing_base(step.ssa_lhs)) != 0)
     {
+      if(own_version_merge(step.ssa_rhs, narrowing_base(step.ssa_lhs)))
+      {
+        scan(to_if_expr(step.ssa_rhs).cond(), "merge");
+        if(!step.guard.is_nil())
+          scan(step.guard, "guard");
+        continue;
+      }
       if(const auto cu = conditional_point_update(
            step.ssa_rhs, narrowing_base(step.ssa_lhs)))
       {
@@ -908,6 +983,7 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
   }
 
   const bool explain = getenv("LAZYPO_ARRAY_WHY") != nullptr;
+  const auto copy_of = own_version_copies(equation, candidates);
   for(const auto &variable : candidates)
   {
     if(opaque.count(variable) != 0)
@@ -926,8 +1002,13 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       read_symbols.insert(to_symbol_expr(r.s_it->ssa_lhs).get_identifier());
     bool indices_placed = true;
     for(const auto &use : index_uses[variable])
-      if(read_symbols.count(use.first) == 0)
+      if(read_symbols.count(copied_from(copy_of, use.first)) == 0)
+      {
+        if(indices_placed && explain)
+          std::cerr << "ARRAY_WHY_INDEX " << variable << " index of "
+                    << use.first << ", not a shared read event\n";
         indices_placed = false;
+      }
     if(!indices_placed)
     {
       if(explain)
@@ -1078,6 +1159,11 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
   auto &fresh = array_rf_fresh;
   auto &replacement = array_rf_replacement;
 
+  std::set<irep_idt> variables;
+  for(const auto &entry : array_rf_writes)
+    variables.insert(entry.first);
+  const auto copy_of = own_version_copies(equation, variables);
+
   for(const auto &entry : array_rf_writes)
   {
     const irep_idt &variable = entry.first;
@@ -1099,8 +1185,8 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       if(expr.id() == ID_index && expr.operands()[0].id() == ID_symbol &&
          narrowing_base(expr.operands()[0]) == variable)
       {
-        const irep_idt id =
-          to_symbol_expr(expr.operands()[0]).get_identifier();
+        const irep_idt id = copied_from(
+          copy_of, to_symbol_expr(expr.operands()[0]).get_identifier());
         const auto rd = read_of.find(id);
         if(rd != read_of.end())
         {
