@@ -12,6 +12,7 @@ Author: Gennaro Parlato, gennaro.parlato@unimol.it
 
 #include "thread_aware_slice.h"
 
+#include <util/pointer_expr.h>
 #include <util/std_expr.h>
 
 #include <goto-symex/symex_target_equation.h>
@@ -23,11 +24,34 @@ Author: Gennaro Parlato, gennaro.parlato@unimol.it
 namespace
 {
 
-/// Every SSA symbol read by an expression.
+void collect_symbols(const exprt &expr, std::unordered_set<irep_idt> &into);
+
+/// The symbols in the sizes of the array types inside \p type. An object
+/// allocated with a symbolic size has the size in its type, `int[n#3]`, and
+/// nowhere else: the bounds and object-size checks read it from there.
+void collect_type_symbols(const typet &type, std::unordered_set<irep_idt> &into)
+{
+  if(type.id() == ID_array)
+  {
+    collect_symbols(to_array_type(type).size(), into);
+    collect_type_symbols(to_array_type(type).element_type(), into);
+  }
+  else if(type.id() == ID_pointer)
+    collect_type_symbols(to_pointer_type(type).base_type(), into);
+  else if(type.id() == ID_struct || type.id() == ID_union)
+  {
+    for(const auto &component : to_struct_union_type(type).components())
+      collect_type_symbols(component.type(), into);
+  }
+}
+
+/// Every SSA symbol read by an expression, including those in its types.
 void collect_symbols(const exprt &expr, std::unordered_set<irep_idt> &into)
 {
   if(expr.id() == ID_symbol)
     into.insert(to_symbol_expr(expr).get_identifier());
+
+  collect_type_symbols(expr.type(), into);
 
   for(const auto &op : expr.operands())
     collect_symbols(op, into);
