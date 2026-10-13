@@ -184,11 +184,21 @@ private:
     bool whole_array;      ///< a constant initialiser rather than a point update
     exprt index;
     exprt value;
+    /// the update happens only where this holds: a write through a pointer
+    /// that may point into the array is `c ? V WITH [i:=v] : V`
+    exprt condition = true_exprt{};
+    /// a whole-array write of a nondeterministic array (fresh heap memory):
+    /// element j then holds value[j], not value
+    bool havoc = false;
   };
   /// objects whose element reads are resolved by matching writes
   std::map<irep_idt, std::vector<array_writet>> array_rf_writes;
   /// the element value before any write, from the constant initialiser
   std::map<irep_idt, exprt> array_rf_default;
+  /// each element read already resolved, by (array version, index), and the
+  /// counter naming them: kept across the two rewriting passes
+  std::map<std::pair<irep_idt, std::string>, ssa_exprt> array_rf_replacement;
+  std::size_t array_rf_fresh = 0;
 
   void compute_array_rf(const symex_target_equationt &);
   void create_array_rf_constraints(symex_target_equationt &);

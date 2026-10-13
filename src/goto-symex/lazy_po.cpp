@@ -383,6 +383,15 @@ void lazy_pot::operator()(
                      << messaget::eom;
   }
 
+  // The constraints built since the first pass -- the exec constraints of
+  // the schedule above all -- carry their own copies of the path guards, and
+  // a guard may read an --array-rf object: pthread_join assumes
+  // __CPROVER_threads_exited[t]. Left as they are, those reads name an array
+  // whose defining assignments are gone, so they are unconstrained. Rewrite
+  // them too; a read already seen keeps its element.
+  create_array_rf_constraints(equation);
+  phase("array-read-from (late)");
+
   for(auto &step : equation.SSA_steps)
   {
     align_pointer_equalities(step.cond_expr);
@@ -752,6 +761,28 @@ static std::optional<exprt> uniform_array_value(const exprt &expr)
   return {};
 }
 
+/// `c ? V WITH [i:=v] : V` (either way round) over one object: a point update
+/// of V that happens where the condition holds. Returns the condition, the
+/// `with` and the version it updates, or nothing.
+static std::optional<std::tuple<exprt, with_exprt, exprt>>
+conditional_point_update(const exprt &rhs, const irep_idt &variable)
+{
+  if(rhs.id() != ID_if)
+    return {};
+  const if_exprt &ite = to_if_expr(rhs);
+  const auto match = [&](const exprt &upd, const exprt &keep, const exprt &cond)
+    -> std::optional<std::tuple<exprt, with_exprt, exprt>> {
+    if(upd.id() != ID_with || upd.operands().size() != 3 ||
+       keep.id() != ID_symbol || upd.operands()[0] != keep ||
+       narrowing_base(keep) != variable)
+      return {};
+    return std::make_tuple(cond, to_with_expr(upd), keep);
+  };
+  if(auto m = match(ite.true_case(), ite.false_case(), ite.cond()))
+    return m;
+  return match(ite.false_case(), ite.true_case(), not_exprt{ite.cond()});
+}
+
 void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
 {
   array_rf_writes.clear();
@@ -833,6 +864,24 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       narrowing_base(step.ssa_rhs) == narrowing_base(step.ssa_lhs) &&
       candidates.count(narrowing_base(step.ssa_lhs)) != 0;
 
+    // `V#n = c ? V#k WITH [i:=v] : V#k` updates one element of V where c
+    // holds; V#k inside it is the version updated, not an observation.
+    if(
+      step.is_assignment() && !step.ssa_lhs.is_nil() &&
+      candidates.count(narrowing_base(step.ssa_lhs)) != 0)
+    {
+      if(const auto cu = conditional_point_update(
+           step.ssa_rhs, narrowing_base(step.ssa_lhs)))
+      {
+        scan(std::get<0>(*cu), "conditional update");
+        scan(std::get<1>(*cu).where(), "conditional update");
+        scan(std::get<1>(*cu).new_value(), "conditional update");
+        if(!step.guard.is_nil())
+          scan(step.guard, "guard");
+        continue;
+      }
+    }
+
     if(!step.ssa_rhs.is_nil() && !own_copy)
       scan(
           step.ssa_rhs,
@@ -913,7 +962,24 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       }
       if(rhs.id() == ID_symbol && narrowing_base(rhs) == variable)
         continue; // a copy of the previous version writes nothing new
+      if(const auto cu = conditional_point_update(rhs, variable))
+      {
+        array_writet aw{
+          i, false, std::get<1>(*cu).where(), std::get<1>(*cu).new_value()};
+        aw.condition = std::get<0>(*cu);
+        decomposed.push_back(aw);
+        continue;
+      }
 
+      if(rhs.id() == ID_nondet_symbol && rhs.type() == ws[i].s_it->ssa_lhs.type())
+      {
+        array_writet aw{i, true, nil_exprt{}, rhs};
+        aw.havoc = true;
+        if(!initial.has_value())
+          initial = rhs; // no read can precede the allocation it comes from
+        decomposed.push_back(aw);
+        continue;
+      }
       const auto uniform = uniform_array_value(rhs);
       if(uniform.has_value())
       {
@@ -948,8 +1014,23 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     const typet &t = ws.front().s_it->ssa_lhs.type();
     const auto array_bits = pointer_offset_bits(t, ns);
     const auto elem_bits = pointer_offset_bits(to_array_type(t).element_type(), ns);
-    if(!array_bits.has_value() || !elem_bits.has_value() || *elem_bits <= 0)
+    if(!elem_bits.has_value() || *elem_bits <= 0)
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable
+                  << " declined: element size unknown\n";
       continue;
+    }
+    // Of symbolic size, the chain is a chain of whole arrays, which only the
+    // array theory can carry: never cheaper than selecting the element.
+    if(!array_bits.has_value())
+    {
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: symbolic size\n";
+      array_rf_writes.emplace(variable, std::move(decomposed));
+      array_rf_default.emplace(variable, initial.value());
+      continue;
+    }
     const double W = static_cast<double>(ws.size());
     const double Rd =
       reads.count(variable) ? static_cast<double>(reads.at(variable).size()) : 0;
@@ -994,8 +1075,8 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
            std::make_tuple(rb, b.thread, b.label, b.num);
   };
 
-  std::size_t fresh = 0;
-  std::map<std::pair<irep_idt, std::string>, ssa_exprt> replacement;
+  auto &fresh = array_rf_fresh;
+  auto &replacement = array_rf_replacement;
 
   for(const auto &entry : array_rf_writes)
   {
@@ -1069,7 +1150,13 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
               }
               std::sort(candidates.begin(), candidates.end());
 
-              exprt selected = typecast_exprt::conditional_cast(dflt, elem_type);
+              const auto element_of = [&](const exprt &v) -> exprt {
+                if(v.type().id() == ID_array)
+                  return index_exprt{v, typecast_exprt::conditional_cast(
+                    index, to_array_type(v.type()).index_type())};
+                return typecast_exprt::conditional_cast(v, elem_type);
+              };
+              exprt selected = element_of(dflt);
               for(const auto &candidate : candidates)
               {
                 const auto &aw = entry.second[candidate.second];
@@ -1083,9 +1170,12 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
                       equal_exprt{
                         typecast_exprt::conditional_cast(aw.index, index.type()),
                         index}});
+                if(!aw.condition.is_true())
+                  matches = and_exprt{matches, aw.condition};
                 selected = if_exprt{
                   matches,
-                  typecast_exprt::conditional_cast(aw.value, elem_type),
+                  aw.havoc ? element_of(aw.value)
+                           : typecast_exprt::conditional_cast(aw.value, elem_type),
                   selected};
               }
               const symbol_exprt rexec = create_exec_symbol(
