@@ -516,6 +516,13 @@ static std::size_t count_addressed_objects(const symex_target_equationt &equatio
     if(step.ssa_lhs.is_not_nil())
       walk(step.ssa_lhs);
     walk(step.guard);
+    // Converted as they are by convert_function_calls and convert_io. Without
+    // slicing an address passed to a function is also in the assignment to the
+    // parameter; with the formula sliced that assignment can be gone.
+    for(const auto &arg : step.ssa_function_arguments)
+      walk(arg);
+    for(const auto &arg : step.io_args)
+      walk(arg);
   }
 
   return objects.size();
