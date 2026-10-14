@@ -89,12 +89,17 @@ typedef signed char __CPROVER_mutex_t;
 // `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
 // -- so every existing test on it still reads the same value; a recursive
 // mutex counts its acquisitions there instead of saturating at 1. `owner` is
-// meaningful only while `count` is positive.
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
 typedef struct
 {
   __CPROVER_mutex_t count;
   __CPROVER_mutex_t recursive;
-  unsigned long owner;
+  unsigned short owner;
 } __CPROVER_mutex_state_t;
 #endif
 
@@ -154,12 +159,17 @@ typedef signed char __CPROVER_mutex_t;
 // `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
 // -- so every existing test on it still reads the same value; a recursive
 // mutex counts its acquisitions there instead of saturating at 1. `owner` is
-// meaningful only while `count` is positive.
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
 typedef struct
 {
   __CPROVER_mutex_t count;
   __CPROVER_mutex_t recursive;
-  unsigned long owner;
+  unsigned short owner;
 } __CPROVER_mutex_state_t;
 #endif
 
@@ -194,7 +204,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
     // prunes the rest of the thread rather than blocking it.
     __CPROVER_assume(
       __state->count == 0 ||
-      (__state->recursive && __state->owner == __CPROVER_thread_id));
+      (__state->recursive && __state->owner == (unsigned short)__CPROVER_thread_id));
     __state->owner = __CPROVER_thread_id;
     __state->count = __state->count + 1;
   }
@@ -230,12 +240,17 @@ typedef signed char __CPROVER_mutex_t;
 // `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
 // -- so every existing test on it still reads the same value; a recursive
 // mutex counts its acquisitions there instead of saturating at 1. `owner` is
-// meaningful only while `count` is positive.
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
 typedef struct
 {
   __CPROVER_mutex_t count;
   __CPROVER_mutex_t recursive;
-  unsigned long owner;
+  unsigned short owner;
 } __CPROVER_mutex_state_t;
 #endif
 
@@ -258,7 +273,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
   {
     __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
     if(__state->count != 0 &&
-       !(__state->recursive && __state->owner == __CPROVER_thread_id))
+       !(__state->recursive && __state->owner == (unsigned short)__CPROVER_thread_id))
     {
       // failed
       return_value=16;
@@ -303,12 +318,17 @@ typedef signed char __CPROVER_mutex_t;
 // `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
 // -- so every existing test on it still reads the same value; a recursive
 // mutex counts its acquisitions there instead of saturating at 1. `owner` is
-// meaningful only while `count` is positive.
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
 typedef struct
 {
   __CPROVER_mutex_t count;
   __CPROVER_mutex_t recursive;
-  unsigned long owner;
+  unsigned short owner;
 } __CPROVER_mutex_state_t;
 #endif
 
@@ -375,12 +395,17 @@ typedef signed char __CPROVER_mutex_t;
 // `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
 // -- so every existing test on it still reads the same value; a recursive
 // mutex counts its acquisitions there instead of saturating at 1. `owner` is
-// meaningful only while `count` is positive.
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
 typedef struct
 {
   __CPROVER_mutex_t count;
   __CPROVER_mutex_t recursive;
-  unsigned long owner;
+  unsigned short owner;
 } __CPROVER_mutex_state_t;
 #endif
 
