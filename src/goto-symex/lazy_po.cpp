@@ -1164,6 +1164,19 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
     variables.insert(entry.first);
   const auto copy_of = own_version_copies(equation, variables);
 
+  // The steps before the first spawn: main's prologue, while no other thread
+  // exists. Every thread is spawned after all of it in main's program order,
+  // so a read in a spawned thread, or in main after the spawn, comes after
+  // every prologue write in any schedule: no round order is needed between
+  // them, only whether the write ran at all.
+  std::set<const SSA_stept *> prologue;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(step.is_spawn())
+      break;
+    prologue.insert(&step);
+  }
+
   for(const auto &entry : array_rf_writes)
   {
     const irep_idt &variable = entry.first;
@@ -1209,6 +1222,61 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
               "arf_" + id2string(id) + "_" + std::to_string(fresh++),
               elem_type}};
 
+            const auto element_of = [&](const exprt &v) -> exprt {
+              if(v.type().id() == ID_array)
+                return index_exprt{v, typecast_exprt::conditional_cast(
+                  index, to_array_type(v.type()).index_type())};
+              return typecast_exprt::conditional_cast(v, elem_type);
+            };
+            const auto value_of = [&](const array_writet &aw) -> exprt {
+              return aw.havoc
+                ? element_of(aw.value)
+                : typecast_exprt::conditional_cast(aw.value, elem_type);
+            };
+            const auto hits = [&](const array_writet &aw, exprt ran) -> exprt {
+              exprt matches = aw.whole_array
+                ? ran
+                : static_cast<exprt>(and_exprt{
+                    ran,
+                    equal_exprt{
+                      typecast_exprt::conditional_cast(aw.index, index.type()),
+                      index}});
+              if(!aw.condition.is_true())
+                matches = and_exprt{matches, aw.condition};
+              return matches;
+            };
+
+            // After the prologue, its writes are folded once, in program
+            // order, on whether they ran in any round. Selecting them per
+            // (write round, read round) as below cost rounds^2 copies of the
+            // same choice: on weaver/array-eq-symm, whose arrays are written
+            // only by main's init loops, the read-from was 87% of 14.8M
+            // clauses at u64 and the formula did not fit in 15GB at u256.
+            const bool after_prologue =
+              prologue.count(&*rd->second->s_it) == 0;
+            exprt start = element_of(dflt);
+            if(after_prologue)
+            {
+              std::vector<std::size_t> pre;
+              for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
+                if(prologue.count(&*ws[entry.second[wi].event].s_it) != 0)
+                  pre.push_back(wi);
+              std::sort(pre.begin(), pre.end(), [&](std::size_t a, std::size_t b) {
+                const auto &ea = ws[entry.second[a].event];
+                const auto &eb = ws[entry.second[b].event];
+                return std::tie(ea.label, ea.num) < std::tie(eb.label, eb.num);
+              });
+              for(const std::size_t wi : pre)
+              {
+                const auto &aw = entry.second[wi];
+                exprt::operandst ran;
+                for(std::size_t wr = 1; wr <= rounds; ++wr)
+                  ran.push_back(create_exec_symbol(
+                    ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread, wr));
+                start = if_exprt{hits(aw, disjunction(ran)), value_of(aw), start};
+              }
+            }
+
             for(std::size_t round = 1; round <= rounds; ++round)
             {
               // The write that wins is the LAST one before this read in
@@ -1224,6 +1292,8 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
               for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
               {
                 const auto &aw = entry.second[wi];
+                if(after_prologue && prologue.count(&*ws[aw.event].s_it) != 0)
+                  continue; // folded into start
                 for(std::size_t wr = 1; wr <= rounds; ++wr)
                 {
                   if(!before(wr, ws[aw.event], round, *rd->second))
@@ -1236,33 +1306,14 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
               }
               std::sort(candidates.begin(), candidates.end());
 
-              const auto element_of = [&](const exprt &v) -> exprt {
-                if(v.type().id() == ID_array)
-                  return index_exprt{v, typecast_exprt::conditional_cast(
-                    index, to_array_type(v.type()).index_type())};
-                return typecast_exprt::conditional_cast(v, elem_type);
-              };
-              exprt selected = element_of(dflt);
+              exprt selected = start;
               for(const auto &candidate : candidates)
               {
                 const auto &aw = entry.second[candidate.second];
                 const symbol_exprt wexec = create_exec_symbol(
                   ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread,
                   std::get<0>(candidate.first));
-                exprt matches = aw.whole_array
-                  ? static_cast<exprt>(wexec)
-                  : static_cast<exprt>(and_exprt{
-                      wexec,
-                      equal_exprt{
-                        typecast_exprt::conditional_cast(aw.index, index.type()),
-                        index}});
-                if(!aw.condition.is_true())
-                  matches = and_exprt{matches, aw.condition};
-                selected = if_exprt{
-                  matches,
-                  aw.havoc ? element_of(aw.value)
-                           : typecast_exprt::conditional_cast(aw.value, elem_type),
-                  selected};
+                selected = if_exprt{hits(aw, wexec), value_of(aw), selected};
               }
               const symbol_exprt rexec = create_exec_symbol(
                 rd->second->label, rd->second->num, rd->second->thread, round);

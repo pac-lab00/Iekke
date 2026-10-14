@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Folding the prologue writes in the wrong order lets the reader see 3 at a[1];
+folding one that did not run lets it see 7 at a[0] where c is 0. Both fail
+here. See array_rf_prologue_fold_violation for the other direction.

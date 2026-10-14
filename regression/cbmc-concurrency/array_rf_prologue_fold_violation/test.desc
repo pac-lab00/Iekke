@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] .*the writer cannot run before the reader -- false: FAILURE$
+^VERIFICATION FAILED$
+--
+--
+The writer's element write is not a prologue write and is still selected per
+round; losing it would make this pass.
