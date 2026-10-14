@@ -625,8 +625,18 @@ void goto_symext::symex_step(
     // make_union reports whether it actually added anything; remember that
     // so the caller can iterate to a fixpoint (see
     // goto_symext::overall_value_set_changed).
-    if(overall_value_set.make_union(state.value_set))
+    //
+    // Only what changed since the last step is merged. A whole-set union here
+    // compared every entry of the state against the overall set at every
+    // step, and the two differ in nearly every pointer, since the overall set
+    // is wider: on the ldv-linux drivers symex did not finish the first bound
+    // (u2 r2) in 300 s, half the samples inside this union.
+    if(overall_value_set.make_union_delta(
+         state.value_set.values, value_set_at_last_union))
+    {
       overall_value_set_changed = true;
+    }
+    value_set_at_last_union = state.value_set.values;
   }
 
   // Was: state.value_set.make_union(overall_value_set) at every step, which

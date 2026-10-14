@@ -217,6 +217,11 @@ public:
   /// The caller clears it before a collection pass and stops iterating once
   /// a whole pass leaves it false, i.e. at the fixpoint.
   bool overall_value_set_changed = false;
+
+  /// The state's value set as it was at the last union into
+  /// \ref overall_value_set. Every entry of it is in overall_value_set, which
+  /// only grows, so the next union needs only what changed since.
+  value_sett::valuest value_set_at_last_union;
   std::set<symbol_exprt> dynamic_objects;
   // __SZH_ADD_END__
 
