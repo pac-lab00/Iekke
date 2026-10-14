@@ -981,6 +981,20 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     defining_rhs.emplace(
       to_symbol_expr(step.ssa_lhs).get_identifier(), step.ssa_rhs);
   }
+  // A local array declared without an initialiser, `pthread_t t_ids[10000];`,
+  // has its first version defined by the declaration, not by an assignment.
+  // Its contents are whatever the stack held.
+  std::set<irep_idt> declared;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(
+      step.is_decl() && !step.ssa_lhs.is_nil() &&
+      step.ssa_lhs.id() == ID_symbol &&
+      candidates.count(narrowing_base(step.ssa_lhs)) != 0)
+    {
+      declared.insert(to_symbol_expr(step.ssa_lhs).get_identifier());
+    }
+  }
 
   const bool explain = getenv("LAZYPO_ARRAY_WHY") != nullptr;
   const auto copy_of = own_version_copies(equation, candidates);
@@ -1025,6 +1039,18 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     {
       const irep_idt id = to_symbol_expr(ws[i].s_it->ssa_lhs).get_identifier();
       const auto it = defining_rhs.find(id);
+      if(it == defining_rhs.end() && declared.count(id) != 0)
+      {
+        // a write of nondeterministic contents, as for an allocation: element
+        // j holds the declared version's own element j until written, so two
+        // reads of it agree
+        array_writet aw{i, true, nil_exprt{}, ws[i].s_it->ssa_lhs};
+        aw.havoc = true;
+        if(!initial.has_value())
+          initial = ws[i].s_it->ssa_lhs;
+        decomposed.push_back(aw);
+        continue;
+      }
       if(it == defining_rhs.end())
       {
         if(getenv("LAZYPO_ARRAY_WHY") != nullptr)

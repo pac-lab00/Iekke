@@ -1,0 +1,10 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] .*a declared array starts at zero -- false: FAILURE$
+^VERIFICATION FAILED$
+--
+--
+A declaration taken as a zero initialiser passes here.
