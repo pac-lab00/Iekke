@@ -527,3 +527,131 @@ Both `--no-` flags reproduce the pre-change formula **to the digit**
 (`28-race_reach_81` at `u2 r8`: 184325 variables / 695392 clauses with both
 off, 123237 / 424544 with only narrowing on), which is the control showing each
 change is confined to its own path.
+
+## 9. `--thread-symmetry exact|strong`: interchangeable threads
+
+Pass `--thread-symmetry exact` or `--thread-symmetry strong`; the default is
+off. The status line `thread symmetry: N pairs of M threads` says what it did,
+or why it declined.
+
+Many programs start several threads on the same routine with the same
+argument: `for(i...) pthread_create(&t[i], 0, worker, 0)`. Two such threads
+are interchangeable. Exchanging what they do maps every execution to one that
+reaches the same states, so of two schedules that differ only in which of the
+two did what, one is enough. For each pair of adjacent identical threads i,
+i+1 the option adds
+
+    premise  =>  cs(i) >=lex cs(i+1)
+
+where cs(t) is thread t's vector of context-switch points over the rounds.
+
+### Why round-robin makes this delicate
+
+The exchange keeps the event sequence. It keeps the number of rounds only
+when the two threads never run in the same round: inside a round the slots run
+in thread order, so where both run their order reverses, and the exchanged
+execution needs another round. In the worst case each round becomes two.
+
+- `exact` asks for the order only of schedules where the two never share a
+  round. It loses nothing at any bound: every schedule it excludes has its
+  exchange inside the same K rounds.
+- `strong` asks for it of every schedule. A reported violation is still real,
+  but one found at K rounds without it can need up to 2K with it, so a
+  SUCCESSFUL at K means less.
+
+### What makes two threads interchangeable
+
+| Condition | How it is checked |
+|---|---|
+| same start routine | the thread's first user function call |
+| same starting values | the routine's and `__spawned_thread`'s parameters, except `this_thread_id`, are equal: a conjunct of the premise, so different or nondet arguments are handled exactly |
+| same accesses at the same labels | (label, num, location) of every shared event, compared per thread |
+| nobody reads an identity | `pthread_self`, `pthread_equal`, or a user instruction mentioning `__CPROVER_thread_id`, declines the whole program |
+| every join sees both exited | a premise conjunct per `pthread_join` read of `__CPROVER_threads_exited`: both exit-flag writes ran before it |
+
+The mutex owner and the exit flag hold identities too, but a thread only
+compares them with its own; exchanging identities along with the threads keeps
+every step. Thread creation needs no condition: threads are numbered in
+creation order, and in a schedule `exact` excludes neither has run before the
+first round where their vectors differ, so both exist before either runs.
+
+### Proof
+
+Lean 4 proofs, core library only, accompany the paper (`Symmetry.lean`, `Multi.lean`):
+
+- `symmetry_exact`: identical threads that never share a round can have their
+  columns exchanged and reach the same shared state at the same bound;
+- `symmetry_exact_upto`: the same up to an involution exchanging identities
+  (mutex owners, exit flags);
+- `symmetry_exact_joins`: with joins, for executions where every join sees both
+  threads exited.
+- `symmetry_exact_created`: with thread creation: the run splits into a prefix
+  with no step of either thread, ending where both exist untouched, and a
+  suffix; only the suffix is renamed.
+- `settle` (Multi.lean): with several pairs, exchanging adjacent out-of-order
+  allowed pairs lowers the out-of-order count by one each time, so the
+  exchanges terminate in a schedule that satisfies every pair's constraint.
+
+Each depends only on `propext`, `Classical.choice` and `Quot.sound`. A `decide`
+example shows the order reversal when both share a round, and another a join
+that does not commute when only one thread has exited.
+
+### Known-answer probe
+
+An ordering that does nothing looks exactly like one that changes nothing.
+`LAZYPO_SYMMETRY_PROBE` forces the first pair into a schedule the ordering
+excludes:
+
+| probe | forced schedule | with the ordering | `=only`, without it |
+|---|---|---|---|
+| `1` | i+1 runs in round 1, i never runs | no model | keeps its model |
+| `share` | i+1 alone in round 1, both in round 2 | `exact` keeps it, `strong` does not | keeps its model |
+
+On a program whose either thread alone fails, `1` turns FAILED into SUCCESSFUL.
+The same probe catches three mutants: dropping the argument equality, dropping
+the join premise, and dropping the never-share premise (that is `strong`).
+
+### Traps met building it
+
+- A thread's own exit-flag write is a read-modify-write of the whole array in
+  the SSA, so it reads the flags too. Only reads inside `pthread_join` are
+  joins.
+- The mutex model compares the owner with `__CPROVER_thread_id`, and symex
+  merges that condition into the guards and phi assignments of the caller's
+  later steps. The identity check therefore looks at the user's goto
+  instructions, not at the SSA.
+- The front end turns `pthread_create(&b, ...); pthread_join(b, 0);` with
+  nothing in between into a plain call. A test of joins needs a statement
+  between them.
+- The join premise is stated through the schedule, by the exit-flag writes
+  having run, and not through the value the join reads, which
+  `--narrow-shared` may carry for the element read only.
+
+### Measured
+
+Scope at `--unwind 8 --rounds 3`: 262 of 1106 programs get pairs, 145 of them
+seven (eight identical threads).
+
+Fixed bound (8,3), no POR, no-data-race, expected safe, one run per cell:
+
+| task | pairs | off | exact | strong |
+|---|---:|---:|---:|---:|
+| pthread-ext/01b_inc | 7 | 7.8 s | 5.6 s | 1.8 s |
+| pthread-ext/02_inc_cas | 7 | 11.8 s | 14.5 s | 5.1 s |
+| libvsync/cnalock | 3 | 98.6 s | 75.2 s | 90.8 s |
+| ttaslock, rec_mcslock, ticketlock | 1-2 | same | same | same |
+
+Competition setting: the 176 data-race and unreach-call tasks with pairs where
+the score can move (unknown or wrong in the 14 October arm, or a violation
+expected), each run through the name-blind no-POR wrapper at 900 s / 15 GB:
+
+| mode | correct | wrong | unknown | total time |
+|---|---:|---:|---:|---:|
+| off | 170 | 3 | 3 | 7241 s |
+| exact | 170 | 3 | 3 | 7274 s |
+| strong | 170 | 3 | 3 | 7155 s |
+
+There are no verdict differences. Violations are found at the first bounds of
+the ladder, where there is nothing to prune. On safe tasks a faster proof
+reaches a deeper bound, but the reported answer is the same. So the option
+speeds up proofs at a fixed bound and does not add results; it stays off.

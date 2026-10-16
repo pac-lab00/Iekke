@@ -133,6 +133,12 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // already recorded for POR. A lost answer outranks a time gain here, so
   // this waits until that is understood. See src/goto-symex/lazy_po.md.
   options.set_option("thread-private", false);
+  // Threads that run the same routine on the same argument are
+  // interchangeable, so of two schedules that differ only in which of them
+  // does what, one suffices. --thread-symmetry exact keeps one of the two only
+  // where nothing is lost at any bound; strong always does, which can move a
+  // violation to a larger number of rounds. Off by default until measured.
+  options.set_option("thread-symmetry", 0);
   // An array write is a read-modify-write of the whole array in the SSA, so the
   // chain carries every element once per round, and array objects are 64-90% of
   // the formula across the data-race family. --array-rf answers an element read
@@ -229,6 +235,21 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-thread-private"))
       options.set_option("thread-private", false);
+
+    if(cmdline.isset("thread-symmetry"))
+    {
+      const std::string mode = cmdline.get_value("thread-symmetry");
+      if(mode == "exact")
+        options.set_option("thread-symmetry", 1);
+      else if(mode == "strong")
+        options.set_option("thread-symmetry", 2);
+      else if(mode != "off")
+      {
+        log.error() << "--thread-symmetry takes exact, strong or off"
+                    << messaget::eom;
+        exit(CPROVER_EXIT_USAGE_ERROR);
+      }
+    }
 
     if(cmdline.isset("array-rf"))
       options.set_option("array-rf", true);

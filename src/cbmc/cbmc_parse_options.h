@@ -38,6 +38,7 @@ class optionst;
   "(read-implication)(no-read-implication)" \
   "(narrow-shared)(no-narrow-shared)" \
   "(thread-private)(no-thread-private)" \
+  "(thread-symmetry):" \
   "(array-rf)(no-array-rf)(array-rf-bytes)" \
   "(no-por)" \
   OPT_BMC \

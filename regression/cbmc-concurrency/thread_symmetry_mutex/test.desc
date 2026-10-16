@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness --no-por --thread-symmetry exact
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+^thread symmetry: 1 pair of 2 threads$
+--
+^VERIFICATION FAILED$
+--
+The mutex model stores its owner's identity, but a thread only compares it with
+its own, so two threads that lock the same mutex are still interchangeable.

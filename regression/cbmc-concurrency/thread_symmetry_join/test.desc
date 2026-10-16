@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness --no-por --thread-symmetry exact
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+^thread symmetry: 1 pair of 2 threads$
+--
+^VERIFICATION FAILED$
+--
+Joins look at a thread's identity from outside. Both threads are joined, and a
+join that finds both exited cannot tell them apart.

@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness --no-por --thread-symmetry strong
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^thread symmetry: 1 pair of 2 threads$
+--
+^VERIFICATION SUCCESSFUL$
+--
+strong orders the pair in every schedule. The violation is still found at two
+rounds through a schedule where both threads advance equally.

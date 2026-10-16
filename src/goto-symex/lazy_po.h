@@ -22,11 +22,11 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false, const bool array_rf_bytes = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false, const unsigned thread_symmetry = 0, const bool array_rf_bytes = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
       read_implication(read_implication), narrow_shared(narrow_shared),
       thread_private(thread_private), array_rf(array_rf),
-      array_rf_bytes(array_rf_bytes)
+      thread_symmetry(thread_symmetry), array_rf_bytes(array_rf_bytes)
   {
   }
 
@@ -59,6 +59,9 @@ private:
   /// answer an array element read by matching the writes, instead of carrying
   /// the whole array through the chain; see compute_array_rf
   const bool array_rf = false;
+  /// order interchangeable adjacent threads: 0 off, 1 exact, 2 strong; see
+  /// create_thread_symmetry
+  const unsigned thread_symmetry = 0;
   /// with array_rf, also answer reads of arrays accessed byte-wise (byte_extract
   /// and byte_update at any offset), byte by byte; see
   /// create_array_rf_constraints
@@ -329,6 +332,8 @@ private:
 
   exprt active_at_turn(unsigned thread, unsigned label, std::size_t round);
 
+  /// returns what it did, for the status line
+  std::string create_thread_symmetry(symex_target_equationt &);
   void create_cs_constraint(
     symex_target_equationt &equation);
 
