@@ -90,6 +90,17 @@ SCHEDULE = [
     (16384, 3),
 ]
 
+# Tried before the schedule: the program with its symmetric array families
+# instantiated at two slots (--symmetric-instance, which recognises them from
+# the program, not from its name, and refuses when it finds none). A setup
+# loop over 256 slots is then two iterations long and runs to completion at a
+# small unwind, where unreduced it is cut and every bound below 256 answers
+# vacuously. The reduced program is an under-approximation, so only its
+# FAILED is believed; a SUCCESSFUL from it is not a bounded answer for the
+# original and is never reported.
+REDUCED = (4, 2, "--symmetric-instance 2")
+REDUCED_SLICE = 30.0
+
 if len(sys.argv) < 2 or sys.argv[1] in ("-v", "--version"):
     print("4.1.0")
     sys.exit(0)
@@ -259,16 +270,16 @@ print("memory cap per bound: %s"
 started = time.time()
 bounded_safe = None
 
-for unwind, rounds in SCHEDULE:
+for unwind, rounds, extra in [REDUCED] + [(u, r, "") for u, r in SCHEDULE]:
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE:
         break
 
-    slice_ = min(left, SLICE)
-    cmd = ("./iekke_exe %s %s --unwind %d --rounds %d --por --verbosity 8 --glucose"
-           % (program_path, flags, unwind, rounds))
-    print("try unwind=%d rounds=%d (%.0fs for this bound, %.0fs left)"
-          % (unwind, rounds, slice_, left))
+    slice_ = min(left, REDUCED_SLICE if extra else SLICE)
+    cmd = ("./iekke_exe %s %s --unwind %d --rounds %d --por --verbosity 8 --glucose %s"
+           % (program_path, flags, unwind, rounds, extra))
+    print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"
+          % (unwind, rounds, extra + " " if extra else "", slice_, left))
     # Merged, not concatenated: the verdict is the last line of the run,
     # and stdout + stderr glued end to end puts every warning after it, so
     # the verdict stops being last and every run reads as "no verdict".
@@ -308,7 +319,7 @@ for unwind, rounds in SCHEDULE:
         print(out)
         print("FAILED")
         sys.exit(0)
-    if verdict == "SUCCESSFUL":
+    if verdict == "SUCCESSFUL" and not extra:
         bounded_safe = out
     # No verdict means a refusal or a crash at *this* bound -- most often
     # --object-bits exhaustion, which only the very large unwinds provoke. It
