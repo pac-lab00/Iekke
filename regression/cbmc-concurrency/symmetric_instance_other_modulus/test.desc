@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 4 --rounds 2 --no-por --allow-pointer-unsoundness --symmetric-instance 2
+^EXIT=6$
+^SIGNAL=0$
+no family could be instantiated
+--
+symmetric arrays: instantiating
+--
+A slot picked modulo 3 out of six reaches half of them. Only a modulus equal
+to the family size picks a slot uniformly. The family is refused.

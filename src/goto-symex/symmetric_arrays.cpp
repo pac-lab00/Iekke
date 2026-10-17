@@ -25,6 +25,7 @@ Author: CBMC/lazy_po work
 #include <util/symbol_table_base.h>
 #include <util/std_expr.h>
 #include <util/std_types.h>
+#include <util/std_code.h>
 
 #include <goto-programs/goto_functions.h>
 
@@ -101,21 +102,138 @@ bool relates_two_indices(
   return false;
 }
 
-/// Is this index expression one the argument permits: the induction variable
-/// of the setup loop, or a value confined to [0, N) by a nondeterministic
-/// choice? Anything else -- an index computed from data, say -- breaks the
-/// claim that all slots are reached alike, so it is rejected.
-bool index_is_uniform(const exprt &index, const std::unordered_set<irep_idt> &locals)
+const exprt &skip_casts(const exprt &e)
+{
+  const exprt *p = &e;
+  while(p->id() == ID_typecast)
+    p = &to_typecast_expr(*p).op();
+  return *p;
+}
+
+bool is_value(const exprt &e, std::size_t value)
+{
+  const exprt &c = skip_casts(e);
+  if(!c.is_constant())
+    return false;
+  const auto v = numeric_cast<mp_integer>(to_constant_expr(c));
+  return v.has_value() && *v == value;
+}
+
+/// The locals that range over [0, n) alike: every assignment to one is 0,
+/// itself plus 1, a value modulo n, or a nondeterministic choice, and every
+/// comparison of one with a constant compares it with 0 or n. A local started
+/// at a parameter, or bounded by another constant, reaches some slots and not
+/// others; after the reduction it can also run past the end of the array, and
+/// what it reads there is a value no slot held. That turned three safe
+/// programs into violations: pthread-ext/09_fmaxsym-zero and 11_fmaxsymopt-zero
+/// index from a nondeterministic offset, i = offset .. offset + 2, over six
+/// slots.
+std::unordered_set<irep_idt> uniform_locals(
+  const goto_functionst &goto_functions,
+  const std::unordered_set<irep_idt> &locals,
+  std::size_t n)
+{
+  auto local_of = [&locals](const exprt &e) -> optionalt<irep_idt> {
+    const exprt &s = skip_casts(e);
+    if(s.id() == ID_symbol && locals.count(to_symbol_expr(s).get_identifier()))
+      return to_symbol_expr(s).get_identifier();
+    return {};
+  };
+
+  std::unordered_set<irep_idt> bad;
+  for(const auto &f : goto_functions.function_map)
+  {
+    for(const auto &ins : f.second.body.instructions)
+    {
+      if(ins.is_assign())
+      {
+        const auto v = local_of(ins.assign_lhs());
+        if(v.has_value())
+        {
+          const exprt &rhs = skip_casts(ins.assign_rhs());
+          const bool start = is_value(rhs, 0);
+          const bool step = rhs.id() == ID_plus && rhs.operands().size() == 2 &&
+                            local_of(to_binary_expr(rhs).op0()) == v &&
+                            is_value(to_binary_expr(rhs).op1(), 1);
+          const bool pick = rhs.id() == ID_mod && rhs.operands().size() == 2 &&
+                            is_value(to_binary_expr(rhs).op1(), n);
+          // A nondeterministic choice, directly or through the temporary
+          // that holds a __VERIFIER_nondet_* result. Its range is then set
+          // by the comparisons checked below.
+          const bool choice =
+            rhs.id() == ID_nondet_symbol ||
+            (rhs.id() == ID_side_effect &&
+             to_side_effect_expr(rhs).get_statement() == ID_nondet) ||
+            (rhs.id() == ID_symbol &&
+             id2string(to_symbol_expr(rhs).get_identifier())
+                 .find("return_value___VERIFIER_nondet") != std::string::npos);
+          if(!start && !step && !pick && !choice)
+            bad.insert(*v);
+        }
+      }
+      else if(ins.is_function_call())
+      {
+        const auto v = local_of(ins.call_lhs());
+        const exprt &callee = ins.call_function();
+        const bool nondet =
+          callee.id() == ID_symbol &&
+          id2string(to_symbol_expr(callee).get_identifier())
+              .rfind("__VERIFIER_nondet", 0) == 0;
+        if(v.has_value() && !nondet)
+          bad.insert(*v);
+      }
+
+      ins.apply([&](const exprt &e) {
+        e.visit_pre([&](const exprt &x) {
+          const bool relation = x.id() == ID_lt || x.id() == ID_le ||
+                                x.id() == ID_gt || x.id() == ID_ge ||
+                                x.id() == ID_equal || x.id() == ID_notequal;
+          if(!relation || x.operands().size() != 2)
+            return;
+          const auto &b = to_binary_expr(x);
+          for(const auto &side : {std::make_pair(&b.op0(), &b.op1()),
+                                  std::make_pair(&b.op1(), &b.op0())})
+          {
+            const auto v = local_of(*side.first);
+            const exprt &other = skip_casts(*side.second);
+            if(
+              v.has_value() && other.is_constant() && !is_value(other, 0) &&
+              !is_value(other, n))
+            {
+              bad.insert(*v);
+            }
+          }
+        });
+      });
+    }
+  }
+
+  std::unordered_set<irep_idt> result;
+  for(const auto &v : locals)
+    if(bad.count(v) == 0)
+      result.insert(v);
+  return result;
+}
+
+/// Is this index expression one the argument permits: a local that ranges
+/// over [0, N) alike (see uniform_locals), or a value taken modulo N? Anything
+/// else -- an index computed from data, say -- breaks the claim that all slots
+/// are reached alike, so it is rejected.
+bool index_is_uniform(
+  const exprt &index,
+  const std::unordered_set<irep_idt> &uniform,
+  std::size_t n)
 {
   if(index.id() == ID_symbol)
-    return locals.count(to_symbol_expr(index).get_identifier()) > 0;
+    return uniform.count(to_symbol_expr(index).get_identifier()) > 0;
 
   if(index.id() == ID_typecast)
-    return index_is_uniform(to_typecast_expr(index).op(), locals);
+    return index_is_uniform(to_typecast_expr(index).op(), uniform, n);
 
-  // i % N and the like: the shape the benchmarks use to pick a slot.
+  // x % N: the shape the benchmarks use to pick a slot. The modulus must be
+  // the family's size; x % 3 over six slots reaches half of them.
   if(index.id() == ID_mod && index.operands().size() == 2)
-    return to_binary_expr(index).op1().is_constant();
+    return is_value(to_binary_expr(index).op1(), n);
 
   return false;
 }
@@ -184,10 +302,11 @@ std::vector<symmetric_array_familyt> compute_symmetric_array_families(
       continue;
 
     // Condition: every index is uniform over [0, N).
+    const auto uniform = uniform_locals(goto_functions, locals, n);
     bool all_uniform = true;
     for(const auto &index : indices)
     {
-      if(!index_is_uniform(index, locals))
+      if(!index_is_uniform(index, uniform, n))
       {
         all_uniform = false;
         break;
