@@ -160,6 +160,12 @@ def verdict_of(text):
     return None
 
 
+def generated_vccs(text):
+    """The number of verification conditions the run generated, or None."""
+    m = re.findall(r"Generated (\d+) VCC\(s\)", text)
+    return int(m[-1]) if m else None
+
+
 def kill_bound(proc):
     """Kill everything one bound started: the shell, the tool, its solver.
 
@@ -319,7 +325,23 @@ for unwind, rounds, extra in [REDUCED] + [(u, r, "") for u, r in SCHEDULE]:
         print(out)
         print("FAILED")
         sys.exit(0)
-    if verdict == "SUCCESSFUL" and not extra:
+    # For unreach-call a SUCCESSFUL from a bound that generated no verification
+    # condition and cut a loop reached no reach_error() call at all: every path
+    # to one was cut by the unwinding, typically a setup loop longer than the
+    # bound. It says nothing about the program, so it is not kept as a bounded
+    # answer. Without a cut loop, no VCC means symbolic execution discharged
+    # every assertion itself, which is a real bounded answer and is kept.
+    # Measured on ciuccio on the 27 unreach-call tasks whose answer was such a
+    # SUCCESSFUL: 3 wrong trues become unknown (+96), 10 right answers become
+    # unknown (-20), the other 14 are unchanged. For the other properties no
+    # VCC is not a sign of vacuity -- data races are not VCCs at all -- and on
+    # the 14 October arm every such answer was right (memsafety 53, overflow
+    # 5), so the rule would only lose answers there.
+    vacuous = ("unreach-call.prp" in property_path
+               and generated_vccs(out) == 0 and "Not unwinding" in out)
+    if vacuous:
+        print("  (no verification condition generated, a loop cut: not kept)")
+    if verdict == "SUCCESSFUL" and not extra and not vacuous:
         bounded_safe = out
     # No verdict means a refusal or a crash at *this* bound -- most often
     # --object-bits exhaustion, which only the very large unwinds provoke. It
