@@ -1064,9 +1064,11 @@ void goto_check_ct::integer_overflow_check(
   {
     std::string kind = type.id() == ID_unsignedbv ? "unsigned" : "signed";
 
-    // __SZH_ADD_BEGIN__ : only check 32-bit now
-    if(type.id() == ID_signedbv && to_signedbv_type(type).get_width() == 32)
-    // __SZH_ADD_END__
+    // Signed overflow is undefined behaviour at every width; unsigned
+    // arithmetic wraps and is not checked here. This used to test for 32-bit
+    // signed operations only, so long, long long and short arithmetic got no
+    // overflow check at all.
+    if(type.id() == ID_signedbv)
     {
       const binary_exprt &bexpr = to_binary_expr(expr);
       add_guarded_property(
