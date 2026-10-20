@@ -22,10 +22,11 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false, const bool array_rf_bytes = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
       read_implication(read_implication), narrow_shared(narrow_shared),
-      thread_private(thread_private), array_rf(array_rf)
+      thread_private(thread_private), array_rf(array_rf),
+      array_rf_bytes(array_rf_bytes)
   {
   }
 
@@ -58,6 +59,10 @@ private:
   /// answer an array element read by matching the writes, instead of carrying
   /// the whole array through the chain; see compute_array_rf
   const bool array_rf = false;
+  /// with array_rf, also answer reads of arrays accessed byte-wise (byte_extract
+  /// and byte_update at any offset), byte by byte; see
+  /// create_array_rf_constraints
+  const bool array_rf_bytes = false;
 
   void compute_narrowings(const symex_target_equationt &);
   /// The value the lazy chain carries for `variable`: the whole value, or the
@@ -190,7 +195,13 @@ private:
     /// a whole-array write of a nondeterministic array (fresh heap memory):
     /// element j then holds value[j], not value
     bool havoc = false;
+    /// a byte update of the object (--array-rf-bytes): `value` is written at
+    /// byte offset `offset`, and `index` is unused
+    bool bytes = false;
+    exprt offset = nil_exprt{};
   };
+  /// the objects whose reads are answered byte by byte (--array-rf-bytes)
+  std::set<irep_idt> array_rf_bytewise;
   /// objects whose element reads are resolved by matching writes
   std::map<irep_idt, std::vector<array_writet>> array_rf_writes;
   /// the element value before any write, from the constant initialiser

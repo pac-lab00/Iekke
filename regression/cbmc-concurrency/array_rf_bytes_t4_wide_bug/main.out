@@ -1,0 +1,69 @@
+**** WARNING: Context-bounded analysis may yield unsound verification results
+Enabling Partial Order Reduction
+Deagle version 4.1.0 64-bit x86_64 linux
+which contains:
+CBMC version 5.67.0 (29571c48-dirty) 64-bit x86_64 linux
+Parsing main.c
+Converting
+Type-checking main
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+file <builtin-library-__spawned_thread> line 34 function __spawned_thread: replacing function pointer by 1 possible targets
+Generic Property Instrumentation
+Running with 8 object bits, 24 offset bits (default)
+Starting Bounded Model Checking
+Unwinding successfully
+Start removing dummy accesses: 218 steps before removal
+main::1::h!0@1#3 is dummy but preserved
+a#3 is dummy but preserved
+k#4 is dummy and removed
+k#5 is dummy and removed
+a#6 is dummy and removed
+215 steps after removal
+Runtime Symex: 0.00728463s
+Adding Iekke constraints with 3 rounds
+lazy_po phase active-threads: 0ms
+lazy_po phase collect-events: 0ms
+lazy_po phase private-objects: 0ms
+lazy_po phase array-rf-plan: 0ms
+lazy_po phase atomic-blocks: 0ms
+lazy_po phase base-writes: 0ms
+lazy_po phase base-reads: 0ms
+lazy_po phase private-reads: 0ms
+lazy_po phase array-read-from: 1ms
+lazy_po phase lazy-reads: 0ms
+lazy_po phase context-switch: 3ms
+lazy_po phase enumerate+validate: 0ms
+lazy_po phase tags-LW-WINR: 0ms
+lazy_po phase canonicality+NRP/LOW: 4ms
+lazy_po phase guards: 0ms
+lazy_po phase array-read-from (late): 1ms
+lazy_po phase pointer-alignment: 0ms
+lazy_po total: 13ms
+size of program expression: 1777 steps
+no slicing due to threads
+Generated 1 VCC(s), 1 remaining after simplification
+Runtime Postprocess Equation: 0.0132326s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00977197s
+POR provenance: 265 SAT variables classified from 265 of 378 auxiliary symbols
+Running propositional reduction
+Post-processing
+Runtime Post-process: 1.994e-05s
+Solving with Glucose Syrup with simplifier
+8360 variables, 17517 clauses
+decisions: 26 total, 0 from the POR fallback tier, 0 landing on a POR variable; conflicts: 5, propagations: 5232; CS-first: on
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.0148521s
+Runtime decision procedure: 0.0256749s
+
+** Results:
+main.c function reach_error
+[reach_error.assertion.1] line 5 assertion 0: FAILURE
+
+** 1 of 1 failed (2 iterations)
+VERIFICATION FAILED
+EXIT=10
+SIGNAL=0

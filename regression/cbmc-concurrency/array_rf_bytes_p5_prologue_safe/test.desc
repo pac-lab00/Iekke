@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --allow-pointer-unsoundness --array-rf-bytes
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+--array-rf-bytes answers reads of an array that is accessed byte-wise (here a
+heap array of non-constant size, written through a char or short pointer) byte
+by byte from the writes covering each byte: no spurious violation.

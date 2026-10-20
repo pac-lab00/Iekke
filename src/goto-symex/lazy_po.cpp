@@ -783,6 +783,41 @@ conditional_point_update(const exprt &rhs, const irep_idt &variable)
   return match(ite.false_case(), ite.true_case(), not_exprt{ite.cond()});
 }
 
+/// `byte_update(V, o, v)` over one object, or `c ? byte_update(V, o, v) : V`
+/// (either way round), the form a write through a pointer takes when its type
+/// is not the element type. Returns the condition, the offset, the value and
+/// the version it updates, or nothing.
+static std::optional<std::tuple<exprt, exprt, exprt, exprt>>
+point_byte_update(const exprt &rhs, const irep_idt &variable)
+{
+  const auto plain = [&](const exprt &upd)
+    -> std::optional<std::tuple<exprt, exprt, exprt, exprt>> {
+    if(upd.id() != ID_byte_update_little_endian)
+      return {};
+    const auto &bu = to_byte_update_expr(upd);
+    if(bu.op().id() != ID_symbol || narrowing_base(bu.op()) != variable)
+      return {};
+    return std::make_tuple(
+      static_cast<exprt>(true_exprt{}), bu.offset(), bu.value(), bu.op());
+  };
+  if(auto p = plain(rhs))
+    return p;
+  if(rhs.id() != ID_if)
+    return {};
+  const if_exprt &ite = to_if_expr(rhs);
+  const auto match = [&](const exprt &upd, const exprt &keep, const exprt &cond)
+    -> std::optional<std::tuple<exprt, exprt, exprt, exprt>> {
+    auto p = plain(upd);
+    if(!p || keep.id() != ID_symbol || std::get<3>(*p) != keep)
+      return {};
+    std::get<0>(*p) = cond;
+    return p;
+  };
+  if(auto m = match(ite.true_case(), ite.false_case(), ite.cond()))
+    return m;
+  return match(ite.false_case(), ite.true_case(), not_exprt{ite.cond()});
+}
+
 /// `c ? V#a : V#b`, both versions of \p variable: the merge symex makes where
 /// two paths of one thread meet. It selects the version the path that ran left
 /// behind, and every write on either path is an event of its own, executed only
@@ -845,6 +880,7 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
 {
   array_rf_writes.clear();
   array_rf_default.clear();
+  array_rf_bytewise.clear();
   if(!array_rf)
     return;
 
@@ -867,6 +903,11 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
   std::set<irep_idt> opaque;
   std::map<irep_idt, std::vector<std::pair<irep_idt, exprt>>> index_uses;
   const bool why = getenv("LAZYPO_ARRAY_WHY") != nullptr;
+  // with --array-rf-bytes, byte reads and byte updates are accepted too; the
+  // objects they touch are answered byte by byte
+  const bool bytes = array_rf_bytes;
+  std::set<irep_idt> byte_used;
+  std::map<irep_idt, std::vector<typet>> byte_read_types;
   std::function<void(const exprt &, const irep_idt &)> scan =
     [&](const exprt &expr, const irep_idt &parent) {
     if(expr.id() == ID_address_of)
@@ -896,6 +937,22 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
           return;
         }
       }
+    }
+
+    // a byte read of a version, as an index read is an element read
+    if(
+      bytes && expr.id() == ID_byte_extract_little_endian &&
+      to_byte_extract_expr(expr).op().id() == ID_symbol &&
+      candidates.count(narrowing_base(to_byte_extract_expr(expr).op())) != 0)
+    {
+      const auto &be = to_byte_extract_expr(expr);
+      const irep_idt base = narrowing_base(be.op());
+      index_uses[base].emplace_back(
+        to_symbol_expr(be.op()).get_identifier(), be.offset());
+      byte_used.insert(base);
+      byte_read_types[base].push_back(be.type());
+      scan(be.offset(), expr.id());
+      return;
     }
 
     if(expr.id() == ID_with && !expr.operands().empty() &&
@@ -938,6 +995,18 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       step.is_assignment() && !step.ssa_lhs.is_nil() &&
       candidates.count(narrowing_base(step.ssa_lhs)) != 0)
     {
+      if(bytes)
+        if(const auto bu = point_byte_update(
+             step.ssa_rhs, narrowing_base(step.ssa_lhs)))
+        {
+          byte_used.insert(narrowing_base(step.ssa_lhs));
+          scan(std::get<0>(*bu), "byte update");
+          scan(std::get<1>(*bu), "byte update");
+          scan(std::get<2>(*bu), "byte update");
+          if(!step.guard.is_nil())
+            scan(step.guard, "guard");
+          continue;
+        }
       if(own_version_merge(step.ssa_rhs, narrowing_base(step.ssa_lhs)))
       {
         scan(to_if_expr(step.ssa_rhs).cond(), "merge");
@@ -1077,6 +1146,16 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
         decomposed.push_back(aw);
         continue;
       }
+      if(bytes)
+        if(const auto bu = point_byte_update(rhs, variable))
+        {
+          array_writet aw{i, false, nil_exprt{}, std::get<2>(*bu)};
+          aw.condition = std::get<0>(*bu);
+          aw.bytes = true;
+          aw.offset = std::get<1>(*bu);
+          decomposed.push_back(aw);
+          continue;
+        }
 
       if(rhs.id() == ID_nondet_symbol && rhs.type() == ws[i].s_it->ssa_lhs.type())
       {
@@ -1112,6 +1191,43 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
                   << (ok ? "no uniform constant initialiser"
                          : "a write is not a single-index update")
                   << "\n";
+      continue;
+    }
+
+    // A byte-wise object needs a constant size for its element type, for every
+    // value written and for every type read. The cost model below is written
+    // for element reads; for these objects the selection is used whenever it
+    // applies.
+    if(bytes && byte_used.count(variable) != 0)
+    {
+      const auto e_bytes = pointer_offset_size(
+        to_array_type(ws.front().s_it->ssa_lhs.type()).element_type(), ns);
+      bool sized = e_bytes.has_value() && *e_bytes > 0;
+      for(const auto &aw : decomposed)
+        if(aw.bytes)
+        {
+          const auto s = pointer_offset_size(aw.value.type(), ns);
+          sized = sized && s.has_value() && *s > 0;
+        }
+      // a read of non-constant size (memcpy of n bytes) has no byte count
+      for(const auto &t : byte_read_types[variable])
+      {
+        const auto s = pointer_offset_size(t, ns);
+        sized = sized && s.has_value() && *s > 0;
+      }
+      if(!sized)
+      {
+        if(explain)
+          std::cerr << "ARRAY_WHY " << variable
+                    << " declined: byte-wise, a size is unknown\n";
+        continue;
+      }
+      if(explain)
+        std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: byte-wise, "
+                  << decomposed.size() << " writes (no cost model)\n";
+      array_rf_writes.emplace(variable, std::move(decomposed));
+      array_rf_default.emplace(variable, initial.value());
+      array_rf_bytewise.insert(variable);
       continue;
     }
 
@@ -1216,10 +1332,226 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       for(const auto &r : reads.at(variable))
         read_of.emplace(to_symbol_expr(r.s_it->ssa_lhs).get_identifier(), &r);
 
+    // The writes of the prologue, in program order. Every thread is spawned
+    // after the whole prologue, so a read outside it comes after all of them
+    // in any schedule: it folds them once, on whether they ran in any round,
+    // instead of once per (write round, read round).
+    const auto prologue_writes = [&]() {
+      std::vector<std::size_t> pre;
+      for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
+        if(prologue.count(&*ws[entry.second[wi].event].s_it) != 0)
+          pre.push_back(wi);
+      std::sort(pre.begin(), pre.end(), [&](std::size_t a, std::size_t b) {
+        const auto &ea = ws[entry.second[a].event];
+        const auto &eb = ws[entry.second[b].event];
+        return std::tie(ea.label, ea.num) < std::tie(eb.label, eb.num);
+      });
+      return pre;
+    };
+    // The write `aw` ran, in some round.
+    const auto ran_in_some_round = [&](const array_writet &aw) -> exprt {
+      exprt::operandst ran;
+      for(std::size_t wr = 1; wr <= rounds; ++wr)
+        ran.push_back(create_exec_symbol(
+          ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread, wr));
+      return disjunction(ran);
+    };
+    // The (write, round of the write) pairs that come before the read `rdev`
+    // in its round `round`, in increasing schedule position, leaving out the
+    // prologue writes if they are folded separately.
+    //
+    // The write that wins is the LAST one before the read in schedule order,
+    // so the candidates have to be folded in increasing position -- the one
+    // wrapped last ends up outermost and takes priority. Folding them in any
+    // other order silently elects the wrong write: with the writes walked
+    // backwards and the rounds forwards, the outermost became the FIRST write
+    // at the LAST round, i.e. the zero initialiser, which forced every read
+    // to 0 and proved away a reachable violation.
+    using positiont = std::tuple<std::size_t, unsigned, unsigned, unsigned>;
+    const auto candidates_before = [&](
+      const shared_event &rdev, std::size_t round, bool skip_prologue) {
+      std::vector<std::pair<positiont, std::size_t>> candidates;
+      for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
+      {
+        const auto &aw = entry.second[wi];
+        if(skip_prologue && prologue.count(&*ws[aw.event].s_it) != 0)
+          continue;
+        for(std::size_t wr = 1; wr <= rounds; ++wr)
+        {
+          if(!before(wr, ws[aw.event], round, rdev))
+            continue;
+          candidates.emplace_back(
+            std::make_tuple(
+              wr, ws[aw.event].thread, ws[aw.event].label, ws[aw.event].num),
+            wi);
+        }
+      }
+      std::sort(candidates.begin(), candidates.end());
+      return candidates;
+    };
+
+    // --array-rf-bytes: a byte-wise object is answered byte by byte. A read of
+    // type T at byte offset o is the bytes o, ..., o+|T|-1 assembled little
+    // endian, and byte p holds the value of the last write before the read,
+    // in schedule order, whose bytes cover p; else the initial contents.
+    // A write a[i] = v covers [i*E, i*E+E), a byte update of v at offset q
+    // covers [q, q+|v|), a whole-array write covers every byte. (Proved: the
+    // cascade equals applying the writes in order -- iekke-proofs/
+    // ByteCascade.lean; the formulas below are checked against SMT array
+    // semantics by iekke-proofs/zcheck_bytes.py.)
+    const bool bytewise = array_rf_bytewise.count(variable) != 0;
+    // Offsets are computed in the index type of the object, as the lowering of
+    // byte operations does: a 64-bit offset under ILP32 meets 32-bit indices
+    // in the array theory and the solver aborts.
+    const typet offset_type =
+      to_array_type(ws.front().s_it->ssa_lhs.type()).index_type();
+    const unsignedbv_typet byte_type{8};
+    const mp_integer element_bytes =
+      bytewise ? *pointer_offset_size(elem_type, ns) : mp_integer{1};
+    const exprt element_bytes_expr = from_integer(element_bytes, offset_type);
+    const auto as_offset = [&](const exprt &e) {
+      return typecast_exprt::conditional_cast(e, offset_type);
+    };
+    // byte at offset p of a whole-array value (nondet contents or a uniform
+    // element value)
+    const auto whole_byte = [&](const exprt &v, const exprt &p) -> exprt {
+      const exprt in_elem = mod_exprt{p, element_bytes_expr};
+      if(v.type().id() == ID_array)
+        return make_byte_extract(
+          index_exprt{v, typecast_exprt::conditional_cast(
+            div_exprt{p, element_bytes_expr}, to_array_type(v.type()).index_type())},
+          in_elem, byte_type);
+      return make_byte_extract(
+        typecast_exprt::conditional_cast(v, elem_type), in_elem, byte_type);
+    };
+    // where the write starts and how many bytes it covers
+    const auto range_of = [&](const array_writet &aw)
+      -> std::pair<exprt, mp_integer> {
+      if(aw.bytes)
+        return {as_offset(aw.offset), *pointer_offset_size(aw.value.type(), ns)};
+      return {mult_exprt{as_offset(aw.index), element_bytes_expr}, element_bytes};
+    };
+    const auto byte_hits = [&](const array_writet &aw, exprt ran, const exprt &p)
+      -> exprt {
+      exprt matches = ran;
+      if(!aw.whole_array)
+      {
+        const auto r = range_of(aw);
+        matches = and_exprt{
+          matches,
+          binary_relation_exprt{r.first, ID_le, p},
+          binary_relation_exprt{
+            p, ID_lt, plus_exprt{r.first, from_integer(r.second, offset_type)}}};
+      }
+      if(!aw.condition.is_true())
+        matches = and_exprt{matches, aw.condition};
+      return matches;
+    };
+    const auto byte_value = [&](const array_writet &aw, const exprt &p) -> exprt {
+      if(aw.whole_array)
+        return whole_byte(aw.value, p);
+      const auto r = range_of(aw);
+      const exprt v = aw.bytes
+        ? aw.value
+        : static_cast<exprt>(typecast_exprt::conditional_cast(aw.value, elem_type));
+      return make_byte_extract(v, minus_exprt{p, r.first}, byte_type);
+    };
+
+    // a read of \p rtype at byte offset \p roff of version \p id
+    const auto byte_read = [&](const irep_idt &id, const shared_event &rdev,
+                               const exprt &roff, const typet &rtype) -> exprt {
+      const auto key =
+        std::make_pair(id, "bytes:" + roff.pretty() + ":" + rtype.pretty());
+      auto it = replacement.find(key);
+      if(it != replacement.end())
+        return it->second;
+      const ssa_exprt elt{symbol_exprt{
+        "arf_" + id2string(id) + "_" + std::to_string(fresh++), rtype}};
+      const mp_integer n = *pointer_offset_size(rtype, ns);
+      const bool after_prologue = prologue.count(&*rdev.s_it) == 0;
+      const std::vector<std::size_t> pre =
+        after_prologue ? prologue_writes() : std::vector<std::size_t>{};
+      for(std::size_t round = 1; round <= rounds; ++round)
+      {
+        const auto candidates = candidates_before(rdev, round, after_prologue);
+
+        exprt::operandst byte_ops;
+        for(mp_integer b = 0; b < n; ++b)
+        {
+          const exprt p = plus_exprt{roff, from_integer(b, offset_type)};
+          exprt selected = whole_byte(dflt, p);
+          for(const std::size_t wi : pre)
+          {
+            const auto &aw = entry.second[wi];
+            selected = if_exprt{
+              byte_hits(aw, ran_in_some_round(aw), p), byte_value(aw, p), selected};
+          }
+          for(const auto &candidate : candidates)
+          {
+            const auto &aw = entry.second[candidate.second];
+            const symbol_exprt wexec = create_exec_symbol(
+              ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread,
+              std::get<0>(candidate.first));
+            selected = if_exprt{byte_hits(aw, wexec, p), byte_value(aw, p), selected};
+          }
+          byte_ops.push_back(selected);
+        }
+        const array_exprt assembled{
+          std::move(byte_ops),
+          array_typet{byte_type, from_integer(n, size_type())}};
+        const symbol_exprt rexec =
+          create_exec_symbol(rdev.label, rdev.num, rdev.thread, round);
+        equation.constraint(
+          implies_exprt{
+            rexec,
+            equal_exprt{elt, make_byte_extract(assembled, from_integer(0, offset_type), rtype)}},
+          "array read-from (bytes) " + id2string(variable),
+          rdev.s_it->source);
+      }
+      it = replacement.emplace(key, elt).first;
+      return it->second;
+    };
+
     // rewrite every index(V#k, j) into a fresh scalar, and say what it holds
     std::function<void(exprt &)> rewrite = [&](exprt &expr) {
       if(expr.id() == ID_address_of)
         return;
+
+      if(
+        bytewise && expr.id() == ID_byte_extract_little_endian &&
+        to_byte_extract_expr(expr).op().id() == ID_symbol &&
+        narrowing_base(to_byte_extract_expr(expr).op()) == variable)
+      {
+        const irep_idt id = copied_from(
+          copy_of,
+          to_symbol_expr(to_byte_extract_expr(expr).op()).get_identifier());
+        const auto rd = read_of.find(id);
+        if(rd != read_of.end())
+        {
+          exprt roff = to_byte_extract_expr(expr).offset();
+          rewrite(roff);
+          expr = byte_read(id, *rd->second, as_offset(roff), expr.type());
+          return;
+        }
+      }
+
+      if(
+        bytewise && expr.id() == ID_index &&
+        expr.operands()[0].id() == ID_symbol &&
+        narrowing_base(expr.operands()[0]) == variable)
+      {
+        const irep_idt id = copied_from(
+          copy_of, to_symbol_expr(expr.operands()[0]).get_identifier());
+        const auto rd = read_of.find(id);
+        if(rd != read_of.end())
+        {
+          exprt index = expr.operands()[1];
+          rewrite(index);
+          expr = byte_read(
+            id, *rd->second, mult_exprt{as_offset(index), element_bytes_expr}, elem_type);
+          return;
+        }
+      }
 
       if(expr.id() == ID_index && expr.operands()[0].id() == ID_symbol &&
          narrowing_base(expr.operands()[0]) == variable)
@@ -1282,55 +1614,17 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
               prologue.count(&*rd->second->s_it) == 0;
             exprt start = element_of(dflt);
             if(after_prologue)
-            {
-              std::vector<std::size_t> pre;
-              for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
-                if(prologue.count(&*ws[entry.second[wi].event].s_it) != 0)
-                  pre.push_back(wi);
-              std::sort(pre.begin(), pre.end(), [&](std::size_t a, std::size_t b) {
-                const auto &ea = ws[entry.second[a].event];
-                const auto &eb = ws[entry.second[b].event];
-                return std::tie(ea.label, ea.num) < std::tie(eb.label, eb.num);
-              });
-              for(const std::size_t wi : pre)
+              for(const std::size_t wi : prologue_writes())
               {
                 const auto &aw = entry.second[wi];
-                exprt::operandst ran;
-                for(std::size_t wr = 1; wr <= rounds; ++wr)
-                  ran.push_back(create_exec_symbol(
-                    ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread, wr));
-                start = if_exprt{hits(aw, disjunction(ran)), value_of(aw), start};
+                start = if_exprt{hits(aw, ran_in_some_round(aw)), value_of(aw), start};
               }
-            }
 
             for(std::size_t round = 1; round <= rounds; ++round)
             {
-              // The write that wins is the LAST one before this read in
-              // schedule order, so the candidates have to be folded in
-              // increasing position -- the one wrapped last ends up outermost
-              // and takes priority. Folding them in any other order silently
-              // elects the wrong write: with the writes walked backwards and
-              // the rounds forwards, the outermost became the FIRST write at
-              // the LAST round, i.e. the zero initialiser, which forced every
-              // read to 0 and proved away a reachable violation.
-              std::vector<std::pair<std::tuple<std::size_t, unsigned, unsigned, unsigned>,
-                                    std::size_t>> candidates;
-              for(std::size_t wi = 0; wi < entry.second.size(); ++wi)
-              {
-                const auto &aw = entry.second[wi];
-                if(after_prologue && prologue.count(&*ws[aw.event].s_it) != 0)
-                  continue; // folded into start
-                for(std::size_t wr = 1; wr <= rounds; ++wr)
-                {
-                  if(!before(wr, ws[aw.event], round, *rd->second))
-                    continue;
-                  candidates.emplace_back(
-                    std::make_tuple(wr, ws[aw.event].thread, ws[aw.event].label,
-                                    ws[aw.event].num),
-                    wi);
-                }
-              }
-              std::sort(candidates.begin(), candidates.end());
+              // last write before the read wins; see candidates_before
+              const auto candidates =
+                candidates_before(*rd->second, round, after_prologue);
 
               exprt selected = start;
               for(const auto &candidate : candidates)

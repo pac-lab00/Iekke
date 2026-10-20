@@ -235,6 +235,13 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
     if(cmdline.isset("no-array-rf"))
       options.set_option("array-rf", false);
+
+    // Also answer reads of arrays accessed byte-wise -- CBMC's mutex model
+    // reads its own fields out of the program's mutex, a heap object can be
+    // allocated with another type than it is used with -- byte by byte, from
+    // the writes that cover each byte. Off by default until measured.
+    if(cmdline.isset("array-rf-bytes"))
+      options.set_option("array-rf-bytes", true);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))
