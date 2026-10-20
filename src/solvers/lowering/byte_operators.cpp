@@ -1519,50 +1519,46 @@ static exprt lower_byte_update_array_vector_unbounded(
       extract_opcode, value_as_byte_array, std::move(offset_expr), subtype},
     ns);
 
-  // The number of target array/vector elements being replaced, not including
-  // a possible partial update at the end of the updated range, which is handled
-  // below: (non_const_update_bound + (subtype_size - 1)) / subtype_size to
-  // round up to the nearest multiple of subtype_size.
-  div_exprt updated_elements{
-    plus_exprt{typecast_exprt::conditional_cast(
-                 non_const_update_bound, subtype_size.type()),
-               minus_exprt{subtype_size, from_integer(1, subtype_size.type())}},
+  // The last element to be updated: the one that holds the last updated byte,
+  // src.offset() + non_const_update_bound - 1. (If non_const_update_bound is
+  // zero, this is at most first_index, and first_update_value updates nothing.)
+  const exprt update_end = plus_exprt{
+    src.offset(),
+    typecast_exprt::conditional_cast(non_const_update_bound, src.offset().type())};
+  const div_exprt last_index{
+    minus_exprt{update_end, from_integer(1, src.offset().type())},
     subtype_size};
 
-  // The last element to be updated: first_index + updated_elements - 1
-  plus_exprt last_index{first_index,
-                        minus_exprt{std::move(updated_elements),
-                                    from_integer(1, first_index.type())}};
+  // The number of bytes of the update in the last element, or zero if the
+  // update covers the last element entirely.
+  const mod_exprt tail_size{update_end, subtype_size};
 
-  // The size of a partial update at the end of the updated range, may be zero.
-  mod_exprt tail_size{
-    minus_exprt{typecast_exprt::conditional_cast(
-                  non_const_update_bound, initial_bytes.type()),
-                initial_bytes},
-    subtype_size};
-
-  // The bound where updates end, which is conditional on the partial update
-  // being empty.
+  // The bound where updates end.
   binary_predicate_exprt upper_bound{
     typecast_exprt::conditional_cast(
       array_comprehension_index, last_index.type()),
-    ID_ge,
-    if_exprt{equal_exprt{tail_size, from_integer(0, tail_size.type())},
-             last_index,
-             plus_exprt{last_index, from_integer(1, last_index.type())}}};
+    ID_gt,
+    last_index};
 
-  // The actual value of a partial update at the end.
+  // The actual value of a partial update at the end: its first tail_size bytes
+  // are taken from the value, at the same offset as for the elements in
+  // between.
   exprt last_update_value = lower_byte_operators(
     byte_update_exprt{
       src.id(),
       index_exprt{src.op(), last_index},
       from_integer(0, src.offset().type()),
-      byte_extract_exprt{extract_opcode,
-                         value_as_byte_array,
-                         mult_exprt{typecast_exprt::conditional_cast(
-                                      last_index, subtype_size.type()),
-                                    subtype_size},
-                         array_typet{bv_typet{8}, tail_size}}},
+      byte_extract_exprt{
+        extract_opcode,
+        value_as_byte_array,
+        plus_exprt{
+          initial_bytes,
+          mult_exprt{
+            subtype_size,
+            minus_exprt{
+              last_index,
+              plus_exprt{first_index, from_integer(1, first_index.type())}}}},
+        array_typet{bv_typet{8}, tail_size}}},
     ns);
 
   if_exprt array_comprehension_body{
@@ -1573,11 +1569,15 @@ static exprt lower_byte_update_array_vector_unbounded(
                     array_comprehension_index, first_index.type()),
                   first_index},
       first_update_value,
-      if_exprt{equal_exprt{typecast_exprt::conditional_cast(
-                             array_comprehension_index, last_index.type()),
-                           last_index},
-               std::move(last_update_value),
-               std::move(update_value)}}};
+      if_exprt{
+        and_exprt{
+          equal_exprt{
+            typecast_exprt::conditional_cast(
+              array_comprehension_index, last_index.type()),
+            last_index},
+          notequal_exprt{tail_size, from_integer(0, tail_size.type())}},
+        std::move(last_update_value),
+        std::move(update_value)}}};
 
   return simplify_expr(
     array_comprehension_exprt{array_comprehension_index,
