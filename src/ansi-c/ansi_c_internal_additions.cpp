@@ -170,6 +170,18 @@ void ansi_c_internal_additions(std::string &code)
       CPROVER_PREFIX "next_thread_key = 0;\n"
     "extern unsigned char " CPROVER_PREFIX "memory["
       CPROVER_PREFIX "constant_infinity_uint];\n"
+    + (config.ansi_c.mutex_shadow
+         // --mutex-shadow: the state of every mutex, indexed by its address
+         // converted to an integer, which is one-to-one: a pointer is the
+         // pair (object, offset) and the conversion keeps all of its bits
+         ? std::string(
+             "signed char " CPROVER_PREFIX "mutex_count["
+               CPROVER_PREFIX "constant_infinity_uint];\n"
+             "signed char " CPROVER_PREFIX "mutex_recursive["
+               CPROVER_PREFIX "constant_infinity_uint];\n"
+             "unsigned short " CPROVER_PREFIX "mutex_owner["
+               CPROVER_PREFIX "constant_infinity_uint];\n")
+         : std::string{}) +
 
     // malloc
     "const void *" CPROVER_PREFIX "deallocated=0;\n"

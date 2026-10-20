@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 3 --rounds 3 --por --allow-pointer-unsoundness --mutex-shadow
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+With --mutex-shadow the state of a mutex is kept in arrays of its own,
+indexed by the mutex address; locking must behave as with the state laid
+over the program's mutex.

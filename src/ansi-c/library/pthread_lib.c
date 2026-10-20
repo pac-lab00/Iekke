@@ -115,15 +115,30 @@ void pthread_mutex_cleanup(void *p)
 }
 #endif
 
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_init(
   pthread_mutex_t *mutex,
   const pthread_mutexattr_t *mutexattr)
 {
   __CPROVER_HIDE:;
+#ifdef __CPROVER_MUTEX_SHADOW
+  __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+  __CPROVER_mutex_count[__key] = 0;
+  __CPROVER_mutex_owner[__key] = 0;
+  __CPROVER_mutex_recursive[__key] =
+    mutexattr != 0 ? *((const signed char *)mutexattr) : 0;
+#else
   __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
   __state->count = 0;
   __state->owner = 0;
   __state->recursive = mutexattr != 0 ? *((const signed char *)mutexattr) : 0;
+#endif
 
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_cleanup(mutex, pthread_mutex_cleanup);
@@ -175,6 +190,13 @@ typedef struct
 
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -197,16 +219,26 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
   #else
   __CPROVER_atomic_begin();
   {
-    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
     // A recursive mutex may be re-acquired by the thread that already holds
     // it; every other acquisition waits for it to be free. Assuming only
     // `count == 0` makes the re-acquisition unsatisfiable, which silently
     // prunes the rest of the thread rather than blocking it.
+#ifdef __CPROVER_MUTEX_SHADOW
+    __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+    __CPROVER_assume(
+      __CPROVER_mutex_count[__key] == 0 ||
+      (__CPROVER_mutex_recursive[__key] &&
+       __CPROVER_mutex_owner[__key] == (unsigned short)__CPROVER_thread_id));
+    __CPROVER_mutex_owner[__key] = __CPROVER_thread_id;
+    __CPROVER_mutex_count[__key] = __CPROVER_mutex_count[__key] + 1;
+#else
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
     __CPROVER_assume(
       __state->count == 0 ||
       (__state->recursive && __state->owner == (unsigned short)__CPROVER_thread_id));
     __state->owner = __CPROVER_thread_id;
     __state->count = __state->count + 1;
+#endif
   }
   __CPROVER_atomic_end();
 
@@ -256,6 +288,13 @@ typedef struct
 
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_trylock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -271,6 +310,23 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
   #endif
 
   {
+#ifdef __CPROVER_MUTEX_SHADOW
+    __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+    if(__CPROVER_mutex_count[__key] != 0 &&
+       !(__CPROVER_mutex_recursive[__key] &&
+         __CPROVER_mutex_owner[__key] == (unsigned short)__CPROVER_thread_id))
+    {
+      // failed
+      return_value=16;
+    }
+    else
+    {
+      // ok
+      return_value=0;
+      __CPROVER_mutex_owner[__key] = __CPROVER_thread_id;
+      __CPROVER_mutex_count[__key] = __CPROVER_mutex_count[__key] + 1;
+    }
+#else
     __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
     if(__state->count != 0 &&
        !(__state->recursive && __state->owner == (unsigned short)__CPROVER_thread_id))
@@ -285,6 +341,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
       __state->owner = __CPROVER_thread_id;
       __state->count = __state->count + 1;
     }
+#endif
   }
 
   __CPROVER_atomic_end();
@@ -334,6 +391,13 @@ typedef struct
 
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -362,9 +426,15 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
     // A recursive mutex is released only by as many unlocks as it took
     // locks; for a non-recursive one the count is 0 or 1 and this is the
     // assignment it replaces.
+#ifdef __CPROVER_MUTEX_SHADOW
+    __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+    if(__CPROVER_mutex_count[__key] > 0)
+      __CPROVER_mutex_count[__key] = __CPROVER_mutex_count[__key] - 1;
+#else
     __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
     if(__state->count > 0)
       __state->count = __state->count - 1;
+#endif
   }
   __CPROVER_atomic_end();
   #endif
@@ -411,6 +481,13 @@ typedef struct
 
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -431,7 +508,11 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 
   // __CPROVER_assert(*((__CPROVER_mutex_t *)mutex)==0,
   //   "lock held upon destroy");
+#ifdef __CPROVER_MUTEX_SHADOW
+  __CPROVER_mutex_count[(__CPROVER_size_t)mutex] = -1;
+#else
   *((__CPROVER_mutex_t *)mutex)=-1;
+#endif
 
   #endif
 

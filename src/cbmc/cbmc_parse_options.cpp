@@ -173,6 +173,15 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     exit(CPROVER_EXIT_USAGE_ERROR);
   }
 
+  // Keep the modelled state of each mutex in arrays of its own, indexed by
+  // the mutex address, instead of laid over the front of the program's
+  // pthread_mutex_t. Where they differ is undefined behaviour in POSIX: a
+  // mutex used without initialisation is free here, a mutex copied by
+  // assignment does not carry its state, and re-initialising a locked mutex
+  // leaves it locked. Off by default until measured.
+  if(cmdline.isset("mutex-shadow"))
+    config.ansi_c.mutex_shadow = true;
+
   cbmc_parse_optionst::set_default_options(options);
   parse_c_object_factory_options(cmdline, options);
 

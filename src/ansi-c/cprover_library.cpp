@@ -44,6 +44,9 @@ static std::string get_cprover_library_text(
   if(config.ansi_c.string_abstraction)
     library_text << "#define " CPROVER_PREFIX "STRING_ABSTRACTION\n";
 
+  if(config.ansi_c.mutex_shadow)
+    library_text << "#define " CPROVER_PREFIX "MUTEX_SHADOW\n";
+
   // cprover_library.inc may not have been generated when running Doxygen, thus
   // make Doxygen skip this part
   /// \cond

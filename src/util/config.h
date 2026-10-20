@@ -262,6 +262,9 @@ public:
 
     bool string_abstraction;
     bool malloc_may_fail = false;
+    /// keep the modelled state of each mutex in arrays of its own,
+    /// indexed by the mutex address (--mutex-shadow)
+    bool mutex_shadow = false;
 
     enum malloc_failure_modet
     {
