@@ -1,0 +1,10 @@
+CORE
+main.c
+--32 --unwind 3 --dynamic-array-bound 4
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+malloc(2 * n * sizeof(int)) is 2n elements, not n: it must not be bounded as n.

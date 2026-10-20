@@ -110,7 +110,15 @@ void goto_symext::symex_allocate(
               *c_sizeof_type_rec(to_mult_expr(tmp_size).op1()) == *tmp_type);
 
           object_type = array_typet(*tmp_type, s);
-          counted_in_elements = true;
+          // s counts elements only when the constant factor is the element
+          // size itself. n * 2 * sizeof(T) folds to n * (2 * sizeof(T)),
+          // still tagged sizeof(T): that is 2n elements, and the type above
+          // is too small -- which an array of symbolic size tolerates, but an
+          // array bounded by --dynamic-array-bound would not.
+          const exprt &factor = to_mult_expr(tmp_size).op0().is_constant()
+                                  ? to_mult_expr(tmp_size).op0()
+                                  : to_mult_expr(tmp_size).op1();
+          counted_in_elements = numeric_cast<mp_integer>(factor) == elem_size;
         }
         else if(alloc_size.has_value())
         {
@@ -144,6 +152,8 @@ void goto_symext::symex_allocate(
       // execution where the program asks for more than K elements is cut, as
       // an unwinding assumption cuts a loop (--unwinding-assertions is
       // refused with this option: an allocation step carries no property).
+      // In a spawned thread the assumption stalls that thread only, as an
+      // unwinding assumption inside it would; the others run on.
       // The array has K elements, not n: accesses between n and K are not out
       // of bounds, so this is not for memory safety.
       exprt &array_size = to_array_type(*object_type).size();

@@ -231,8 +231,16 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
                   << messaget::eom;
       exit(CPROVER_EXIT_USAGE_ERROR);
     }
-    options.set_option(
-      "dynamic-array-bound", cmdline.get_value("dynamic-array-bound"));
+    const auto bound =
+      string2optional_size_t(cmdline.get_value("dynamic-array-bound"));
+    if(!bound.has_value() || *bound == 0)
+    {
+      log.error() << "--dynamic-array-bound takes a positive number of "
+                     "elements"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    options.set_option("dynamic-array-bound", std::to_string(*bound));
   }
 
   if(cmdline.isset("rounds"))

@@ -1,0 +1,10 @@
+CORE
+main.c
+--32 --unwind 3 --rounds 3 --allow-pointer-unsoundness --dynamic-array-bound 4
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The cut of thread B (n >= 10 > K) does not hide the violation in thread A.
