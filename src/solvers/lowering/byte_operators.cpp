@@ -1644,23 +1644,21 @@ static exprt lower_byte_update_array_vector_non_const(
              update_bound};
   simplify(initial_bytes, ns);
 
-  // encode the first update: update the original element at first_index (the
-  // actual update will only be initial_bytes-many bytes from
-  // value_as_byte_array). Each element update is given the whole value and
-  // the bound on it: byte i of the value is written only if i is below the
-  // bound, whatever the offset of the value relative to the element.
-  exprt first_update_value = lower_byte_update(
-    byte_update_exprt{
-      src.id(),
-      index_exprt{src.op(), first_index},
-      update_offset,
-      value_as_byte_array},
-    value_as_byte_array,
-    non_const_update_bound,
-    ns);
-
   if(value_as_byte_array.id() != ID_array)
   {
+    // encode the first update: update the original element at first_index
+    // (the actual update will only be initial_bytes-many bytes from
+    // value_as_byte_array)
+    exprt first_update_value = lower_byte_update(
+      byte_update_exprt{
+        src.id(),
+        index_exprt{src.op(), first_index},
+        update_offset,
+        value_as_byte_array},
+      value_as_byte_array,
+      non_const_update_bound,
+      ns);
+
     return lower_byte_update_array_vector_unbounded(
       src,
       subtype,
@@ -1673,13 +1671,90 @@ static exprt lower_byte_update_array_vector_non_const(
       ns);
   }
 
+  const array_exprt &value = to_array_expr(value_as_byte_array);
+  const std::size_t value_size = value.operands().size();
+
+  // Update the element at index \p where with the bytes of the value from
+  // window_begin up to (excluding) window_end, placing value byte window_begin
+  // at byte \p window_offset of the element. That offset may be negative: the
+  // bytes before the element are then left out, as are those past its end.
+  // Value byte window_begin + k is written only if it is below the update
+  // bound, that is, if k < non_const_update_bound - window_begin (and nowhere
+  // if non_const_update_bound <= window_begin).
+  auto update_element = [&src, &value, &non_const_update_bound, &ns](
+                          const exprt &where,
+                          const exprt &window_offset,
+                          std::size_t window_begin,
+                          std::size_t window_end) -> exprt {
+    PRECONDITION(window_begin <= window_end);
+    PRECONDITION(window_end <= value.operands().size());
+    exprt::operandst window_bytes{
+      value.operands().begin() + numeric_cast_v<std::ptrdiff_t>(window_begin),
+      value.operands().begin() + numeric_cast_v<std::ptrdiff_t>(window_end)};
+    const array_exprt window{
+      std::move(window_bytes),
+      array_typet{
+        value.type().element_type(),
+        from_integer(window_end - window_begin, size_type())}};
+
+    optionalt<exprt> window_bound;
+    if(non_const_update_bound.has_value() && window_begin == 0)
+      window_bound = *non_const_update_bound;
+    else if(non_const_update_bound.has_value())
+    {
+      // non_const_update_bound > window_begin ?
+      //   non_const_update_bound - window_begin : 0
+      const exprt begin =
+        from_integer(window_begin, non_const_update_bound->type());
+      window_bound = if_exprt{
+        binary_predicate_exprt{*non_const_update_bound, ID_gt, begin},
+        minus_exprt{*non_const_update_bound, begin},
+        from_integer(0, non_const_update_bound->type())};
+    }
+
+    return lower_byte_update(
+      byte_update_exprt{
+        src.id(), index_exprt{src.op(), where}, window_offset, window},
+      window,
+      window_bound,
+      ns);
+  };
+
+  // Each element update is given only the bytes of the value that can land in
+  // that element, not the whole value: an element update with a value of n
+  // bytes at a non-constant offset costs O(n) shifts of an O(n)-byte vector,
+  // so handing the whole value to every element would be quadratic in n.
+  // With S = subtype_size, the first element (at first_index) takes value bytes
+  // [0, initial_bytes), within [0, S). Element first_index + i, for i >= 1,
+  // takes value bytes [initial_bytes + (i - 1) * S, initial_bytes + i * S).
+  // As initial_bytes is in [0, S], these lie within the window
+  // [(i - 1) * S, (i + 1) * S): a window of 2 * S bytes suffices whatever the
+  // (possibly non-constant) initial_bytes. Relative to the window start,
+  // the value is placed at offset -initial_bytes in the element.
+  // This needs a constant S; otherwise every element is given the whole value
+  // (window [0, value_size)) at offset -(initial_bytes + (i - 1) * S).
+  const bool constant_element_size = subtype_size.is_constant();
+
+  // encode the first update: update the original element at first_index (the
+  // actual update will only be initial_bytes-many bytes from
+  // value_as_byte_array)
+  std::size_t first_window_end = value_size;
+  if(constant_element_size)
+  {
+    first_window_end = std::min(
+      value_size,
+      numeric_cast_v<std::size_t>(to_constant_expr(subtype_size)));
+  }
+  exprt first_update_value =
+    update_element(first_index, update_offset, 0, first_window_end);
+
   // We will update one array/vector element at a time - compute the number of
   // update values that will be consumed in each step. If we cannot determine a
   // constant value at this time we assume it's at least one byte. The
   // byte_extract_exprt within the loop uses the symbolic value (subtype_size),
   // we just need to make sure we make progress for the loop to terminate.
   std::size_t step_size = 1;
-  if(subtype_size.is_constant())
+  if(constant_element_size)
     step_size = numeric_cast_v<std::size_t>(to_constant_expr(subtype_size));
   // Given the first update already encoded, keep track of the offset into the
   // update value. Again, the expressions within the loop use the symbolic
@@ -1691,50 +1766,51 @@ static exprt lower_byte_update_array_vector_non_const(
 
   with_exprt result{src.op(), first_index, first_update_value};
 
-  // Element first_index + i is updated with the bytes of value_as_byte_array
-  // from initial_bytes + (i - 1) * subtype_size on, that is, at the negative
-  // offset -(initial_bytes + (i - 1) * subtype_size). initial_bytes need not
-  // be constant: the update then is a no-op where it is past the value.
+  // Element first_index + i (i >= 1): see above for its window and offset.
   auto lower_byte_update_array_vector_non_const_one_element =
-    [&src,
-     &first_index,
+    [&first_index,
      &initial_bytes,
      &subtype_size,
-     &value_as_byte_array,
-     &non_const_update_bound,
+     constant_element_size,
+     step_size,
+     value_size,
+     &update_element,
      &ns,
      &result](std::size_t i) -> void {
     exprt where = simplify_expr(
       plus_exprt{first_index, from_integer(i, first_index.type())}, ns);
 
-    exprt neg_offset_expr = simplify_expr(
-      unary_minus_exprt{plus_exprt{
-        initial_bytes,
-        mult_exprt{subtype_size, from_integer(i - 1, subtype_size.type())}}},
-      ns);
+    std::size_t window_begin = 0;
+    std::size_t window_end = value_size;
+    exprt window_offset;
+    if(constant_element_size)
+    {
+      window_begin = (i - 1) * step_size;
+      window_end = std::min(value_size, window_begin + 2 * step_size);
+      window_offset = simplify_expr(unary_minus_exprt{initial_bytes}, ns);
+    }
+    else
+    {
+      window_offset = simplify_expr(
+        unary_minus_exprt{plus_exprt{
+          initial_bytes,
+          mult_exprt{subtype_size, from_integer(i - 1, subtype_size.type())}}},
+        ns);
+    }
 
-    exprt element = lower_byte_update(
-      byte_update_exprt{
-        src.id(),
-        index_exprt{src.op(), where},
-        neg_offset_expr,
-        value_as_byte_array},
-      value_as_byte_array,
-      non_const_update_bound,
-      ns);
-
-    result.add_to_operands(std::move(where), std::move(element));
+    result.add_to_operands(
+      std::move(where),
+      update_element(where, window_offset, window_begin, window_end));
   };
 
   std::size_t i = 1;
-  for(; offset + step_size <= value_as_byte_array.operands().size();
-      offset += step_size, ++i)
+  for(; offset + step_size <= value_size; offset += step_size, ++i)
   {
     lower_byte_update_array_vector_non_const_one_element(i);
   }
 
   // do the tail
-  if(offset < value_as_byte_array.operands().size())
+  if(offset < value_size)
     lower_byte_update_array_vector_non_const_one_element(i);
 
   return simplify_expr(std::move(result), ns);

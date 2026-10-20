@@ -1,0 +1,10 @@
+CORE
+main.c
+--32 --big-endian -DTEST_BIG_ENDIAN --unwind 13
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Big-endian variant of byte_update_nonconst_window.

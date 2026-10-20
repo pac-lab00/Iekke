@@ -1,0 +1,13 @@
+CORE
+main.c
+--32 --little-endian --unwind 13
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Byte updates of 12 and 6 bytes at a non-constant offset into an array of
+non-constant size. Each element update is given only a window of the update
+value (two elements wide); this checks that every element still receives the
+right bytes, including the first element and the partial last one.
