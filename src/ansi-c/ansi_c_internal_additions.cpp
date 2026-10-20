@@ -172,8 +172,11 @@ void ansi_c_internal_additions(std::string &code)
       CPROVER_PREFIX "constant_infinity_uint];\n"
     + (config.ansi_c.mutex_shadow
          // --mutex-shadow: the state of every mutex, indexed by its address
-         // converted to an integer, which is one-to-one: a pointer is the
-         // pair (object, offset) and the conversion keeps all of its bits
+         // converted to __CPROVER_size_t. That is one-to-one: size_t is as
+         // wide as a pointer, and the conversion of a pointer to an integer
+         // is its raw bits, the pair (object, offset) -- see bv_pointers.
+         // The arrays are zero-initialised like any other static object:
+         // count 0 is a free mutex, which PTHREAD_MUTEX_INITIALIZER relies on
          ? std::string(
              "signed char " CPROVER_PREFIX "mutex_count["
                CPROVER_PREFIX "constant_infinity_uint];\n"

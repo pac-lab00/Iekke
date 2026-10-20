@@ -180,7 +180,17 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   // assignment does not carry its state, and re-initialising a locked mutex
   // leaves it locked. Off by default until measured.
   if(cmdline.isset("mutex-shadow"))
+  {
+    // the deadlock check finds lock acquisitions by writes to an object of
+    // type pthread_mutex_t, which the model no longer writes
+    if(cmdline.isset("deadlock"))
+    {
+      log.error() << "--mutex-shadow cannot be combined with --deadlock"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
     config.ansi_c.mutex_shadow = true;
+  }
 
   cbmc_parse_optionst::set_default_options(options);
   parse_c_object_factory_options(cmdline, options);
