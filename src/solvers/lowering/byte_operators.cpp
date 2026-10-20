@@ -1646,13 +1646,17 @@ static exprt lower_byte_update_array_vector_non_const(
 
   // encode the first update: update the original element at first_index (the
   // actual update will only be initial_bytes-many bytes from
-  // value_as_byte_array)
+  // value_as_byte_array). Each element update is given the whole value and
+  // the bound on it: byte i of the value is written only if i is below the
+  // bound, whatever the offset of the value relative to the element.
   exprt first_update_value = lower_byte_update(
     byte_update_exprt{
       src.id(),
       index_exprt{src.op(), first_index},
       update_offset,
       value_as_byte_array},
+    value_as_byte_array,
+    non_const_update_bound,
     ns);
 
   if(value_as_byte_array.id() != ID_array)
@@ -1697,6 +1701,7 @@ static exprt lower_byte_update_array_vector_non_const(
      &initial_bytes,
      &subtype_size,
      &value_as_byte_array,
+     &non_const_update_bound,
      &ns,
      &result](std::size_t i) -> void {
     exprt where = simplify_expr(
@@ -1714,6 +1719,8 @@ static exprt lower_byte_update_array_vector_non_const(
         index_exprt{src.op(), where},
         neg_offset_expr,
         value_as_byte_array},
+      value_as_byte_array,
+      non_const_update_bound,
       ns);
 
     result.add_to_operands(std::move(where), std::move(element));
@@ -2272,31 +2279,54 @@ static exprt lower_byte_update(
           .swap(to_concatenation_expr(val_before).op1());
     }
 
+    // Only the bytes i < non_const_update_bound of the value are written.
+    // Byte i of the value goes to byte src.offset() + i of the operand, and
+    // that offset need not be zero, nor constant, nor even non-negative (it is
+    // negative for the second and later elements of an array update). So
+    // rather than refilling the bytes past the bound with original bytes, the
+    // mask leaves them out and the value is zero there: the original bits
+    // remain, wherever the value is placed.
+    exprt::operandst mask_bytes;
     if(non_const_update_bound.has_value())
     {
-      const exprt src_as_bytes = unpack_rec(
-        val_before,
-        src.id() == ID_byte_update_little_endian,
-        mp_integer{0},
-        mp_integer{update_bytes.size()},
-        ns);
-      CHECK_RETURN(src_as_bytes.id() == ID_array);
-      CHECK_RETURN(src_as_bytes.operands().size() == update_bytes.size());
       for(std::size_t i = 0; i < update_bytes.size(); ++i)
       {
-        update_bytes[i] =
-          if_exprt{binary_predicate_exprt{
-                     from_integer(i, non_const_update_bound->type()),
-                     ID_lt,
-                     *non_const_update_bound},
-                   update_bytes[i],
-                   src_as_bytes.operands()[i]};
+        const binary_predicate_exprt in_bound{
+          from_integer(i, non_const_update_bound->type()),
+          ID_lt,
+          *non_const_update_bound};
+        mask_bytes.push_back(if_exprt{in_bound,
+                                      from_integer(0xff, bv_typet{8}),
+                                      from_integer(0, bv_typet{8})});
+        update_bytes[i] = if_exprt{
+          in_bound, update_bytes[i], from_integer(0, update_bytes[i].type())};
       }
     }
 
     // build mask
     exprt mask;
-    if(is_little_endian)
+    if(!mask_bytes.empty())
+    {
+      // laid out like the value below
+      concatenation_exprt mask_value{mask_bytes, bv_typet{update_size_bits}};
+      if(is_little_endian)
+        std::reverse(mask_value.operands().begin(), mask_value.operands().end());
+
+      if(bit_width > update_size_bits)
+      {
+        mask = concatenation_exprt{
+          from_integer(0, bv_typet{bit_width - update_size_bits}),
+          mask_value,
+          bv_typet{bit_width}};
+
+        if(!is_little_endian)
+          to_concatenation_expr(mask).op0().swap(
+            to_concatenation_expr(mask).op1());
+      }
+      else
+        mask = mask_value;
+    }
+    else if(is_little_endian)
       mask = from_integer(power(2, update_size_bits) - 1, bv_typet{bit_width});
     else
     {

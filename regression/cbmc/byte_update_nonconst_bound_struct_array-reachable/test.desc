@@ -1,0 +1,19 @@
+CORE
+main.c
+--32 --little-endian -DCHECK_REACHABLE
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] line 25 assertion 0: FAILURE$
+^\[main.assertion.2\] line 30 assertion s.x\[0\] == 0xa3a20201: SUCCESS$
+^\[main.assertion.3\] line 32 assertion s.x\[1\] == 0xb3b2b1b0 && s.x\[2\] == 0xc3c2c1c0: SUCCESS$
+^\[main.assertion.4\] line 37 assertion 0: FAILURE$
+^\[main.assertion.5\] line 42 assertion s.x\[0\] == 0x04030201 && s.x\[1\] == 0xb3b20605: SUCCESS$
+^\[main.assertion.6\] line 44 assertion s.x\[2\] == 0xc3c2c1c0: SUCCESS$
+^\[main.assertion.7\] line 49 assertion 0: FAILURE$
+^\[main.assertion.8\] line 54 assertion s.x\[1\] == 0x08070605 && s.x\[2\] == 0xc30b0a09: SUCCESS$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The three checked branches of byte_update_nonconst_bound_struct_array are
+reached, so its SUCCESSFUL is not vacuous.

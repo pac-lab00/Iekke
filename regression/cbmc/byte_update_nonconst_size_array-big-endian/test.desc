@@ -6,3 +6,5 @@ main.c
 ^VERIFICATION SUCCESSFUL$
 --
 ^warning: ignoring
+--
+Big-endian variant of byte_update_nonconst_size_array.

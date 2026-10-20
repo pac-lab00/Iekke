@@ -1,0 +1,13 @@
+CORE
+main.c
+--32 --little-endian
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A copy of non-constant length into an array member of a struct, at a constant
+offset, is lowered per array element with the length as a bound. The bound
+used to be dropped for every element, so bytes of the source past the length
+were copied as well.
