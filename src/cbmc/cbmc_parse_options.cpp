@@ -217,6 +217,24 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
       ? cmdline.get_value("thread-creation-bound")
       : std::string("2"));
 
+  // Give an array allocated with a non-constant number of elements n a
+  // constant number K, under the condition n <= K, cut like an unwinding
+  // bound; it applies to every run, sequential or not. Field sensitivity
+  // splits arrays of up to 64 elements into scalars, so K should stay at or
+  // below that. Not for memory safety.
+  if(cmdline.isset("dynamic-array-bound"))
+  {
+    if(cmdline.isset("unwinding-assertions"))
+    {
+      log.error() << "--dynamic-array-bound cannot be combined with "
+                     "--unwinding-assertions: the bound is an assumption"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    options.set_option(
+      "dynamic-array-bound", cmdline.get_value("dynamic-array-bound"));
+  }
+
   if(cmdline.isset("rounds"))
   {
     options.set_option(

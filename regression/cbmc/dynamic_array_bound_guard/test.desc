@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --unwind 3 --dynamic-array-bound 4
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+--dynamic-array-bound 4 gives malloc(n * sizeof(int)) four elements under the
+assumption n <= 4; executions asking for more are cut, as by an unwinding
+bound.

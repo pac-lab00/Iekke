@@ -60,6 +60,8 @@ void goto_symext::symex_allocate(
 
   exprt size = to_binary_expr(code).op0();
   optionalt<typet> object_type;
+  // the object is an array of elements of a known type, n * sizeof(T) bytes
+  bool counted_in_elements = false;
   auto function_symbol = outer_symbol_table.lookup(state.source.function_id);
   INVARIANT(function_symbol, "function associated with allocation not found");
   const irep_idt &mode = function_symbol->mode;
@@ -108,6 +110,7 @@ void goto_symext::symex_allocate(
               *c_sizeof_type_rec(to_mult_expr(tmp_size).op1()) == *tmp_type);
 
           object_type = array_typet(*tmp_type, s);
+          counted_in_elements = true;
         }
         else if(alloc_size.has_value())
         {
@@ -130,6 +133,28 @@ void goto_symext::symex_allocate(
 
     // we introduce a fresh symbol for the size
     // to prevent any issues of the size getting ever changed
+
+    if(
+      object_type->id() == ID_array &&
+      !to_array_type(*object_type).size().is_constant() &&
+      counted_in_elements && symex_config.dynamic_array_bound != 0)
+    {
+      // --dynamic-array-bound K: K elements instead of n, so the array has a
+      // constant size and field sensitivity splits it into scalars. An
+      // execution where the program asks for more than K elements is cut, as
+      // an unwinding assumption cuts a loop (--unwinding-assertions is
+      // refused with this option: an allocation step carries no property).
+      // The array has K elements, not n: accesses between n and K are not out
+      // of bounds, so this is not for memory safety.
+      exprt &array_size = to_array_type(*object_type).size();
+      const binary_relation_exprt within{
+        array_size,
+        ID_le,
+        from_integer(symex_config.dynamic_array_bound, array_size.type())};
+      symex_assume_l2(state, within);
+      array_size =
+        from_integer(symex_config.dynamic_array_bound, array_size.type());
+    }
 
     if(
       object_type->id() == ID_array &&

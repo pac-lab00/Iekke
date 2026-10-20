@@ -64,6 +64,10 @@ struct symex_configt final
   /// Number of rounds for the LazyCSeq context-bounded concurrency encoding
   std::size_t lazy_po_rounds;
 
+  /// --dynamic-array-bound K: an array allocated with a non-constant number
+  /// of elements n gets K elements, under the condition n <= K (0: off)
+  std::size_t dynamic_array_bound;
+
   /// \brief Construct a symex_configt using options specified in an
   /// \ref optionst
   explicit symex_configt(const optionst &options);

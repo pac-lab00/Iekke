@@ -56,7 +56,8 @@ symex_configt::symex_configt(const optionst &options)
     complexity_limits_active(
       options.get_signed_int_option("symex-complexity-limit") > 0),
     cache_dereferences{options.get_bool_option("symex-cache-dereferences")},
-    lazy_po_rounds(options.get_unsigned_int_option("rounds"))
+    lazy_po_rounds(options.get_unsigned_int_option("rounds")),
+    dynamic_array_bound(options.get_unsigned_int_option("dynamic-array-bound"))
 {
 }
 
