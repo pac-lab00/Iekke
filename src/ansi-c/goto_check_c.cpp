@@ -1064,11 +1064,15 @@ void goto_check_ct::integer_overflow_check(
   {
     std::string kind = type.id() == ID_unsignedbv ? "unsigned" : "signed";
 
-    // Signed overflow is undefined behaviour at every width; unsigned
-    // arithmetic wraps and is not checked here. This used to test for 32-bit
-    // signed operations only, so long, long long and short arithmetic got no
-    // overflow check at all.
-    if(type.id() == ID_signedbv)
+    // Signed overflow is undefined behaviour; unsigned arithmetic wraps and is
+    // not checked here. This used to test for 32-bit signed operations only,
+    // so long and long long arithmetic got no overflow check at all.
+    // An operation narrower than int is not checked: C promotes short and char
+    // operands to int, so it cannot overflow. Such an operation only arises
+    // from ++ and --, which goto_convert builds in the type of the operand.
+    if(
+      type.id() == ID_signedbv &&
+      to_signedbv_type(type).get_width() >= config.ansi_c.int_width)
     {
       const binary_exprt &bexpr = to_binary_expr(expr);
       add_guarded_property(

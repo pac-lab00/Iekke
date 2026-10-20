@@ -1,0 +1,14 @@
+CORE
+main.c
+--signed-overflow-check
+^EXIT=10$
+^SIGNAL=0$
+^\[main.overflow.1\] line 10 arithmetic overflow on signed + in i + 1: FAILURE$
+^VERIFICATION FAILED$
+--
+in s [+-] 1
+in c [+-] 1
+^warning: ignoring
+--
+++ and -- on short and signed char work on the operand promoted to int, so
+they cannot overflow; ++ on int can.
