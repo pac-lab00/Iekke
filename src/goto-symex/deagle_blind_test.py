@@ -39,7 +39,9 @@ with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len(open(os.path.join(here, "args")).read().splitlines())
 if mode == "hog":
-    if calls == 1:
+    # The first bound is the reduced program, whose SUCCESSFUL is never kept;
+    # the second is the first bound of the schedule.
+    if calls <= 2:
         print("VERIFICATION SUCCESSFUL")
         sys.exit(0)
     with open(os.path.join(here, "pids"), "a") as f:
