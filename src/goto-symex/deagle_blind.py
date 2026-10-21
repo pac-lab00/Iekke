@@ -101,6 +101,23 @@ SCHEDULE = [
 REDUCED = (4, 2, "--symmetric-instance 2")
 REDUCED_SLICE = 30.0
 
+# An array allocated with a non-constant number of elements n gets a constant
+# number K, under the condition n <= K (--dynamic-array-bound): field
+# sensitivity then splits it into scalars, where an array of symbolic size goes
+# to the array theory whole -- 34x fewer clauses on the per-thread-array
+# family. It cuts the executions that ask for more than K, as the unwinding
+# bound cuts loops, so K climbs with the unwind: a loop over the array is cut
+# there anyway. Field sensitivity splits arrays of up to 64 elements. Not for
+# memory safety: the array has K elements, so an access between n and K would
+# not be out of bounds.
+def array_bound(unwind):
+    return min(max(unwind, 4), 64)
+
+
+# Threads that run the same routine from the same values are interchangeable;
+# "exact" keeps one order of such a pair only where no bound is lost by it.
+SYMMETRY = "--thread-symmetry exact "
+
 if len(sys.argv) < 2 or sys.argv[1] in ("-v", "--version"):
     print("4.1.0")
     sys.exit(0)
@@ -282,8 +299,11 @@ for unwind, rounds, extra in [REDUCED] + [(u, r, "") for u, r in SCHEDULE]:
         break
 
     slice_ = min(left, REDUCED_SLICE if extra else SLICE)
-    cmd = ("./iekke_exe %s %s --unwind %d --rounds %d --por --verbosity 8 --glucose %s"
-           % (program_path, flags, unwind, rounds, extra))
+    bound_flags = SYMMETRY
+    if "valid-memsafety.prp" not in property_path:
+        bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
+    cmd = ("./iekke_exe %s %s --unwind %d --rounds %d --por --verbosity 8 --glucose %s%s"
+           % (program_path, flags, unwind, rounds, bound_flags, extra))
     print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"
           % (unwind, rounds, extra + " " if extra else "", slice_, left))
     # Merged, not concatenated: the verdict is the last line of the run,

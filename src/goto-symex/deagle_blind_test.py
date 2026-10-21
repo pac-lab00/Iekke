@@ -19,6 +19,9 @@
 # and the SUCCESSFUL an earlier bound found is still reported. Before the fix
 # the bound grew until the run's limit killed the whole run from outside,
 # taking that answer with it.
+# Case "flags": every bound passes --thread-symmetry exact, and
+# --dynamic-array-bound min(max(unwind, 4), 64) for every property but memory
+# safety, where an array cut to K elements would hide an out-of-bounds access.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -38,6 +41,9 @@ mode = open(os.path.join(here, "mode")).read().strip()
 with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len(open(os.path.join(here, "args")).read().splitlines())
+if mode == "safe":
+    print("VERIFICATION SUCCESSFUL")
+    sys.exit(0)
 if mode == "hog":
     # The first bound is the reduced program, whose SUCCESSFUL is never kept;
     # the second is the first bound of the schedule.
@@ -78,7 +84,7 @@ def alive(pid):
 
 
 def run(mode, budget, term_after=None, extra=(), env_extra=None,
-        kill_after=None):
+        kill_after=None, prop="no-data-race.prp"):
     d = tempfile.mkdtemp(prefix="deagle_blind_test_")
     tool = os.path.join(d, "iekke_exe")
     with open(tool, "w") as f:
@@ -88,7 +94,7 @@ def run(mode, budget, term_after=None, extra=(), env_extra=None,
         f.write(mode)
     env = dict(os.environ, DEAGLE_BUDGET=str(budget), **(env_extra or {}))
     log = open(os.path.join(d, "wrapper.log"), "w")
-    w = subprocess.Popen([sys.executable, WRAPPER, "no-data-race.prp", "prog.c"]
+    w = subprocess.Popen([sys.executable, WRAPPER, prop, "prog.c"]
                          + list(extra),
                          cwd=d, env=env, stdout=log,
                          stderr=subprocess.STDOUT, text=True)
@@ -182,6 +188,28 @@ elif run.peak >= 600 or last != "SUCCESSFUL" or survivors:
 else:
     print("ok   memory: bound stopped at %d MB of 600, SUCCESSFUL kept"
           % run.peak)
+
+for prop in ("no-data-race.prp", "valid-memsafety.prp"):
+    out, pids, survivors = run("safe", 10, prop=prop)
+    bad = []
+    for a in run.args:
+        w = a.split()
+        unwind = int(w[w.index("--unwind") + 1])
+        want = [] if prop == "valid-memsafety.prp" else \
+            ["--dynamic-array-bound", str(min(max(unwind, 4), 64))]
+        got = w[w.index("--dynamic-array-bound"):][:2] \
+            if "--dynamic-array-bound" in w else []
+        if got != want or "--thread-symmetry exact" not in a:
+            bad.append(a)
+    if len(run.args) < 10:
+        print("FAIL flags %s: only %d bounds ran" % (prop, len(run.args)))
+        ok = False
+    elif bad:
+        print("FAIL flags %s: %d of %d calls wrong, first %r"
+              % (prop, len(bad), len(run.args), bad[0]))
+        ok = False
+    else:
+        print("ok   flags %s: right on all %d calls" % (prop, len(run.args)))
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:
