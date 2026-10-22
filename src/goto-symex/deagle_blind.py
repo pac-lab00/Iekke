@@ -93,8 +93,13 @@ POLL = 0.25
 # --object-bits and return no verdict at all; with the old "stop when the tool
 # refuses" rule that aborted the search before (32,21) was ever tried. The
 # rounds the hand tuning uses -- 7, 11, 13, 21 -- must all be reachable.
+#
+# (4,2) and (8,4) were added after the Huawei challenge tasks: hclhlock needs
+# unwind 4 to check anything (at 2 its setup loop is cut) and answers in 26 s
+# at 2 rounds, where 3 rounds take 213 s; the race in twalock needs 4 rounds
+# and is found at unwind 8 in 7 s, while (16,4) takes 298 s.
 SCHEDULE = [
-    (2, 2), (4, 3), (8, 3), (16, 4), (32, 4), (8, 7), (16, 9),
+    (2, 2), (4, 2), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
     (32, 13), (32, 21), (64, 4), (256, 3), (1024, 3), (4096, 3),
     (16384, 3),
 ]
@@ -137,6 +142,14 @@ SUGGEST_TIMEOUT = 30.0
 def array_bound(unwind):
     return min(max(unwind, 4), 64)
 
+
+# Arrays read byte-wise (through a pointer to an element's member, by memcpy)
+# are answered byte by byte from the writes in schedule order
+# (--array-rf-bytes) instead of carrying the whole array on every access: on
+# twalock (__twa_array[4096] at a computed index) 41M variables become 64k.
+# On by default only together with (8,4) above: alone it made the small
+# bounds of twalock fast and safe, and the stop rule then reported a wrong TRUE.
+ARRAY_RF_BYTES = "--array-rf-bytes "
 
 # Threads that run the same routine from the same values are interchangeable;
 # "exact" keeps one order of such a pair only where no bound is lost by it.
@@ -368,7 +381,7 @@ for unwind, rounds, extra in bounds():
 
     slice_ = min(left, SLICE if not extra else
                  SUGGEST_SLICE if extra.startswith("--unwindset") else REDUCED_SLICE)
-    bound_flags = SYMMETRY
+    bound_flags = SYMMETRY + ARRAY_RF_BYTES
     if "valid-memsafety.prp" not in property_path:
         bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
     cmd = ("./iekke_exe %s %s --unwind %d --rounds %d --por --verbosity 8 --glucose %s%s"

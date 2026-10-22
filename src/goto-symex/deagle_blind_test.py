@@ -239,8 +239,12 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
             ["--dynamic-array-bound", str(min(max(unwind, 4), 64))]
         got = w[w.index("--dynamic-array-bound"):][:2] \
             if "--dynamic-array-bound" in w else []
-        if got != want or "--thread-symmetry exact" not in a:
+        if got != want or "--thread-symmetry exact" not in a or "--array-rf-bytes" not in a:
             bad.append(a)
+    ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
+              for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]
+    if ladder[:5] != [(2, 2), (4, 2), (4, 3), (8, 3), (8, 4)]:
+        bad.append("ladder starts %s" % ladder[:5])
     if len(run.args) < 10:
         print("FAIL flags %s: only %d bounds ran" % (prop, len(run.args)))
         ok = False
