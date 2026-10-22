@@ -22,6 +22,10 @@
 # Case "flags": every bound passes --thread-symmetry exact, and
 # --dynamic-array-bound min(max(unwind, 4), 64) for every property but memory
 # safety, where an array cut to K elements would hide an out-of-bounds access.
+# Case "suggest": the per-loop limits from --unwind-suggest reach the tool as
+# --unwindset (a loop without a suggestion at 3), a FAILED from that step is
+# reported, and a SUCCESSFUL from it is not: with every other bound giving no
+# verdict the answer must stay UNKNOWN.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -40,9 +44,17 @@ here = os.path.dirname(os.path.abspath(__file__))
 mode = open(os.path.join(here, "mode")).read().strip()
 with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
-calls = len(open(os.path.join(here, "args")).read().splitlines())
+calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
+             if "--unwind-suggest" not in l])          # bounds, not the limit request
 if mode == "safe":
     print("VERIFICATION SUCCESSFUL")
+    sys.exit(0)
+if mode.startswith("suggest"):
+    if "--unwind-suggest" in sys.argv:
+        print("Loop main.0:\n  file prog.c line 5\nSuggested unwind limit: 21")
+        print("Loop main.1:\n  file prog.c line 9\nNo suggested unwind limit")
+    elif "--unwindset" in sys.argv:
+        print("VERIFICATION " + ("FAILED" if mode == "suggest_fail" else "SUCCESSFUL"))
     sys.exit(0)
 if mode == "hog":
     # The first bound is the reduced program, whose SUCCESSFUL is never kept;
@@ -193,6 +205,8 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
     out, pids, survivors = run("safe", 10, prop=prop)
     bad = []
     for a in run.args:
+        if "--unwind-suggest" in a:
+            continue
         w = a.split()
         unwind = int(w[w.index("--unwind") + 1])
         want = [] if prop == "valid-memsafety.prp" else \
@@ -210,6 +224,25 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
         ok = False
     else:
         print("ok   flags %s: right on all %d calls" % (prop, len(run.args)))
+
+out, pids, survivors = run("suggest_fail", 20)
+last = out.strip().splitlines()[-1] if out.strip() else ""
+sets = [a for a in run.args if "--unwindset" in a]
+if last != "FAILED" or not sets or "--unwindset main.0:21,main.1:3" not in sets[0]:
+    print("FAIL suggest: last line %r, unwindset calls %r" % (last, sets[:1]))
+    ok = False
+else:
+    print("ok   suggest: per-loop limits reached the tool, its FAILED reported")
+out, pids, survivors = run("suggest_safe", 20)
+last = out.strip().splitlines()[-1] if out.strip() else ""
+if not any("--unwindset" in a for a in run.args):
+    print("FAIL suggest: the suggested limits never reached the tool")
+    ok = False
+elif last != "UNKNOWN":
+    print("FAIL suggest: a SUCCESSFUL from the suggested limits was reported (%r)" % last)
+    ok = False
+else:
+    print("ok   suggest: its SUCCESSFUL was not reported")
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:

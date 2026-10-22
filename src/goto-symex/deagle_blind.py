@@ -101,6 +101,21 @@ SCHEDULE = [
 REDUCED = (4, 2, "--symmetric-instance 2")
 REDUCED_SLICE = 30.0
 
+# Tried next: every loop at the limit the tool suggests for it
+# (--unwind-suggest, Deagle's analysis of the loop's text: counter, bound,
+# step, assumed upper bounds), the others at UNSUGGESTED. One bound for all
+# loops unrolls short loops as far as the longest needs, and symex cannot
+# always see where they exit: on reorder_c11_good-20 Deagle's per-loop limits
+# give 4.9M clauses where --unwind 32 gives 36.8M. The suggestion is a
+# heuristic, not a proof -- a body that also changes the counter makes it too
+# small -- so, as for the reduced program, only a FAILED from this step is
+# believed; a SUCCESSFUL is never reported.
+UNSUGGESTED = 3
+SUGGEST_ROUNDS = 3
+SUGGEST_CAP = 1024
+SUGGEST_SLICE = 60.0
+SUGGEST_TIMEOUT = 30.0
+
 # An array allocated with a non-constant number of elements n gets a constant
 # number K, under the condition n <= K (--dynamic-array-bound): field
 # sensitivity then splits it into scalars, where an array of symbolic size goes
@@ -201,6 +216,32 @@ def kill_bound(proc):
 current = None
 
 
+def loop_bounds(left):
+    """[(loop id, suggested limit or None)] from --unwind-suggest; [] if none."""
+    global current
+    cmd = "./iekke_exe %s %s --unwind-suggest" % (program_path, flags)
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
+    try:
+        out, _ = current.communicate(timeout=max(0.01, min(SUGGEST_TIMEOUT, left)))
+    except subprocess.TimeoutExpired:
+        kill_bound(current)
+        current.communicate()
+        out = ""
+    current = None
+    loops = []
+    for line in out.splitlines():
+        m = re.match(r"Loop (\S+):$", line.strip())
+        if m:
+            loops.append([m.group(1), None])
+            continue
+        m = re.match(r"Suggested unwind limit: (\d+)$", line.strip())
+        if m and loops:
+            loops[-1][1] = int(m.group(1))
+    return loops
+
+
 def on_signal(signum, frame):
     # The bound's group is no longer ours, so a signal that ends the wrapper
     # would not reach it. Pass it on before going.
@@ -293,12 +334,28 @@ print("memory cap per bound: %s"
 started = time.time()
 bounded_safe = None
 
-for unwind, rounds, extra in [REDUCED] + [(u, r, "") for u, r in SCHEDULE]:
+def bounds():
+    """The bounds in the order they are tried. The loop limits are asked for
+    only once the reduced program has had its try, so that a slow suggestion
+    does not delay the first bound."""
+    yield REDUCED
+    loops = loop_bounds(BUDGET - (time.time() - started))
+    if any(limit for _, limit in loops):
+        unwindset = ",".join("%s:%d" % (loop, min(limit or UNSUGGESTED, SUGGEST_CAP))
+                             for loop, limit in loops)
+        print("suggested loop limits: %s" % unwindset)
+        yield (UNSUGGESTED, SUGGEST_ROUNDS, "--unwindset " + unwindset)
+    for u, r in SCHEDULE:
+        yield (u, r, "")
+
+
+for unwind, rounds, extra in bounds():
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE:
         break
 
-    slice_ = min(left, REDUCED_SLICE if extra else SLICE)
+    slice_ = min(left, SLICE if not extra else
+                 SUGGEST_SLICE if extra.startswith("--unwindset") else REDUCED_SLICE)
     bound_flags = SYMMETRY
     if "valid-memsafety.prp" not in property_path:
         bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
