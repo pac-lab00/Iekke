@@ -1445,6 +1445,8 @@ void symex_target_equationt::build_with_map(std::map<std::string, exprt>& with_m
 }
 
 #include <util/symbol.h>
+#include <util/c_types.h>
+#include <algorithm>
 #include <util/format_type.h>
 #include <util/pointer_expr.h>
 
@@ -1457,18 +1459,77 @@ bool type_is_atomic(const typet& type)
   if(type.id() == ID_pointer) // todo: to be added later
     if(type_is_atomic(to_pointer_type(type).base_type()))
       return true;
+  // an array whose elements are _Atomic, accessed whole (at an index the
+  // encoding does not resolve to one element)
+  if(type.id() == ID_array)
+    return type_is_atomic(to_array_type(type).element_type());
+  return false;
+}
+
+/// Is the part of an object that `name` names _Atomic? Field sensitivity
+/// names the parts of an object after the object: a[[1]] is element 1 of a,
+/// s..f is member f of s, and the two combine (s..f[[2]]). No symbol carries
+/// such a name, so look up the object and walk its type down to the part;
+/// the part is atomic if its own type or the type of anything enclosing it
+/// is. False if a step cannot be followed.
+static bool part_is_atomic(
+  const namespacet &ns,
+  const typet &object_type,
+  const std::string &name,
+  std::size_t pos)
+{
+  const typet *type = &object_type;
+  while(pos < name.size())
+  {
+    const typet &followed =
+      type->id() == ID_struct_tag ? ns.follow_tag(to_struct_tag_type(*type))
+      : type->id() == ID_union_tag ? ns.follow_tag(to_union_tag_type(*type))
+                                   : *type;
+    if(name.compare(pos, 2, "[[") == 0)
+    {
+      const std::size_t end = name.find("]]", pos);
+      if(end == std::string::npos || followed.id() != ID_array)
+        return false;
+      type = &to_array_type(followed).element_type();
+      pos = end + 2;
+    }
+    else if(name.compare(pos, 2, "..") == 0)
+    {
+      const std::size_t next = std::min(name.find("[[", pos + 2), name.find("..", pos + 2));
+      if(followed.id() != ID_struct && followed.id() != ID_union)
+        return false;
+      const auto &component = to_struct_union_type(followed).get_component(
+        name.substr(pos + 2, next == std::string::npos ? std::string::npos : next - pos - 2));
+      if(component.is_nil())
+        return false;
+      type = &component.type();
+      pos = next == std::string::npos ? name.size() : next;
+    }
+    else
+      return false;
+    if(type_is_atomic(*type))
+      return true;
+  }
   return false;
 }
 
 bool symex_target_equationt::symbol_is_atomic(const namespacet& ns, irep_idt symbol_name) {
-  if(atomic_dynamic_objects.find(id2string(symbol_name)) != atomic_dynamic_objects.end())
+  const std::string name = id2string(symbol_name);
+  const std::size_t part = std::min(name.find("[["), name.find(".."));
+  const std::string object = name.substr(0, part);
+
+  const symbolt *symbol_ptr = nullptr;
+  if(ns.lookup(object, symbol_ptr)) // true if not found
+    symbol_ptr = nullptr;
+
+  if(atomic_dynamic_objects.find(object) != atomic_dynamic_objects.end())
     return true;
-
-  const symbolt *symbol_ptr;
-  if(ns.lookup(symbol_name, symbol_ptr)) // true if not found
+  if(symbol_ptr == nullptr)
     return false;
-
-  return type_is_atomic(symbol_ptr->type);
+  if(type_is_atomic(symbol_ptr->type))
+    return true;
+  return part != std::string::npos &&
+         part_is_atomic(ns, symbol_ptr->type, name, part);
 }
 
 void symex_target_equationt::build_datarace(const namespacet& ns, bool filter)

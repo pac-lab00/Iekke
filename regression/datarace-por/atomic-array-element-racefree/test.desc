@@ -1,0 +1,10 @@
+CORE
+main.c
+--datarace --por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Elements of an _Atomic array are atomic: field sensitivity names them a[[1]], which no symbol carries; the race encoding must still see the qualifier.

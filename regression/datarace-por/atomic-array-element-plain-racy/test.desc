@@ -1,0 +1,10 @@
+CORE
+main.c
+--datarace --por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Control: the same accesses to a plain array are a race.
