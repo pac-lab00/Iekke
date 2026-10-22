@@ -28,6 +28,10 @@
 # verdict the answer must stay UNKNOWN.
 # Case "stop": once a SUCCESSFUL is held, the search ends at DEAGLE_STOP
 # seconds, cutting the running bound, and reports it; without one it goes on.
+# Case "official": the output read the way SV-COMP's tool-info module reads
+# it (TRUE if "SUCCESSFUL" is on any line, else FALSE if "FAILED" is) must
+# give the wrapper's answer: a bug found after a safe bound is FALSE, and an
+# answer of UNKNOWN is not TRUE.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -50,6 +54,17 @@ calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
 if mode == "safe":
     print("VERIFICATION SUCCESSFUL")
+    sys.exit(0)
+if mode == "late_bug":
+    # no verdict for the reduced program, safe at the first bound, the bug at the second
+    if "--unwind-suggest" in sys.argv or calls == 1:
+        sys.exit(0)
+    print("VERIFICATION SUCCESSFUL" if calls == 2 else "VERIFICATION FAILED")
+    sys.exit(0 if calls == 2 else 10)
+if mode == "safe_then_nothing":
+    # safe only for the reduced program (never reported), no verdict otherwise
+    if calls == 1:
+        print("VERIFICATION SUCCESSFUL")
     sys.exit(0)
 if mode == "stop":
     if "--unwind-suggest" in sys.argv or calls == 1:
@@ -264,6 +279,30 @@ if last != "SUCCESSFUL" or took > 20 or survivors or "stop rule" not in out:
     ok = False
 else:
     print("ok   stop: SUCCESSFUL reported after %.0fs of a 60s budget, nothing left running" % took)
+
+def official(out, rc):
+    """benchexec/tools/iekke.py determine_result, as SV-COMP runs it"""
+    if any("SUCCESSFUL" in l for l in out.splitlines()):
+        return "true"
+    if any("FAILED" in l for l in out.splitlines()):
+        return "false"
+    return "unknown" if rc == 1 else "error"
+
+for mode, want in (("late_bug", "false"), ("safe_then_nothing", "unknown")):
+    d = tempfile.mkdtemp(prefix="deagle_blind_test_")
+    with open(os.path.join(d, "iekke_exe"), "w") as f:
+        f.write(FAKE_TOOL)
+    os.chmod(os.path.join(d, "iekke_exe"), 0o755)
+    with open(os.path.join(d, "mode"), "w") as f:
+        f.write(mode)
+    p = subprocess.run([sys.executable, WRAPPER, "no-data-race.prp", "prog.c"], cwd=d,
+                       env=dict(os.environ, DEAGLE_BUDGET="20"), capture_output=True, text=True)
+    got = official(p.stdout + p.stderr, p.returncode)
+    if got != want:
+        print("FAIL official %s: SV-COMP would read %r, the answer is %r" % (mode, got, want))
+        ok = False
+    else:
+        print("ok   official %s: read as %r" % (mode, got))
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:

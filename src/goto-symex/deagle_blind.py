@@ -363,7 +363,7 @@ for unwind, rounds, extra in bounds():
     if left <= MIN_SLICE:
         break
     if bounded_safe is not None and time.time() - started >= STOP_AFTER:
-        print("stop rule: a SUCCESSFUL is held and %.0fs have passed" % STOP_AFTER)
+        print("stop rule: a safe answer is held and %.0fs have passed" % STOP_AFTER)
         break
 
     slice_ = min(left, SLICE if not extra else
@@ -413,7 +413,14 @@ for unwind, rounds, extra in bounds():
         continue
 
     verdict = verdict_of(out)
-    print("  -> %s" % verdict)
+    # Not the verdict word itself: the tool-info module of BenchExec that
+    # SV-COMP uses (benchexec/tools/iekke.py) answers TRUE if "SUCCESSFUL"
+    # appears on ANY line of the output, before it looks for "FAILED". A
+    # progress line "-> SUCCESSFUL" ahead of a bug found at a later bound would
+    # turn that bug into a wrong TRUE (-32), and an UNKNOWN into a TRUE. Only
+    # the last line of the output may carry a verdict word.
+    print("  -> %s" % {"SUCCESSFUL": "safe at this bound",
+                       "FAILED": "violation at this bound"}.get(verdict, "no verdict"))
 
     if verdict == "FAILED":
         print(out)
