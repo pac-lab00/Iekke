@@ -26,6 +26,8 @@
 # --unwindset (a loop without a suggestion at 3), a FAILED from that step is
 # reported, and a SUCCESSFUL from it is not: with every other bound giving no
 # verdict the answer must stay UNKNOWN.
+# Case "stop": once a SUCCESSFUL is held, the search ends at DEAGLE_STOP
+# seconds, cutting the running bound, and reports it; without one it goes on.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -49,6 +51,15 @@ calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
 if mode == "safe":
     print("VERIFICATION SUCCESSFUL")
     sys.exit(0)
+if mode == "stop":
+    if "--unwind-suggest" in sys.argv or calls == 1:
+        sys.exit(0)                        # no limits suggested; reduced program: no verdict
+    if calls == 2:                         # the first bound of the schedule
+        print("VERIFICATION SUCCESSFUL")
+        sys.exit(0)
+    with open(os.path.join(here, "pids"), "a") as f:
+        f.write("%d\n" % os.getpid())
+    time.sleep(120)
 if mode.startswith("suggest"):
     if "--unwind-suggest" in sys.argv:
         print("Loop main.0:\n  file prog.c line 5\nSuggested unwind limit: 21")
@@ -243,6 +254,16 @@ elif last != "UNKNOWN":
     ok = False
 else:
     print("ok   suggest: its SUCCESSFUL was not reported")
+
+t0 = time.time()
+out, pids, survivors = run("stop", 60, env_extra={"DEAGLE_STOP": "5"})
+took = time.time() - t0
+last = out.strip().splitlines()[-1] if out.strip() else ""
+if last != "SUCCESSFUL" or took > 20 or survivors or "stop rule" not in out:
+    print("FAIL stop: last line %r after %.0fs, survivors %s" % (last, took, survivors))
+    ok = False
+else:
+    print("ok   stop: SUCCESSFUL reported after %.0fs of a 60s budget, nothing left running" % took)
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:

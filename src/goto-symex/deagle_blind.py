@@ -64,6 +64,15 @@ sys.stdout.reconfigure(line_buffering=True)
 # and a bounded SUCCESSFUL is only reported once it is spent, so a budget of
 # 900 reports it at about 900 s of CPU -- which SV-COMP scores as a timeout.
 BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
+# Once a bounded SUCCESSFUL is held, the search stops at STOP_AFTER seconds:
+# no further bound is started, and a running one is cut. Measured on the
+# 21 October cluster run (3176 tasks, the bound trails replayed, the replay
+# agreeing with the run on every task): with the stop at 360 s or later no
+# answer changes, at 340 s the bug in triangular-longest-2 (found by the
+# 21-round bound at about 350 s on the ARM nodes) is lost. 400 s keeps a
+# margin and cuts a third of the CPU time, nearly all of it spent on safe
+# tasks that the old rule kept refuting until the budget was gone.
+STOP_AFTER = float(os.environ.get("DEAGLE_STOP", "400"))
 MIN_SLICE = 3.0
 # No single bound may eat the whole budget. The schedule deliberately mixes two
 # regimes -- deep unwind at few rounds, and deep rounds at modest unwind -- and
@@ -353,6 +362,9 @@ for unwind, rounds, extra in bounds():
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE:
         break
+    if bounded_safe is not None and time.time() - started >= STOP_AFTER:
+        print("stop rule: a SUCCESSFUL is held and %.0fs have passed" % STOP_AFTER)
+        break
 
     slice_ = min(left, SLICE if not extra else
                  SUGGEST_SLICE if extra.startswith("--unwindset") else REDUCED_SLICE)
@@ -370,6 +382,7 @@ for unwind, rounds, extra in bounds():
                                stderr=subprocess.STDOUT, text=True,
                                errors="replace", start_new_session=True)
     deadline = time.time() + slice_
+    stop_at = started + STOP_AFTER if bounded_safe is not None else float("inf")
     out = None
     stop = None
     while out is None:
@@ -378,7 +391,9 @@ for unwind, rounds, extra in bounds():
             out, _ = current.communicate(
                 timeout=max(0.01, min(POLL, deadline - time.time())))
         except subprocess.TimeoutExpired:
-            if time.time() >= deadline:
+            if time.time() >= stop_at:
+                stop = "stop rule"
+            elif time.time() >= deadline:
                 stop = "timeout"
             elif CAP and group_rss(current.pid) > CAP:
                 stop = "memory"
@@ -393,6 +408,8 @@ for unwind, rounds, extra in bounds():
     current = None
     if stop:
         print("  -> %s" % stop)
+        if stop == "stop rule":
+            break
         continue
 
     verdict = verdict_of(out)
