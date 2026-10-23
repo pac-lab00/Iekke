@@ -151,9 +151,11 @@ def array_bound(unwind):
 # bounds of twalock fast and safe, and the stop rule then reported a wrong TRUE.
 ARRAY_RF_BYTES = "--array-rf-bytes "
 
-# Threads that run the same routine from the same values are interchangeable;
-# "exact" keeps one order of such a pair only where no bound is lost by it.
-SYMMETRY = "--thread-symmetry exact "
+# --thread-symmetry is NOT passed. It was, from 2026-10-21, without a corpus
+# measurement; on unwind3-100 at (256,3) it made the solver 8x slower (42 s ->
+# 344 s, past the 290 s slice), so the bug was no longer found and the stop
+# rule reported a wrong TRUE. On 176 tasks measured earlier it changed no
+# verdict.
 
 if len(sys.argv) < 2 or sys.argv[1] in ("-v", "--version"):
     print("4.1.0")
@@ -381,7 +383,7 @@ for unwind, rounds, extra in bounds():
 
     slice_ = min(left, SLICE if not extra else
                  SUGGEST_SLICE if extra.startswith("--unwindset") else REDUCED_SLICE)
-    bound_flags = SYMMETRY + ARRAY_RF_BYTES
+    bound_flags = ARRAY_RF_BYTES
     if "valid-memsafety.prp" not in property_path:
         bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
     cmd = ("./iekke_exe %s %s --unwind %d --rounds %d --por --verbosity 8 --glucose %s%s"

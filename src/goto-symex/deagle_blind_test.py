@@ -19,7 +19,7 @@
 # and the SUCCESSFUL an earlier bound found is still reported. Before the fix
 # the bound grew until the run's limit killed the whole run from outside,
 # taking that answer with it.
-# Case "flags": every bound passes --thread-symmetry exact, and
+# Case "flags": no bound passes --thread-symmetry (measured slowdown), and
 # --dynamic-array-bound min(max(unwind, 4), 64) for every property but memory
 # safety, where an array cut to K elements would hide an out-of-bounds access.
 # Case "suggest": the per-loop limits from --unwind-suggest reach the tool as
@@ -239,7 +239,7 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
             ["--dynamic-array-bound", str(min(max(unwind, 4), 64))]
         got = w[w.index("--dynamic-array-bound"):][:2] \
             if "--dynamic-array-bound" in w else []
-        if got != want or "--thread-symmetry exact" not in a or "--array-rf-bytes" not in a:
+        if got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a:
             bad.append(a)
     ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
               for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]
