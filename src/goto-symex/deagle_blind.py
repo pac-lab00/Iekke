@@ -94,12 +94,15 @@ POLL = 0.25
 # refuses" rule that aborted the search before (32,21) was ever tried. The
 # rounds the hand tuning uses -- 7, 11, 13, 21 -- must all be reachable.
 #
-# (4,2) and (8,4) were added after the Huawei challenge tasks: hclhlock needs
-# unwind 4 to check anything (at 2 its setup loop is cut) and answers in 26 s
-# at 2 rounds, where 3 rounds take 213 s; the race in twalock needs 4 rounds
-# and is found at unwind 8 in 7 s, while (16,4) takes 298 s.
+# (8,4) was added after the Huawei challenge tasks: the race in twalock needs
+# 4 rounds and is found at unwind 8 in 7 s, while (16,4) takes 298 s. A (4,2)
+# added at the same time was taken out again: on 128 tasks rerun with and
+# without it, it changed one answer, safestack_relacy (unreach-call), from
+# no answer to a wrong TRUE -- a quick bounded SUCCESSFUL, its bug needing
+# (3,4) in over 300 s -- and hclhlock, which it had been added for, is answered
+# at (4,3) in time once --thread-symmetry is off.
 SCHEDULE = [
-    (2, 2), (4, 2), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
+    (2, 2), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
     (32, 13), (32, 21), (64, 4), (256, 3), (1024, 3), (4096, 3),
     (16384, 3),
 ]
