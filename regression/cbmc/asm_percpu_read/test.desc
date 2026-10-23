@@ -1,0 +1,10 @@
+CORE
+main.c
+--64
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+get_current()'s per-CPU read loads current_task: the write through it reaches t0. The asm used to be refused (pointer output).

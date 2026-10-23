@@ -1,0 +1,10 @@
+CORE
+main.c
+--64
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Control: the value flows through the asm, so a wrong expectation fails.

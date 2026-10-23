@@ -238,11 +238,52 @@ bool remove_asmt::process_instruction(
 ///
 /// \param code: The inline assembly code statement to translate
 /// \param dest: The goto program to append the new instructions to
+/// Is this the template of a per-CPU read: one `mov` (any width suffix) from
+/// `%gs:` or `%fs:` at input operand 1 into output operand 0? GCC templates
+/// write the register `%%gs`; both spellings are accepted.
+static bool is_percpu_read(const std::string &text)
+{
+  std::string t;
+  for(char c : text)
+    if(c != ' ' && c != '\t' && c != '\n')
+      t += c;
+  for(const char *mov : {"mov", "movb", "movw", "movl", "movq"})
+    for(const char *seg : {"%%gs:", "%%fs:", "%gs:", "%fs:"})
+      if(t == std::string(mov) + seg + "%P1,%0")
+        return true;
+  return false;
+}
+
 bool remove_asmt::process_instruction_gcc(
   const code_asm_gcct &code,
   goto_programt &dest)
 {
   const irep_idt &i_str = to_string_constant(code.asm_text()).get_value();
+
+  // Linux's per-CPU read, this_cpu_read and get_current():
+  //   asm("movq %%gs:%P1,%0" : "=r"(ret) : "p"(&current_task));
+  // loads the per-CPU variable whose address is the only input. One CPU is
+  // modelled, so the output is that variable. Without this the output, a
+  // pointer for get_current(), could only be havocked -- which loses what it
+  // points to -- and the whole file was refused below.
+  if(
+    is_percpu_read(id2string(i_str)) && code.outputs().operands().size() == 1 &&
+    code.inputs().operands().size() == 1 &&
+    code.outputs().operands()[0].operands().size() == 2 &&
+    code.inputs().operands()[0].operands().size() == 2)
+  {
+    const exprt &out = to_binary_expr(code.outputs().operands()[0]).op1();
+    const exprt &in = to_binary_expr(code.inputs().operands()[0]).op1();
+    if(in.type().id() == ID_pointer)
+    {
+      dest.add(goto_programt::make_assignment(
+        code_assignt{
+          out,
+          typecast_exprt::conditional_cast(dereference_exprt{in}, out.type())},
+        code.source_location()));
+      return true;
+    }
+  }
 
   std::istringstream str(id2string(i_str));
   assembler_parser.clear();
