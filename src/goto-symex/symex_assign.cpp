@@ -192,7 +192,27 @@ void symex_assignt::assign_non_struct_symbol(
       guard.empty() ? static_cast<exprt>(true_exprt{})
                     : state.rename(conjunction(guard), ns).get();
     exprt l2_where = state.rename(rhs.op1(), ns).get();
-    exprt l2_value = state.rename(rhs.op2(), ns).get();
+    // The stored value of `a[i].m = v` is `with(a[i], m, v)`. Its base a[i]
+    // is not a read the program makes -- the other members are carried back
+    // -- and read before the section it could be stale by the time of the
+    // store: the members another thread stored in between were lost
+    // (regression/cbmc-concurrency/lost_update_struct_member_large_array).
+    // That base is renamed inside the section, with the old value; v stays
+    // outside, so `a[i].m = a[i].m + 1` keeps its real lost update.
+    const bool member_store =
+      rhs.op2().id() == ID_with && rhs.op2().operands().size() == 3 &&
+      to_with_expr(rhs.op2()).where().id() == ID_member_name &&
+      to_with_expr(rhs.op2()).old().id() == ID_index &&
+      to_index_expr(to_with_expr(rhs.op2()).old()).array() == rhs.op0();
+    exprt l2_value = rhs.op2();
+    if(member_store)
+    {
+      with_exprt &member_with = to_with_expr(l2_value);
+      member_with.new_value() =
+        state.rename(member_with.new_value(), ns).get();
+    }
+    else
+      l2_value = state.rename(rhs.op2(), ns).get();
     state.atomic_section_id = ++monolithic_store_section;
     state.read_in_atomic_section.clear();
     state.written_in_atomic_section.clear();
@@ -204,6 +224,11 @@ void symex_assignt::assign_non_struct_symbol(
       const goto_symex_statet::shared_read_condition_scopet read_cond{
         state, l2_cond};
       l2_old = state.rename(rhs.op0(), ns).get();
+      if(member_store)
+      {
+        with_exprt &member_with = to_with_expr(l2_value);
+        member_with.old() = state.rename(member_with.old(), ns).get();
+      }
     }
     exprt l2_new = rhs;
     l2_new.op0() = l2_old;

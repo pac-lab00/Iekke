@@ -275,7 +275,35 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
     // do this recursively
     // szh: for assignments such as arr#2 = with(arr#1, ...) or arr#2 = update_byte_little_endian(arr#1, ...),
     // we make arr#1 closely prior to arr#2 to guarantee atomicity.
-    if(expr.id() == ID_with || expr.id() == ID_byte_update_little_endian)
+    if(
+      level == L2 && expr.id() == ID_with && expr.operands().size() == 3 &&
+      expr.op2().id() == ID_with && expr.op2().operands().size() == 3 &&
+      to_with_expr(expr.op2()).where().id() == ID_member_name &&
+      to_with_expr(expr.op2()).old().id() == ID_index)
+    {
+      // A store to one member at an undecided element, `a[i].m = v`:
+      // with(a, i, with(a[i], m, v)). The program reads nothing of a[i]: m is
+      // overwritten and the other members are carried back unpublished (see
+      // member_stored in field_sensitivity.cpp). Renamed with the plain walk,
+      // a[i] emitted a read event for every member of the element, so a
+      // thread storing a[i].f was paired with one storing a[j].g as a race
+      // (regression/cbmc-concurrency/datarace_struct_member_symbolic_index).
+      // Rename it with its read events switched off; the values still flow
+      // into this thread's own view.
+      with_exprt &with = to_with_expr(expr);
+      with_exprt &member_with = to_with_expr(with.new_value());
+      with.old() = rename<level>(std::move(with.old()), ns).get();
+      with.where() = rename<level>(std::move(with.where()), ns).get();
+      member_with.new_value() =
+        rename<level>(std::move(member_with.new_value()), ns).get();
+      {
+        const shared_read_condition_scopet read_cond{*this, false_exprt{}};
+        member_with.old() =
+          rename<level>(std::move(member_with.old()), ns).get();
+      }
+      rename<level>(member_with.type(), irep_idt(), ns);
+    }
+    else if(expr.id() == ID_with || expr.id() == ID_byte_update_little_endian)
     {
       Forall_operands_r(it, expr)
         *it = rename<level>(std::move(*it), ns).get();

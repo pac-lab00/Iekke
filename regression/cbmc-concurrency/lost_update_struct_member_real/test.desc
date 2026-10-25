@@ -1,0 +1,9 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+The other direction: two unlocked increments of the same member at a computed index are a real lost update and must still be found.

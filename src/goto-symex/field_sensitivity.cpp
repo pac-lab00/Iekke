@@ -398,6 +398,50 @@ static optionalt<exprt> element_written(
   return {};
 }
 
+/// For a store `a[i].m = v` at an undecided i, which symbolic execution
+/// leaves as `with(a, i, with(index(a, i), m, v))` with a the object's old
+/// value: the member m. Only that member of element k is written; the
+/// others carry back the values this thread read, and publishing them would
+/// reset whatever another thread stored there since (a lost update between
+/// two members of one element). Nullopt for any other shape, nested members
+/// included, which keep the element-wide condition. The `if` a store through
+/// a pointer with more than one target leaves is seen through as in
+/// element_written.
+static optionalt<irep_idt>
+member_stored(const exprt &rhs, const irep_idt &object)
+{
+  if(rhs.id() == ID_if)
+  {
+    const if_exprt &ite = to_if_expr(rhs);
+    const auto own = [&object](const exprt &e) {
+      return is_ssa_expr(e) && !object.empty() &&
+             to_ssa_expr(e).get_l1_object_identifier() == object;
+    };
+    if(own(ite.false_case()))
+      return member_stored(ite.true_case(), object);
+    if(own(ite.true_case()))
+      return member_stored(ite.false_case(), object);
+    return {};
+  }
+  if(rhs.id() != ID_with || rhs.operands().size() != 3)
+    return {};
+  const with_exprt &with = to_with_expr(rhs);
+  if(with.where().is_constant())
+    return {};
+  // As in element_written, the base is the array's old value -- the object's
+  // symbol, or its leaves expanded -- unless it is itself a store.
+  if(with.old().id() == ID_with || with.old().id() == ID_if)
+    return {};
+  const exprt &element = with.new_value();
+  if(
+    element.id() != ID_with || element.operands().size() != 3 ||
+    to_with_expr(element).where().id() != ID_member_name)
+  {
+    return {};
+  }
+  return to_with_expr(element).where().get(ID_component_name);
+}
+
 void field_sensitivityt::field_assignments_rec(
   const namespacet &ns,
   goto_symex_statet &state,
@@ -526,6 +570,44 @@ void field_sensitivityt::field_assignments_rec(
       const auto written = element_written(ssa_rhs, store_object, i);
       const exprt element_cond =
         written.has_value() ? *written : static_cast<exprt>(true_exprt{});
+
+      // A store to one member of the element: only that member is published.
+      const auto member = written.has_value()
+                            ? member_stored(ssa_rhs, store_object)
+                            : optionalt<irep_idt>{};
+      const typet &element_type = ns.follow(type->element_type());
+      if(
+        member.has_value() && element_type.id() == ID_struct &&
+        index_lhs.id() == ID_struct &&
+        index_lhs.operands().size() ==
+          to_struct_type(element_type).components().size())
+      {
+        const struct_typet &st = to_struct_type(element_type);
+        exprt::operandst::const_iterator m_it = index_lhs.operands().begin();
+        for(const auto &comp : st.components())
+        {
+          const exprt member_rhs = simplify_opt(
+            member_exprt{index_rhs, comp.get_name(), comp.type()}, ns);
+          const auto at = member_offset(st, comp.get_name(), ns);
+          const goto_symex_statet::shared_write_condition_scopet write_cond{
+            state,
+            comp.get_name() == *member ? element_cond
+                                       : static_cast<exprt>(false_exprt{})};
+          field_assignments_rec(
+            ns,
+            state,
+            *m_it,
+            member_rhs,
+            target,
+            allow_pointer_unsoundness,
+            lo >= 0 && element_size.has_value() && at.has_value()
+              ? lo + *element_size * i + *at
+              : mp_integer{-1});
+          ++m_it;
+        }
+        ++fs_it;
+        continue;
+      }
 
       {
         const goto_symex_statet::shared_write_condition_scopet write_cond{
