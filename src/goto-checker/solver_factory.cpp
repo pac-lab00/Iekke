@@ -257,6 +257,8 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_minisat()
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_ALL;
   else if(options.get_option("arrays-uf") == "auto")
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_AUTO;
+  bv_pointers->constant_array_oob_nondet =
+    options.get_bool_option("constant-array-oob-nondet");
 
   set_decision_procedure_time_limit(*bv_pointers);
 
@@ -378,6 +380,8 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_ALL;
   else if(options.get_option("arrays-uf") == "auto")
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_AUTO;
+  bv_pointers->constant_array_oob_nondet =
+    options.get_bool_option("constant-array-oob-nondet");
 
   set_decision_procedure_time_limit(*bv_pointers);
   solver->set_decision_procedure(std::move(bv_pointers));

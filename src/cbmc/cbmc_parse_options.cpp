@@ -493,6 +493,14 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("slice-formula"))
     options.set_option("slice-formula", true);
 
+  // Reads of a constant array out of its bounds are left unconstrained and
+  // no longer tied to each other, which drops their Ackermann pairs (on the
+  // adutux driver, 4.1M SAT variables for a 7-element table). Only undefined
+  // behaviour gains executions, so a SUCCESSFUL stays sound and a FAILED may
+  // be spurious: the wrapper confirms it without the option.
+  if(cmdline.isset("constant-array-oob-nondet"))
+    options.set_option("constant-array-oob-nondet", true);
+
   if(cmdline.isset("arrays-uf-always"))
     options.set_option("arrays-uf", "always");
   else if(cmdline.isset("arrays-uf-never"))

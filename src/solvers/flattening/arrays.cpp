@@ -485,6 +485,9 @@ void arrayst::add_array_Ackermann_constraints()
     if(defined.count(i) != 0)
       continue;
 
+    if(constant_array_oob_nondet && arrays[i].id() == ID_array)
+      continue;
+
     const index_sett &index_set=index_map[arrays.find_number(i)];
 
 #ifdef DEBUG

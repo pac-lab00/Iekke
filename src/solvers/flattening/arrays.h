@@ -52,6 +52,11 @@ public:
 
   literalt record_array_equality(const equal_exprt &expr);
 
+  /// No Ackermann pairs for constant arrays: their in-bounds elements are
+  /// fixed anyway, so this only lets two out-of-bounds reads at the same
+  /// index differ (--constant-array-oob-nondet).
+  bool constant_array_oob_nondet = false;
+
   /// Record that the array equality at position \p first of the list of
   /// array equalities was asserted unconditionally, so that it defines its
   /// left-hand side \p lhs.
