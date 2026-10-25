@@ -53,7 +53,6 @@ import re
 import signal
 import subprocess
 import sys
-import threading
 import time
 
 # Line by line, not in blocks. Under BenchExec stdout is a file, and a run
@@ -270,28 +269,11 @@ def loop_bounds(left):
     return loops
 
 
-# Each bound of the ladder runs twice, in parallel on the cores SV-COMP gives a
-# run: with POR and without. Neither dominates. POR finds the bugs that need
-# many rounds (fib_unsafe, triangular) far sooner; on the lock-free programs it
-# is what blocks the search: elimination_backoff_stack (reachability) is found
-# in 193 s without it and not within 900 s with it. Measured on ciuccio on 58
-# tasks (the Huawei set and the slow bugs), each copy on its own core: one
-# answer gained, none lost. Both copies encode the same bound, so a FAILED
-# from either is a real counterexample and a SUCCESSFUL from either is the same
-# bounded answer; whichever comes first is taken and the other is stopped.
-# Two copies share the memory bus: on fib_unsafe-10/11/12 each runs 8-10%
-# slower than alone.
-COPIES = ["--por", "--no-por"]
-running = []    # the copies of the bound in progress
-
-
 def on_signal(signum, frame):
     # The bound's group is no longer ours, so a signal that ends the wrapper
     # would not reach it. Pass it on before going.
     if current is not None:
         kill_bound(current)
-    for p in running:
-        kill_bound(p)
     sys.exit(128 + signum)
 
 
@@ -411,81 +393,37 @@ for unwind, rounds, extra in bounds():
            % (program_path, flags, unwind, rounds, bound_flags, extra))
     print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"
           % (unwind, rounds, extra + " " if extra else "", slice_, left))
+    # Merged, not concatenated: the verdict is the last line of the run,
+    # and stdout + stderr glued end to end puts every warning after it, so
+    # the verdict stops being last and every run reads as "no verdict".
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
     deadline = time.time() + slice_
     stop_at = started + STOP_AFTER if bounded_safe is not None else float("inf")
-    # The reduced program and the per-loop limits are short bug-finding
-    # steps; they run with POR only.
-    copies = COPIES if not extra else COPIES[:1]
-    outputs = {}
-
-    def read(k, p):
-        outputs[k] = p.communicate()[0]
-
-    readers = []
-    running = []
-    for k, por in enumerate(copies):
-        c = cmd.replace(" --por ", " %s " % por)
-        if k > 0:
-            c = c.replace("error-witness.graphml", "error-witness-%d.graphml" % k)
-        # Merged, not concatenated: the verdict is the last line of the run,
-        # and stdout + stderr glued end to end puts every warning after it, so
-        # the verdict stops being last and every run reads as "no verdict".
-        p = subprocess.Popen(c, shell=True, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True,
-                             errors="replace", start_new_session=True)
-        running.append(p)
-        t = threading.Thread(target=read, args=(k, p), daemon=True)
-        t.start()
-        readers.append(t)
-    winner = None
+    out = None
     stop = None
-    while True:
-        time.sleep(POLL)
-        done = dict(outputs)
-        failed = [k for k in sorted(done) if verdict_of(done[k]) == "FAILED"]
-        safe = [k for k in sorted(done) if verdict_of(done[k]) == "SUCCESSFUL"]
-        if failed or safe:
-            winner = (failed or safe)[0]
-            break
-        if len(done) == len(copies):
-            winner = 0                  # every copy ended without a verdict
-            break
-        if time.time() >= stop_at:
-            stop = "stop rule"
-        elif time.time() >= deadline:
-            stop = "timeout"
-        elif CAP:
-            alive = [p for p in running if p.poll() is None]
-            if sum(group_rss(p.pid) for p in alive) > CAP:
-                if len(alive) > 1:
-                    # Over the limit together: the copy using more memory
-                    # gives way and the other goes on alone.
-                    kill_bound(max(alive, key=lambda p: group_rss(p.pid)))
-                else:
-                    stop = "memory"
-        if stop:
-            # Out of reach at this bound -- but not necessarily at the next
-            # one, which may be cheaper on the axis that matters for this
-            # program. Keep going; the budget check at the top of the loop
-            # ends the search.
-            break
-    for p in running:
-        kill_bound(p)
-    for t in readers:
-        t.join(timeout=5)
-    running = []
-    out = outputs.get(winner, "")
-    if winner:
-        print("  (answered by the copy with %s)" % copies[winner])
+    while out is None:
         try:
-            os.replace("error-witness-%d.graphml" % winner, "error-witness.graphml")
-        except OSError:
-            pass
-    for k in range(1, len(copies)):
-        try:
-            os.remove("error-witness-%d.graphml" % k)
-        except OSError:
-            pass
+            # A timed-out communicate() keeps what it has read so far.
+            out, _ = current.communicate(
+                timeout=max(0.01, min(POLL, deadline - time.time())))
+        except subprocess.TimeoutExpired:
+            if time.time() >= stop_at:
+                stop = "stop rule"
+            elif time.time() >= deadline:
+                stop = "timeout"
+            elif CAP and group_rss(current.pid) > CAP:
+                stop = "memory"
+            if stop:
+                # Out of reach at this bound -- but not necessarily at the
+                # next one, which may be cheaper on the axis that matters for
+                # this program. Keep going; the budget check at the top of the
+                # loop ends the search.
+                kill_bound(current)
+                current.communicate()
+                break
+    current = None
     if stop:
         print("  -> %s" % stop)
         if stop == "stop rule":

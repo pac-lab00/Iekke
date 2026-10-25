@@ -34,10 +34,6 @@
 # answer of UNKNOWN is not TRUE.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
-# Case "copies": every bound of the ladder runs twice, with --por and with
-# --no-por. A FAILED from the --no-por copy is reported, with that copy's
-# witness as error-witness.graphml, while the --por copy is still running; a
-# SUCCESSFUL from it is held like any other; nothing of either copy survives.
 import os
 import signal
 import subprocess
@@ -55,37 +51,10 @@ mode = open(os.path.join(here, "mode")).read().strip()
 with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
-             if "--unwind-suggest" not in l and "--por" in l.split()])
-                                         # bounds of the --por copy, not the limit request
-if "--no-por" in sys.argv:
-    # the second copy of a bound: quiet (no verdict) unless a case says otherwise
-    p = os.path.join(here, "mode_nopor")
-    nopor = open(p).read().strip() if os.path.exists(p) else "quiet"
-    if nopor == "fail":
-        w = sys.argv[sys.argv.index("--graphml-witness") + 1]
-        with open(os.path.join(here, w), "w") as f:
-            f.write("nopor")
-        print("VERIFICATION FAILED")
-        sys.exit(10)
-    if nopor == "safe":
-        print("VERIFICATION SUCCESSFUL")
-        sys.exit(0)
-    if nopor == "hang":
-        with open(os.path.join(here, "pids"), "a") as f:
-            f.write("%d\n" % os.getpid())
-        time.sleep(120)
-    sys.exit(0)
+             if "--unwind-suggest" not in l])          # bounds, not the limit request
 if mode == "safe":
     print("VERIFICATION SUCCESSFUL")
     sys.exit(0)
-if mode == "copies":
-    # the --por copy: no verdict for the reduced program and the limit request,
-    # every bound of the ladder hangs
-    if "--unwind-suggest" in sys.argv or "--symmetric-instance" in sys.argv:
-        sys.exit(0)
-    with open(os.path.join(here, "pids"), "a") as f:
-        f.write("%d\n" % os.getpid())
-    time.sleep(120)
 if mode == "late_bug":
     # no verdict for the reduced program, safe at the first bound, the bug at the second
     if "--unwind-suggest" in sys.argv or calls == 1:
@@ -153,12 +122,8 @@ def alive(pid):
 
 
 def run(mode, budget, term_after=None, extra=(), env_extra=None,
-        kill_after=None, prop="no-data-race.prp", nopor=None):
+        kill_after=None, prop="no-data-race.prp"):
     d = tempfile.mkdtemp(prefix="deagle_blind_test_")
-    run.dir = d
-    if nopor is not None:
-        with open(os.path.join(d, "mode_nopor"), "w") as f:
-            f.write(nopor)
     tool = os.path.join(d, "iekke_exe")
     with open(tool, "w") as f:
         f.write(FAKE_TOOL)
@@ -277,8 +242,7 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
         if got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a:
             bad.append(a)
     ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
-              for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a
-              and "--por" in a.split()]
+              for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]
     if ladder[:4] != [(2, 2), (4, 3), (8, 3), (8, 4)]:
         bad.append("ladder starts %s" % ladder[:4])
     if len(run.args) < 10:
@@ -343,29 +307,6 @@ for mode, want in (("late_bug", "false"), ("safe_then_nothing", "unknown")):
         ok = False
     else:
         print("ok   official %s: read as %r" % (mode, got))
-
-out, pids, survivors = run("copies", 30, nopor="fail")
-last = out.strip().splitlines()[-1] if out.strip() else ""
-witness = os.path.join(run.dir, "error-witness.graphml")
-got = open(witness).read() if os.path.exists(witness) else None
-left = [f for f in os.listdir(run.dir) if f.startswith("error-witness-")]
-bounds = [a for a in run.args if "--por" in a.split() and "--unwind-suggest" not in a
-          and "--unwindset" not in a and "--symmetric-instance" not in a]
-paired = [a for a in run.args if "--no-por" in a.split()]
-if last != "FAILED" or got != "nopor" or left or survivors or len(paired) < len(bounds):
-    print("FAIL copies: last line %r, witness %r, leftover %s, survivors %s, "
-          "%d bounds with %d --no-por copies" % (last, got, left, survivors, len(bounds), len(paired)))
-    ok = False
-else:
-    print("ok   copies: the --no-por copy's FAILED and witness reported, --por copy stopped")
-out, pids, survivors = run("copies", 30, nopor="safe", env_extra={"DEAGLE_STOP": "5"})
-last = out.strip().splitlines()[-1] if out.strip() else ""
-if last != "SUCCESSFUL" or survivors:
-    print("FAIL copies: a SUCCESSFUL from the --no-por copy was not held (%r), survivors %s"
-          % (last, survivors))
-    ok = False
-else:
-    print("ok   copies: a SUCCESSFUL from the --no-por copy is held")
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:
