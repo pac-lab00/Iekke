@@ -268,10 +268,27 @@ void symex_assignt::assign_non_struct_symbol(
     // holding the wrong lock, and paired with its writer as a race.
     // Reads inside an atomic section are recorded regardless (see
     // goto_symex_statet::rename), so those are unchanged.
+    //
+    // The old value of a struct field sensitivity splits is its members'
+    // current values: renamed on its own, as a bare symbol, the struct came
+    // back as its whole-object version, which nothing assigns once the
+    // members are separate, so the framed-back value was unconstrained. A
+    // memset or memcpy through a pointer with two struct targets then wiped
+    // the target it did not reach (regression/cbmc/
+    // memset_two_targets_struct; stock CBMC renames lhs inside the `if` and
+    // expands it).
     const exprt l2_cond = state.rename(conjunction(guard), ns).get();
     const exprt l2_new = state.rename(rhs, ns).get();
     state.record_events.push(false);
-    const exprt l2_old = state.rename(exprt{lhs}, ns).get();
+    const exprt l2_old =
+      state
+        .rename(
+          (lhs.type().id() == ID_struct || lhs.type().id() == ID_struct_tag) &&
+              state.field_sensitivity.is_divisible(lhs)
+            ? state.field_sensitivity.apply(ns, state, exprt{lhs}, false)
+            : exprt{lhs},
+          ns)
+        .get();
     state.record_events.pop();
     l2_rhs = if_exprt{l2_cond, l2_new, l2_old};
   }
