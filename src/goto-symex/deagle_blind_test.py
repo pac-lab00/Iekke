@@ -21,7 +21,8 @@
 # taking that answer with it.
 # Case "flags": no bound passes --thread-symmetry (measured slowdown), and
 # --dynamic-array-bound min(max(unwind, 4), 64) for every property but memory
-# safety, where an array cut to K elements would hide an out-of-bounds access.
+# safety, where an array cut to K elements would hide an out-of-bounds access;
+# a bound with 7 or more rounds passes --por, any other --no-por.
 # Case "suggest": the per-loop limits from --unwind-suggest reach the tool as
 # --unwindset (a loop without a suggestion at 3), a FAILED from that step is
 # reported, and a SUCCESSFUL from it is not: with every other bound giving no
@@ -239,7 +240,10 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
             ["--dynamic-array-bound", str(min(max(unwind, 4), 64))]
         got = w[w.index("--dynamic-array-bound"):][:2] \
             if "--dynamic-array-bound" in w else []
-        if got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a:
+        rounds = int(w[w.index("--rounds") + 1])
+        por = "--por" if rounds >= 7 else "--no-por"
+        if (got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a
+                or por not in w):
             bad.append(a)
     ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
               for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]
