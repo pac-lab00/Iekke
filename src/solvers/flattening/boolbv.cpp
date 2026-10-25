@@ -512,7 +512,14 @@ void boolbvt::set_to(const exprt &expr, bool value)
   const auto equal_expr = expr_try_dynamic_cast<equal_exprt>(expr);
   if(value && equal_expr && !boolbv_set_equality_to_true(*equal_expr))
     return;
+  const std::size_t first = array_equality_count();
   SUB::set_to(expr, value);
+  if(
+    value && equal_expr && equal_expr->lhs().id() == ID_symbol &&
+    array_equality_count() > first)
+  {
+    record_defining_array_equality(first, equal_expr->lhs());
+  }
 }
 
 bool boolbvt::is_unbounded_array(const typet &type) const

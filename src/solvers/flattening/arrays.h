@@ -15,6 +15,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <list>
 #include <set>
 #include <unordered_set>
+#include <vector>
 
 #include <util/union_find.h>
 
@@ -50,6 +51,15 @@ public:
   typedef equalityt SUB;
 
   literalt record_array_equality(const equal_exprt &expr);
+
+  /// Record that the array equality at position \p first of the list of
+  /// array equalities was asserted unconditionally, so that it defines its
+  /// left-hand side \p lhs.
+  void record_defining_array_equality(std::size_t first, const exprt &lhs);
+  std::size_t array_equality_count() const
+  {
+    return array_equalities.size();
+  }
   void record_array_index(const index_exprt &expr);
 
 protected:
@@ -76,6 +86,10 @@ protected:
 
   // this is used to find the clusters of arrays being compared
   union_find<exprt, irep_hash> arrays;
+
+  // the asserted equalities x = e whose left-hand side x is an array symbol
+  std::vector<std::pair<exprt, exprt>> defining_equalities;
+  std::unordered_set<std::size_t> defined_by_equality() const;
 
   // this tracks the array indicies for each array
   typedef std::set<exprt> index_sett;

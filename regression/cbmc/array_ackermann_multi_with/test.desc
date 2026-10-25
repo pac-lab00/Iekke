@@ -1,0 +1,13 @@
+CORE
+main.c
+
+^EXIT=10$
+^SIGNAL=0$
+^\[main\.assertion\.1\] .* second byte, little endian: SUCCESS$
+^\[main\.assertion\.2\] .* equal indices, equal elements: SUCCESS$
+^\[main\.assertion\.3\] .* other bytes are unconstrained: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+An int stored into a char array at a symbolic offset is an update of four

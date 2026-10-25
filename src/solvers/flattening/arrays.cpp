@@ -9,6 +9,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "arrays.h"
 #include <vector>
 #include <iostream>
+#include <unordered_map>
 #include <cstdlib>
 
 #include <util/arith_tools.h>
@@ -325,6 +326,101 @@ void arrayst::add_array_constraints()
   add_array_Ackermann_constraints();
 }
 
+void arrayst::record_defining_array_equality(
+  std::size_t first,
+  const exprt &lhs)
+{
+  // record_array_equality appends the equality before converting its
+  // operands, so the first one appended by this assertion is the asserted one;
+  // any after it come from inside the operands and are not asserted.
+  auto it = array_equalities.begin();
+  std::advance(it, first);
+  if(it->f1 == lhs)
+    defining_equalities.emplace_back(it->f1, it->f2);
+}
+
+/// The array symbols whose Ackermann constraints are implied. x = e asserted,
+/// with e an update (with), a choice (if), a constant array (array or
+/// array_of) or another symbol, gives x[i] = e[i] for every i of the index
+/// set, and e is consistent as soon as the arrays it is built from are -- the
+/// reason the Ackermann loop skips if, with and array_of terms. So x is
+/// consistent if those arrays are: symbols that keep their own constraints,
+/// or symbols that are themselves defined this way. Computed as a least
+/// fixpoint, so a cycle of definitions never counts as defined.
+std::unordered_set<std::size_t> arrayst::defined_by_equality() const
+{
+  // the array symbols a defining term is built from; false if it contains
+  // anything else
+  const auto leaves = [](const exprt &e, std::vector<irep_idt> &out) {
+    std::vector<const exprt *> todo{&e};
+    while(!todo.empty())
+    {
+      const exprt *cur = todo.back();
+      todo.pop_back();
+      if(cur->id() == ID_symbol)
+        out.push_back(to_symbol_expr(*cur).get_identifier());
+      else if(cur->id() == ID_with)
+        todo.push_back(&to_with_expr(*cur).old());
+      else if(cur->id() == ID_if)
+      {
+        todo.push_back(&to_if_expr(*cur).true_case());
+        todo.push_back(&to_if_expr(*cur).false_case());
+      }
+      else if(cur->id() != ID_array_of && cur->id() != ID_array)
+        return false;
+    }
+    return true;
+  };
+
+  std::unordered_map<irep_idt, std::vector<std::vector<irep_idt>>> defs;
+  for(const auto &eq : defining_equalities)
+  {
+    std::vector<irep_idt> from;
+    if(leaves(eq.second, from))
+      defs[to_symbol_expr(eq.first).get_identifier()].push_back(from);
+  }
+
+  // a symbol is defined once one of its definitions is built only from
+  // symbols that have no definition (they keep their constraints) or are
+  // already defined
+  std::unordered_set<irep_idt> done;
+  bool changed = true;
+  while(changed)
+  {
+    changed = false;
+    for(const auto &d : defs)
+    {
+      if(done.count(d.first) != 0)
+        continue;
+      for(const auto &from : d.second)
+      {
+        bool ok = true;
+        for(const auto &leaf : from)
+          if(defs.count(leaf) != 0 && done.count(leaf) == 0)
+            ok = false;
+        if(ok)
+        {
+          done.insert(d.first);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  std::unordered_set<std::size_t> defined;
+  for(std::size_t i = 0; i < arrays.size(); i++)
+  {
+    if(
+      arrays[i].id() == ID_symbol &&
+      done.count(to_symbol_expr(arrays[i]).get_identifier()) != 0)
+    {
+      defined.insert(i);
+    }
+  }
+  return defined;
+}
+
 void arrayst::add_array_Ackermann_constraints()
 {
   // this is quadratic!
@@ -369,15 +465,24 @@ void arrayst::add_array_Ackermann_constraints()
               << " pairs_not_skipped=" << useful_pairs << "\n";
   }
 
+  const std::unordered_set<std::size_t> defined = defined_by_equality();
+
   // iterate over arrays
   for(std::size_t i=0; i<arrays.size(); i++)
   {
-    // x = c ? a : b and x = a with [i:=v] are functionally consistent once
-    // a and b are: every index of the class is tied to a (or b, or v) by the
-    // if/with constraints, so their own pairs are implied.
+    // x = c ? a : b and x = a with [i:=v, ...] are functionally consistent
+    // once a and b are: every index of the class is tied to a (or b, or a v)
+    // by the if/with constraints, so their own pairs are implied. x =
+    // array_of(v) ties every index to v.
     if(
-      (arrays[i].id() == ID_if ||
-       (arrays[i].id() == ID_with && arrays[i].operands().size() == 3)))
+      arrays[i].id() == ID_if || arrays[i].id() == ID_with ||
+      arrays[i].id() == ID_array_of)
+    {
+      continue;
+    }
+
+    // and so is a symbol defined as one of them (defined_by_equality)
+    if(defined.count(i) != 0)
       continue;
 
     const index_sett &index_set=index_map[arrays.find_number(i)];
@@ -438,7 +543,20 @@ void arrayst::add_array_Ackermann_constraints()
             break;
         }
 
-        if(i1 != i2 && !(i1->is_constant() && i2->is_constant()))
+        // For a constant array, an index that is a constant within bounds
+        // has its element fixed, and so has any index equal to it: the
+        // array-constant constraints give both the same operand. Only pairs
+        // of indices that may be out of bounds need tying together.
+        const auto fixed_in_constant = [&](const exprt &index) {
+          if(arrays[i].id() != ID_array || !index.is_constant())
+            return false;
+          const auto n = numeric_cast<std::size_t>(to_constant_expr(index));
+          return n.has_value() && *n < arrays[i].operands().size();
+        };
+
+        if(
+          i1 != i2 && !(i1->is_constant() && i2->is_constant()) &&
+          !fixed_in_constant(*i1) && !fixed_in_constant(*i2))
         {
 
           // index equality
@@ -720,8 +838,8 @@ void arrayst::add_array_constraints_with(
 
       literalt guard_lit = convert(disjunction(disjuncts));
 
-      // Without Ackermann pairs on x, an index equal in value to the
-      // updated one must be tied to the new value here.
+      // Without Ackermann pairs on x, an index equal in value to an updated
+      // one must be tied to that update's value here.
       if(operands.size() == 3)
       {
         index_exprt same_index(
@@ -732,6 +850,24 @@ void arrayst::add_array_constraints_with(
             literal_exprt(!guard_lit), equal_exprt(same_index, operands[2])));
         add_array_constraint(same, false); // added immediately
         array_constraint_count[constraint_typet::ARRAY_WITH]++;
+      }
+      else
+      {
+        for(std::size_t u = 1; u + 1 < operands.size(); u += 2)
+        {
+          index_exprt same_index(
+            expr, other_index, to_array_type(expr.type()).element_type());
+          lazy_constraintt same(
+            lazy_typet::ARRAY_WITH,
+            implies_exprt(
+              equal_exprt{
+                operands[u],
+                typecast_exprt::conditional_cast(
+                  other_index, operands[u].type())},
+              equal_exprt(same_index, operands[u + 1])));
+          add_array_constraint(same, false); // added immediately
+          array_constraint_count[constraint_typet::ARRAY_WITH]++;
+        }
       }
 
       if(guard_lit!=const_literal(true))

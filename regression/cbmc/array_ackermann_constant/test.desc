@@ -1,0 +1,13 @@
+CORE
+main.c
+
+^EXIT=10$
+^SIGNAL=0$
+^\[main\.assertion\.1\] .* equal indices, equal elements: SUCCESS$
+^\[main\.assertion\.2\] .* in bounds: an operand: SUCCESS$
+^\[main\.assertion\.3\] .* not every operand is 1: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+A constant array: an in-bounds index reads its operand; two reads at the

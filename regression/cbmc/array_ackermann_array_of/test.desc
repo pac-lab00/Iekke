@@ -1,0 +1,13 @@
+CORE
+main.c
+
+^EXIT=10$
+^SIGNAL=0$
+^\[main\.assertion\.1\] .* zero\-initialised: SUCCESS$
+^\[main\.assertion\.2\] .* the written element: SUCCESS$
+^\[main\.assertion\.3\] .* the written element is not 0: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+A zero-initialised global is array_of(0): every element is 0 until written.

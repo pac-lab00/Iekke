@@ -1,0 +1,12 @@
+CORE
+main.c
+
+^EXIT=10$
+^SIGNAL=0$
+^\[main\.assertion\.1\] .* equal indices, equal elements: SUCCESS$
+^\[main\.assertion\.2\] .* different indices may differ: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+An array no assignment defines (a nondet local) keeps its Ackermann

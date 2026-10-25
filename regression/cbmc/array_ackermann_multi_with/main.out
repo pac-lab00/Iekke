@@ -1,0 +1,50 @@
+Deagle version 4.1.0 64-bit x86_64 linux
+which contains:
+CBMC version 5.67.0 (29571c48-dirty) 64-bit x86_64 linux
+Parsing main.c
+Converting
+Type-checking main
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 8 object bits, 24 offset bits (default)
+Starting Bounded Model Checking
+Unwinding successfully
+Start removing dummy accesses: 50 steps before removal
+50 steps after removal
+Runtime Symex: 0.00110854s
+size of program expression: 50 steps
+simple slicing removed 5 assignments
+Generated 3 VCC(s), 3 remaining after simplification
+Runtime Postprocess Equation: 8.149e-06s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000603098s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 0.00131162s
+Solving with Glucose Syrup with simplifier
+1448 variables, 4893 clauses
+decisions: 797 total, 0 from the POR fallback tier, 0 landing on a POR variable; conflicts: 26, propagations: 2617; CS-first: on
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.00404673s
+Runtime decision procedure: 0.00468704s
+Running propositional reduction
+Solving with Glucose Syrup with simplifier
+1448 variables, 3198 clauses
+decisions: 2713 total, 0 from the POR fallback tier, 0 landing on a POR variable; conflicts: 937, propagations: 38550; CS-first: on
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00627521s
+Runtime decision procedure: 0.00628602s
+
+** Results:
+main.c function main
+[main.assertion.1] line 10 second byte, little endian: SUCCESS
+[main.assertion.2] line 12 equal indices, equal elements: SUCCESS
+[main.assertion.3] line 13 other bytes are unconstrained: FAILURE
+
+** 1 of 3 failed (2 iterations)
+VERIFICATION FAILED
+EXIT=10
+SIGNAL=0
