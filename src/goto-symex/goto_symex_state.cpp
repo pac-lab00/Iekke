@@ -290,18 +290,25 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       // (regression/cbmc-concurrency/datarace_struct_member_symbolic_index).
       // Rename it with its read events switched off; the values still flow
       // into this thread's own view.
+      // A nested member, `a[i].s.m = v`, is one `with` deeper per level;
+      // every carried base along the chain is renamed the same way.
       with_exprt &with = to_with_expr(expr);
-      with_exprt &member_with = to_with_expr(with.new_value());
       with.old() = rename<level>(std::move(with.old()), ns).get();
       with.where() = rename<level>(std::move(with.where()), ns).get();
-      member_with.new_value() =
-        rename<level>(std::move(member_with.new_value()), ns).get();
+      exprt *part = &with.new_value();
+      while(part->id() == ID_with && part->operands().size() == 3 &&
+            to_with_expr(*part).where().id() == ID_member_name)
       {
-        const shared_read_condition_scopet read_cond{*this, false_exprt{}};
-        member_with.old() =
-          rename<level>(std::move(member_with.old()), ns).get();
+        with_exprt &member_with = to_with_expr(*part);
+        {
+          const shared_read_condition_scopet read_cond{*this, false_exprt{}};
+          member_with.old() =
+            rename<level>(std::move(member_with.old()), ns).get();
+        }
+        rename<level>(member_with.type(), irep_idt(), ns);
+        part = &member_with.new_value();
       }
-      rename<level>(member_with.type(), irep_idt(), ns);
+      *part = rename<level>(std::move(*part), ns).get();
     }
     else if(expr.id() == ID_with || expr.id() == ID_byte_update_little_endian)
     {

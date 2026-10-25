@@ -400,14 +400,14 @@ static optionalt<exprt> element_written(
 
 /// For a store `a[i].m = v` at an undecided i, which symbolic execution
 /// leaves as `with(a, i, with(index(a, i), m, v))` with a the object's old
-/// value: the member m. Only that member of element k is written; the
-/// others carry back the values this thread read, and publishing them would
-/// reset whatever another thread stored there since (a lost update between
-/// two members of one element). Nullopt for any other shape, nested members
-/// included, which keep the element-wide condition. The `if` a store through
-/// a pointer with more than one target leaves is seen through as in
-/// element_written.
-static optionalt<irep_idt>
+/// value: the member path [m]; for `a[i].s.m = v`, nested one `with` deeper,
+/// [s, m]. Only the leaves on that path in element k are written; the others
+/// carry back the values this thread read, and publishing them would reset
+/// whatever another thread stored there since (a lost update between two
+/// members of one element). Nullopt for any other shape, which keeps the
+/// element-wide condition. The `if` a store through a pointer with more than
+/// one target leaves is seen through as in element_written.
+static optionalt<std::vector<irep_idt>>
 member_stored(const exprt &rhs, const irep_idt &object)
 {
   if(rhs.id() == ID_if)
@@ -432,14 +432,17 @@ member_stored(const exprt &rhs, const irep_idt &object)
   // symbol, or its leaves expanded -- unless it is itself a store.
   if(with.old().id() == ID_with || with.old().id() == ID_if)
     return {};
-  const exprt &element = with.new_value();
-  if(
-    element.id() != ID_with || element.operands().size() != 3 ||
-    to_with_expr(element).where().id() != ID_member_name)
+  std::vector<irep_idt> path;
+  const exprt *element = &with.new_value();
+  while(element->id() == ID_with && element->operands().size() == 3 &&
+        to_with_expr(*element).where().id() == ID_member_name)
   {
-    return {};
+    path.push_back(to_with_expr(*element).where().get(ID_component_name));
+    element = &to_with_expr(*element).new_value();
   }
-  return to_with_expr(element).where().get(ID_component_name);
+  if(path.empty())
+    return {};
+  return path;
 }
 
 void field_sensitivityt::field_assignments_rec(
@@ -571,42 +574,77 @@ void field_sensitivityt::field_assignments_rec(
       const exprt element_cond =
         written.has_value() ? *written : static_cast<exprt>(true_exprt{});
 
-      // A store to one member of the element: only that member is published.
-      const auto member = written.has_value()
-                            ? member_stored(ssa_rhs, store_object)
-                            : optionalt<irep_idt>{};
-      const typet &element_type = ns.follow(type->element_type());
-      if(
-        member.has_value() && element_type.id() == ID_struct &&
-        index_lhs.id() == ID_struct &&
-        index_lhs.operands().size() ==
-          to_struct_type(element_type).components().size())
+      // A store to one member of the element: only the leaves on its member
+      // path are published, the other members under false.
+      const auto path = written.has_value()
+                          ? member_stored(ssa_rhs, store_object)
+                          : optionalt<std::vector<irep_idt>>{};
+      if(path.has_value())
       {
-        const struct_typet &st = to_struct_type(element_type);
-        exprt::operandst::const_iterator m_it = index_lhs.operands().begin();
-        for(const auto &comp : st.components())
+        std::function<bool(const exprt &, const exprt &, std::size_t,
+                           const mp_integer &)>
+          publish = [&](const exprt &part_lhs, const exprt &part_rhs,
+                        std::size_t depth, const mp_integer &at) {
+            if(depth == path->size())
+            {
+              const goto_symex_statet::shared_write_condition_scopet
+                write_cond{state, element_cond};
+              field_assignments_rec(
+                ns, state, part_lhs, part_rhs, target,
+                allow_pointer_unsoundness, at);
+              return true;
+            }
+            const typet &part_type = ns.follow(part_rhs.type());
+            if(
+              part_type.id() != ID_struct || part_lhs.id() != ID_struct ||
+              part_lhs.operands().size() !=
+                to_struct_type(part_type).components().size())
+            {
+              return false;
+            }
+            const struct_typet &st = to_struct_type(part_type);
+            exprt::operandst::const_iterator m_it = part_lhs.operands().begin();
+            for(const auto &comp : st.components())
+            {
+              const exprt member_rhs = simplify_opt(
+                member_exprt{part_rhs, comp.get_name(), comp.type()}, ns);
+              const auto offset = member_offset(st, comp.get_name(), ns);
+              const mp_integer member_at = at >= 0 && offset.has_value()
+                                             ? at + *offset
+                                             : mp_integer{-1};
+              if(comp.get_name() == (*path)[depth])
+              {
+                if(!publish(*m_it, member_rhs, depth + 1, member_at))
+                {
+                  const goto_symex_statet::shared_write_condition_scopet
+                    write_cond{state, element_cond};
+                  field_assignments_rec(
+                    ns, state, *m_it, member_rhs, target,
+                    allow_pointer_unsoundness, member_at);
+                }
+              }
+              else
+              {
+                const goto_symex_statet::shared_write_condition_scopet
+                  write_cond{state, false_exprt{}};
+                field_assignments_rec(
+                  ns, state, *m_it, member_rhs, target,
+                  allow_pointer_unsoundness, member_at);
+              }
+              ++m_it;
+            }
+            return true;
+          };
+        if(publish(
+             index_lhs,
+             index_rhs,
+             0,
+             lo >= 0 && element_size.has_value() ? lo + *element_size * i
+                                                 : mp_integer{-1}))
         {
-          const exprt member_rhs = simplify_opt(
-            member_exprt{index_rhs, comp.get_name(), comp.type()}, ns);
-          const auto at = member_offset(st, comp.get_name(), ns);
-          const goto_symex_statet::shared_write_condition_scopet write_cond{
-            state,
-            comp.get_name() == *member ? element_cond
-                                       : static_cast<exprt>(false_exprt{})};
-          field_assignments_rec(
-            ns,
-            state,
-            *m_it,
-            member_rhs,
-            target,
-            allow_pointer_unsoundness,
-            lo >= 0 && element_size.has_value() && at.has_value()
-              ? lo + *element_size * i + *at
-              : mp_integer{-1});
-          ++m_it;
+          ++fs_it;
+          continue;
         }
-        ++fs_it;
-        continue;
       }
 
       {

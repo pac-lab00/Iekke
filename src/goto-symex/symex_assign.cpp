@@ -205,11 +205,21 @@ void symex_assignt::assign_non_struct_symbol(
       to_with_expr(rhs.op2()).old().id() == ID_index &&
       to_index_expr(to_with_expr(rhs.op2()).old()).array() == rhs.op0();
     exprt l2_value = rhs.op2();
+    // the stored value at the end of the member chain (`a[i].s.m = v` is one
+    // `with` deeper per level)
+    const auto stored_value = [](exprt &e) -> exprt & {
+      exprt *part = &e;
+      while(part->id() == ID_with && part->operands().size() == 3 &&
+            to_with_expr(*part).where().id() == ID_member_name)
+      {
+        part = &to_with_expr(*part).new_value();
+      }
+      return *part;
+    };
     if(member_store)
     {
-      with_exprt &member_with = to_with_expr(l2_value);
-      member_with.new_value() =
-        state.rename(member_with.new_value(), ns).get();
+      exprt &v = stored_value(l2_value);
+      v = state.rename(v, ns).get();
     }
     else
       l2_value = state.rename(rhs.op2(), ns).get();
@@ -226,8 +236,14 @@ void symex_assignt::assign_non_struct_symbol(
       l2_old = state.rename(rhs.op0(), ns).get();
       if(member_store)
       {
-        with_exprt &member_with = to_with_expr(l2_value);
-        member_with.old() = state.rename(member_with.old(), ns).get();
+        exprt *part = &l2_value;
+        while(part->id() == ID_with && part->operands().size() == 3 &&
+              to_with_expr(*part).where().id() == ID_member_name)
+        {
+          with_exprt &member_with = to_with_expr(*part);
+          member_with.old() = state.rename(member_with.old(), ns).get();
+          part = &member_with.new_value();
+        }
       }
     }
     exprt l2_new = rhs;
