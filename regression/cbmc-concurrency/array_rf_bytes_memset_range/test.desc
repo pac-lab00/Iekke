@@ -1,0 +1,16 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --no-por --array-rf-bytes --dynamic-array-bound 4 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^\[reader\.assertion\.1\] .* first part is 97: SUCCESS$
+^\[reader\.assertion\.2\] .* second part is 98: SUCCESS$
+^\[reader\.assertion\.3\] .* the first part is not 98: FAILURE$
+^VERIFICATION FAILED$
+--
+--
+memset(buf, 97, n) and memset(buf + n, 98, n) on a shared heap buffer, n
+symbolic: each is a byte update by ARRAY_OF(c) of n bytes, which
+--array-rf-bytes now reads as a range write of the byte c over
+[offset, offset + n). Known answers; mutants that write a wrong byte or drop
+the lower bound of the range make assertions 1 or 2 fail.

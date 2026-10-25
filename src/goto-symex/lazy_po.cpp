@@ -1161,6 +1161,19 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
           aw.condition = std::get<0>(*bu);
           aw.bytes = true;
           aw.offset = std::get<1>(*bu);
+          // memset(p, c, n) arrives as an update by ARRAY_OF(c) of n bytes, n
+          // often symbolic (a driver fills a buffer in parts of a length read
+          // from the device): a range write of the single byte c. Its bytes
+          // are known without a constant size.
+          const exprt &v = aw.value;
+          if(
+            v.id() == ID_array_of && v.type().id() == ID_array &&
+            pointer_offset_bits(to_array_type(v.type()).element_type(), ns) ==
+              mp_integer{8})
+          {
+            aw.length = to_array_type(v.type()).size();
+            aw.value = to_array_of_expr(v).what();
+          }
           decomposed.push_back(aw);
           continue;
         }
@@ -1212,7 +1225,7 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
         to_array_type(ws.front().s_it->ssa_lhs.type()).element_type(), ns);
       bool sized = e_bytes.has_value() && *e_bytes > 0;
       for(const auto &aw : decomposed)
-        if(aw.bytes)
+        if(aw.bytes && aw.length.is_nil())
         {
           const auto s = pointer_offset_size(aw.value.type(), ns);
           sized = sized && s.has_value() && *s > 0;
@@ -1442,7 +1455,20 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
     const auto byte_hits = [&](const array_writet &aw, exprt ran, const exprt &p)
       -> exprt {
       exprt matches = ran;
-      if(!aw.whole_array)
+      if(!aw.whole_array && !aw.length.is_nil())
+      {
+        // a range write: [offset, offset + length), length an expression.
+        // Written p - offset < length, which cannot wrap once offset <= p,
+        // where offset + length could.
+        const exprt lo = as_offset(aw.offset);
+        matches = and_exprt{
+          matches,
+          binary_relation_exprt{lo, ID_le, p},
+          binary_relation_exprt{
+            minus_exprt{p, lo}, ID_lt,
+            typecast_exprt::conditional_cast(aw.length, offset_type)}};
+      }
+      else if(!aw.whole_array)
       {
         const auto r = range_of(aw);
         matches = and_exprt{
@@ -1458,6 +1484,8 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
     const auto byte_value = [&](const array_writet &aw, const exprt &p) -> exprt {
       if(aw.whole_array)
         return whole_byte(aw.value, p);
+      if(!aw.length.is_nil())
+        return typecast_exprt::conditional_cast(aw.value, byte_type);
       const auto r = range_of(aw);
       const exprt v = aw.bytes
         ? aw.value

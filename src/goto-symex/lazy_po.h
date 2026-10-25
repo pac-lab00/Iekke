@@ -202,6 +202,9 @@ private:
     /// byte offset `offset`, and `index` is unused
     bool bytes = false;
     exprt offset = nil_exprt{};
+    /// a range write (memset of n bytes, n possibly symbolic): `value` is the
+    /// one byte written at each of the `length` bytes from `offset`
+    exprt length = nil_exprt{};
   };
   /// the objects whose reads are answered byte by byte (--array-rf-bytes)
   std::set<irep_idt> array_rf_bytewise;
