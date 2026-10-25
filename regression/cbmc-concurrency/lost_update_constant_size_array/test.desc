@@ -1,0 +1,15 @@
+CORE
+main.c
+--32 --unwind 9 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+A 65-byte array is above the splitting bound, so a store to one element
+rebuilds the whole array from this thread view of it. With many accesses
+--array-rf declines it by its cost model, and before the fix the two halves
+written by the two threads could erase each other: a false violation. The
+store now reads and writes the array in an atomic section of its own, as it
+already did for arrays of symbolic size. Fails on a binary without the fix.

@@ -155,11 +155,16 @@ void symex_assignt::assign_non_struct_symbol(
 {
   // A store into one element of a shared object that field sensitivity cannot
   // split -- an array whose size is symbolic, `malloc(n * sizeof(int))` with
-  // n nondet -- is `a#new == with(a#old, i, v)`: the whole object, rebuilt
-  // from this thread's last view of it. Published as a whole, it put back
-  // elements another thread had stored to since that view: a lost update.
-  // Two threads filling disjoint halves of `a` each erased the other's half
-  // (weaver/popl20-more-vector-add, pthread-lit/sssc12_variant, unreach-call).
+  // n nondet, or constant but above the splitting bound of 64 elements -- is
+  // `a#new == with(a#old, i, v)`: the whole object, rebuilt from this thread's
+  // last view of it. Published as a whole, it put back elements another thread
+  // had stored to since that view: a lost update. Two threads filling disjoint
+  // halves of `a` each erased the other's half (weaver/popl20-more-vector-add,
+  // pthread-lit/sssc12_variant, unreach-call). The constant-size case was
+  // first left out, on the assumption that --array-rf answers those arrays;
+  // it declines some (by its cost model, or for a whole-object use), and then
+  // `char a[65]` filled in halves by two threads reported a false violation
+  // (regression/cbmc-concurrency/lost_update_constant_size_array).
   // Read the old value and write the new one in an atomic section of their
   // own, so the elements copied back are the current ones -- exactly what a
   // store to element i alone leaves in the others. The index and the stored
@@ -171,7 +176,6 @@ void symex_assignt::assign_non_struct_symbol(
     SSA_stept::first_store_atomic_section;
   const bool monolithic_store =
     state.atomic_section_id == 0 && lhs.type().id() == ID_array &&
-    !to_array_type(lhs.type()).size().is_constant() &&
     !state.field_sensitivity.is_divisible(lhs) &&
     (rhs.id() == ID_with || rhs.id() == ID_byte_update_little_endian ||
      rhs.id() == ID_byte_update_big_endian) &&

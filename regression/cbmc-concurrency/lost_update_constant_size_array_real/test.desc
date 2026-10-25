@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --unwind 9 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+The other direction of lost_update_constant_size_array: two threads
+increment the same element without a lock, a real lost update. The atomic
+section added to element stores covers only the copy of the other elements,
+not the program own read of the element, so the violation is still found.
