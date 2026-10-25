@@ -449,6 +449,56 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
         };
       rename_leaves(byte_extract_expr.op(), 0);
     }
+    // A load of one member at a symbolic element, after field sensitivity
+    // has expanded the array: `{s0, s1, ...}[i].m` with each s_k the struct of
+    // element k's leaves. Renamed as it stands, the index below conditions each
+    // element on i == k, but every member of the element still emitted a read
+    // event, so reading a[i].f paired with another thread's store to a[i].g as
+    // a data race (regression/cbmc-concurrency/
+    // datarace_struct_member_read_symbolic_index). Select the member first --
+    // `{s0.m, s1.m, ...}[i]`, the same value -- so only the m leaves are read.
+    else if(
+      level == L2 && expr.id() == ID_member &&
+      to_member_expr(expr).compound().id() == ID_index &&
+      to_index_expr(to_member_expr(expr).compound()).array().id() ==
+        ID_array &&
+      !to_index_expr(to_member_expr(expr).compound()).index().is_constant())
+    {
+      const member_exprt &member = to_member_expr(expr);
+      const index_exprt &index = to_index_expr(member.compound());
+      const array_exprt &elements = to_array_expr(index.array());
+      const typet &element_type = ns.follow(elements.type().element_type());
+      bool all_structs = element_type.id() == ID_struct;
+      std::size_t component = 0;
+      if(all_structs)
+      {
+        const struct_typet &st = to_struct_type(element_type);
+        component = st.component_number(member.get_component_name());
+        for(const auto &op : elements.operands())
+        {
+          if(
+            op.id() != ID_struct ||
+            op.operands().size() != st.components().size())
+          {
+            all_structs = false;
+          }
+        }
+      }
+      if(all_structs)
+      {
+        exprt::operandst members;
+        members.reserve(elements.operands().size());
+        for(const auto &op : elements.operands())
+          members.push_back(op.operands()[component]);
+        array_exprt member_array{
+          std::move(members),
+          array_typet{member.type(), elements.type().size()}};
+        expr = index_exprt{std::move(member_array), index.index(), member.type()};
+        return rename<level>(std::move(expr), ns);
+      }
+      Forall_operands(it, expr)
+        *it = rename<level>(std::move(*it), ns).get();
+    }
     // A load at a symbolic index, after field sensitivity has already
     // expanded the array into its elements: `{a[[0]], a[[1]], ...}[i]`.
     //
