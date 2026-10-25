@@ -1887,12 +1887,17 @@ void lazy_pot::create_private_constraints(symex_target_equationt &equation)
       if(!found)
         continue; // reads the pre-first-write value, which constrains nothing
 
+      // Unconditional: the read's value is a fresh symbol nothing else
+      // constrains, and nothing executed depends on it when the read does not
+      // happen, so tying it there too changes no execution. It does make the
+      // read a plain definition, which the array encoding can then rely on:
+      // a private array read guarded by an implication kept its own
+      // Ackermann constraints (on the adutux driver, memset's local array:
+      // 29.1M -> 27.4M SAT variables).
       equation.constraint(
-        implies_exprt{
-          happens_in_any_round(read),
-          equal_exprt{narrowed_value(variable, read.s_it->ssa_lhs),
-                      typecast_exprt::conditional_cast(
-                        chain[before], chain_type)}},
+        equal_exprt{narrowed_value(variable, read.s_it->ssa_lhs),
+                    typecast_exprt::conditional_cast(
+                      chain[before], chain_type)},
         "private read constraint " + id2string(variable),
         read.s_it->source);
     }
