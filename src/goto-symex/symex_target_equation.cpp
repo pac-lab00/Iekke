@@ -26,6 +26,10 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/byte_operators.h>
 
 #include "solver_hardness.h"
+#include <solvers/prop/prop_conv_solver.h>
+#include <util/ssa_expr.h>
+#include <algorithm>
+#include <vector>
 #include "ssa_step.h"
 
 static std::function<void(solver_hardnesst &)>
@@ -334,6 +338,60 @@ void symex_target_equationt::constraint(
   merge_ireps(SSA_step);
 }
 
+
+/// LAZYPO_VAR_TALLY: how many SAT variables converting each SSA step creates,
+/// summed by the object the step assigns or by constraint kind, plus the
+/// backend's total before the solver's own post-processing (array theory,
+/// pointers), whose share is the final count minus that total. Measurement
+/// only: this is how the array constraints were found to be 88% of the adutux
+/// driver's formula.
+static bool var_tally_on()
+{
+  static const bool on = getenv("LAZYPO_VAR_TALLY") != nullptr;
+  return on;
+}
+
+static std::map<std::string, std::size_t> &var_tally()
+{
+  static std::map<std::string, std::size_t> tally;
+  return tally;
+}
+
+static std::size_t sat_variables(decision_proceduret &decision_procedure)
+{
+  const auto *p = dynamic_cast<prop_conv_solvert *>(&decision_procedure);
+  return p == nullptr ? 0 : p->prop_no_variables();
+}
+
+static void var_tally_add(
+  decision_proceduret &decision_procedure,
+  std::size_t &before,
+  const char *pass,
+  const SSA_stept &step)
+{
+  std::string key = pass;
+  if(step.is_constraint())
+    key += " " + id2string(step.comment);
+  else if(step.ssa_lhs.id() == ID_symbol && is_ssa_expr(step.ssa_lhs))
+    key += " " + id2string(to_ssa_expr(step.ssa_lhs).get_object_name());
+  const std::size_t now = sat_variables(decision_procedure);
+  var_tally()[key] += now - before;
+  before = now;
+}
+
+static void var_tally_print(decision_proceduret &decision_procedure)
+{
+  std::vector<std::pair<std::size_t, std::string>> sorted;
+  for(const auto &e : var_tally())
+    sorted.emplace_back(e.second, e.first);
+  std::sort(sorted.rbegin(), sorted.rend());
+  std::cerr << "VAR_TALLY before post-processing: "
+            << sat_variables(decision_procedure) << " SAT variables\n";
+  for(std::size_t i = 0; i < sorted.size() && i < 60; ++i)
+    std::cerr << "VAR_TALLY " << sorted[i].first << "\t" << sorted[i].second
+              << "\n";
+}
+
 void symex_target_equationt::convert_without_assertions(
   decision_proceduret &decision_procedure)
 {
@@ -410,6 +468,9 @@ void symex_target_equationt::convert(decision_proceduret &decision_procedure)
   convert_without_assertions(decision_procedure);
   convert_assertions(decision_procedure);
 
+  if(var_tally_on())
+    var_tally_print(decision_procedure);
+
   const auto convert_SSA_stop = std::chrono::steady_clock::now();
   std::chrono::duration<double> convert_SSA_runtime =
     std::chrono::duration<double>(convert_SSA_stop - convert_SSA_start);
@@ -421,6 +482,7 @@ void symex_target_equationt::convert_assignments(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
+  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_assignment() && !step.ignore && !step.converted)
@@ -431,6 +493,8 @@ void symex_target_equationt::convert_assignments(
       });
 
       decision_procedure.set_to_true(step.cond_expr);
+      if(var_tally_on())
+        var_tally_add(decision_procedure, tally_before, "assign", step);
       step.converted = true;
       with_solver_hardness(
         decision_procedure, hardness_register_ssa(step_index, step));
@@ -464,6 +528,7 @@ void symex_target_equationt::convert_guards(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
+  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.ignore)
@@ -476,6 +541,8 @@ void symex_target_equationt::convert_guards(
       });
 
       step.guard_handle = decision_procedure.handle(step.guard);
+      if(var_tally_on())
+        var_tally_add(decision_procedure, tally_before, "guard", step);
       with_solver_hardness(
         decision_procedure, hardness_register_ssa(step_index, step));
     }
@@ -487,6 +554,7 @@ void symex_target_equationt::convert_assumptions(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
+  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_assume())
@@ -502,6 +570,8 @@ void symex_target_equationt::convert_assumptions(
           });
 
         step.cond_handle = decision_procedure.handle(step.cond_expr);
+        if(var_tally_on())
+          var_tally_add(decision_procedure, tally_before, "assume", step);
 
         with_solver_hardness(
           decision_procedure, hardness_register_ssa(step_index, step));
@@ -515,6 +585,7 @@ void symex_target_equationt::convert_goto_instructions(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
+  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_goto())
@@ -530,6 +601,8 @@ void symex_target_equationt::convert_goto_instructions(
           });
 
         step.cond_handle = decision_procedure.handle(step.cond_expr);
+        if(var_tally_on())
+          var_tally_add(decision_procedure, tally_before, "goto", step);
         with_solver_hardness(
           decision_procedure, hardness_register_ssa(step_index, step));
       }
@@ -553,6 +626,7 @@ void symex_target_equationt::convert_constraints(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
+  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_constraint() && !step.ignore && !step.converted
@@ -591,6 +665,8 @@ void symex_target_equationt::convert_constraints(
       });
 
       decision_procedure.set_to_true(step.cond_expr);
+      if(var_tally_on())
+        var_tally_add(decision_procedure, tally_before, "constraint", step);
       step.converted = true;
 
       with_solver_hardness(
