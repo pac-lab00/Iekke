@@ -1503,6 +1503,34 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       return make_byte_extract(v, minus_exprt{p, r.first}, byte_type);
     };
 
+    // the byte range a write covers, when offset and length are constants
+    std::map<const array_writet *, std::optional<std::pair<mp_integer, mp_integer>>>
+      constant_ranges;
+    const auto constant_range = [&](const array_writet &aw)
+      -> std::optional<std::pair<mp_integer, mp_integer>> {
+      const auto cached = constant_ranges.find(&aw);
+      if(cached != constant_ranges.end())
+        return cached->second;
+      std::optional<std::pair<mp_integer, mp_integer>> result;
+      if(!aw.length.is_nil())
+      {
+        const auto lo =
+          numeric_cast<mp_integer>(simplify_expr(as_offset(aw.offset), ns));
+        const auto len = numeric_cast<mp_integer>(simplify_expr(aw.length, ns));
+        if(lo.has_value() && len.has_value())
+          result = std::make_pair(*lo, *len);
+      }
+      else
+      {
+        const auto r = range_of(aw);
+        const auto lo = numeric_cast<mp_integer>(simplify_expr(r.first, ns));
+        if(lo.has_value())
+          result = std::make_pair(*lo, r.second);
+      }
+      constant_ranges.emplace(&aw, result);
+      return result;
+    };
+
     // a read of \p rtype at byte offset \p roff of version \p id
     const auto byte_read = [&](const irep_idt &id, const shared_event &rdev,
                                const exprt &roff, const typet &rtype) -> exprt {
@@ -1514,6 +1542,21 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       const ssa_exprt elt{symbol_exprt{
         "arf_" + id2string(id) + "_" + std::to_string(fresh++), rtype}};
       const mp_integer n = *pointer_offset_size(rtype, ns);
+      // Static disjointness: a write at a constant range that misses a byte
+      // read at a constant offset can never be the one that byte reads, so
+      // it is left out of that byte's cascade. Without this every byte read
+      // carried every earlier write: on the adutux driver the byte-wise
+      // read-from was 17.4 GB of the 18.1 GB built before the solver.
+      const auto roff_c = numeric_cast<mp_integer>(simplify_expr(roff, ns));
+      const auto misses = [&](const array_writet &aw, const mp_integer &b) {
+        if(!roff_c.has_value() || aw.whole_array)
+          return false;
+        const auto range = constant_range(aw);
+        if(!range.has_value())
+          return false;
+        const mp_integer at = *roff_c + b;
+        return at < range->first || at >= range->first + range->second;
+      };
       const bool after_prologue = prologue.count(&*rdev.s_it) == 0;
       const std::vector<std::size_t> pre =
         after_prologue ? prologue_writes() : std::vector<std::size_t>{};
@@ -1529,12 +1572,16 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
           for(const std::size_t wi : pre)
           {
             const auto &aw = entry.second[wi];
+            if(misses(aw, b))
+              continue;
             selected = if_exprt{
               byte_hits(aw, ran_in_some_round(aw), p), byte_value(aw, p), selected};
           }
           for(const auto &candidate : candidates)
           {
             const auto &aw = entry.second[candidate.second];
+            if(misses(aw, b))
+              continue;
             const symbol_exprt wexec = create_exec_symbol(
               ws[aw.event].label, ws[aw.event].num, ws[aw.event].thread,
               std::get<0>(candidate.first));
