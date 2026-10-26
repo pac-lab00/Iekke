@@ -620,6 +620,12 @@ void goto_symext::symex_step(
   const get_goto_functiont &get_goto_function,
   statet &state)
 {
+  // Every step's guard is merged into the equation, but only the step's copy
+  // was replaced: wherever the state's guard held a copy of a stored subtree,
+  // each step compared that copy node by node against the stored one again.
+  // On the ldv drivers that was three quarters of symbolic execution.
+  state.guard = guardt{target.merged(state.guard.as_expr()), guard_manager};
+
   // __SZH_ADD_BEGIN__
   if(try_finding_value_set)
   {

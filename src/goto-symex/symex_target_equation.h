@@ -350,6 +350,13 @@ public:
   std::map<event_it, exprt> read_dirties;
   // __SZH_ADD_END__
 
+  /// \p expr with every subtree already stored replaced by the stored one
+  exprt merged(exprt expr)
+  {
+    merge_irep(expr);
+    return expr;
+  }
+
 protected:
   messaget log;
 
