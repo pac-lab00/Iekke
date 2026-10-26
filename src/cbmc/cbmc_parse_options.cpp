@@ -50,6 +50,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <goto-checker/stop_on_fail_verifier.h>
 #include <goto-checker/stop_on_fail_verifier_with_fault_localization.h>
 
+#include <goto-programs/goto_check.h>
 #include <goto-programs/initialize_goto_model.h>
 #include <goto-programs/link_to_library.h>
 #include <goto-programs/loop_ids.h>
@@ -500,11 +501,10 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("slice-formula"))
     options.set_option("slice-formula", true);
 
-  // Reads of a constant array out of its bounds are left unconstrained and
-  // no longer tied to each other, which drops their Ackermann pairs (on the
-  // adutux driver, 4.1M SAT variables for a 7-element table). Only undefined
-  // behaviour gains executions, so a SUCCESSFUL stays sound and a FAILED may
-  // be spurious: the wrapper confirms it without the option.
+  // Drop the Ackermann constraints of constant arrays. Removing constraints
+  // only adds models, so a SUCCESSFUL remains sound; every added model reads
+  // a constant array out of bounds, so a FAILED may be spurious and must be
+  // confirmed without the option.
   if(cmdline.isset("constant-array-oob-nondet"))
     options.set_option("constant-array-oob-nondet", true);
 
@@ -1001,14 +1001,17 @@ void cbmc_parse_optionst::preprocessing(const optionst &options)
     log.error() << "PREPROCESSING ERROR" << messaget::eom;
 }
 
-/// --extern-pointers-own-object: a pointer declared extern and defined
-/// nowhere starts nondeterministic, so pointer analysis cannot say where it
-/// points; once it is merged with the pointers that are published, its
-/// dereference reaches every object whose address the program stores (the
-/// adutux driver's `current_task`: 46 stores through it rewrote nine global
-/// structs, 36% of the formula). Here it points to an object of its own, or
-/// is null: the environment's objects are assumed not to be the program's.
-/// Only pointers to complete structs and unions are touched.
+/// --extern-pointers-own-object: a pointer to a complete struct or union,
+/// declared extern and defined nowhere, starts nondeterministic (its static
+/// initialisation assigns a nondet side effect, which is what is replaced
+/// here), so pointer analysis cannot say where it points, and once merged
+/// with the pointers the program publishes its dereference reaches every
+/// object whose address the program stores. With the option it starts as
+/// `nondet ? &<name>$own_object : NULL`, the object of the pointee type with
+/// nondeterministic contents. Assumed: (a) the pointee is none of the
+/// objects the program declares or allocates; (b) two such pointers never
+/// point to the same object; (c) it points to offset 0 of one object, so
+/// `p + 1` is out of bounds; (d) it may be null.
 static void extern_pointers_own_object(goto_modelt &goto_model, messaget &log)
 {
   auto function = goto_model.goto_functions.function_map.find(
@@ -1100,32 +1103,48 @@ bool cbmc_parse_optionst::process_goto_program(
   if(options.get_bool_option("extern-pointers-own-object"))
     extern_pointers_own_object(goto_model, log);
 
-  // --datarace --no-assertions checks for races, and only races (it is how
-  // no-data-race is checked): the race property is added by the concurrency
-  // encoding, and every check left in the program -- --no-assertions removes
-  // the program's own assertions, not the preconditions of library
-  // functions -- made the answer FAILED for a violation that is not a race.
-  // On the adutux driver, kfree's "free argument must be dynamic object"
-  // did, under no-data-race: a wrong answer reported as a race. The checks
-  // are kept, as always true, not removed: with none left a truncated run
-  // has an empty property set, which is reported INCONCLUSIVE, where the
-  // race property's own result belongs (bigshot_s, pthread-finding-k-matches,
-  // no-data-race). With the program's assertions on, --datarace keeps every
-  // check as it is.
+  // --datarace --no-assertions checks no-data-race: races, and nothing else.
+  // --no-assertions disables the program's own assertions (goto_check turns
+  // them into assignments to a dummy variable); the checks still in the
+  // program -- preconditions of library functions -- would make the answer
+  // FAILED for a violation that is not a race. Each of them is treated the
+  // same way here: its condition is assigned to the dummy, so the memory
+  // reads in it still produce their events, and the check itself becomes
+  // `assert(true)`. It stays a property, because a truncated run with an
+  // empty property set is reported INCONCLUSIVE rather than with the result
+  // of the race property, which lazy_po adds later as an equation assertion
+  // and is not affected here. An assertion is never assumed, so no path
+  // changes. Checks created during symbolic execution (unwinding and
+  // recursion assertions) are not touched.
   if(
     options.get_bool_option("datarace") &&
     !options.get_bool_option("assertions"))
   {
-    std::size_t removed = 0;
+    const symbol_exprt dummy =
+      get_datarace_assert_dummy(goto_model.symbol_table);
+    std::size_t made_true = 0;
     for(auto &function : goto_model.goto_functions.function_map)
-      for(auto &instruction : function.second.body.instructions)
-        if(instruction.is_assert() && !instruction.condition().is_true())
+    {
+      goto_programt &body = function.second.body;
+      for(auto it = body.instructions.begin(); it != body.instructions.end();
+          ++it)
+      {
+        if(!it->is_assert() || it->condition().is_true())
+          continue;
+        if(it->condition().type() == dummy.type())
         {
-          instruction.condition_nonconst() = true_exprt{};
-          ++removed;
+          body.insert_before(
+            it,
+            goto_programt::make_assignment(
+              dummy, it->condition(), it->source_location()));
         }
-    if(removed != 0)
-      log.status() << "--datarace: " << removed
+        it->condition_nonconst() = true_exprt{};
+        ++made_true;
+      }
+    }
+    goto_model.goto_functions.update();
+    if(made_true != 0)
+      log.status() << "--datarace: " << made_true
                    << " checks that are not races made true" << messaget::eom;
   }
 
@@ -1287,9 +1306,13 @@ void cbmc_parse_optionst::help()
     "Semantic transformations:\n"
     // NOLINTNEXTLINE(whitespace/line_length)
     " --nondet-static              add nondeterministic initialization of variables with static lifetime\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --extern-pointers-own-object an undefined extern pointer to a struct or union points to an object of its own, or is null\n"
     "\n"
     "BMC options:\n"
     HELP_BMC
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --constant-array-oob-nondet  out-of-bounds reads of constant arrays are unconstrained (a FAILED may be spurious)\n"
     "\n"
     "Backend options:\n"
     HELP_CONFIG_BACKEND

@@ -87,7 +87,7 @@ static void transform_assertions_assumptions(
 /// every disabled assertion in the program -- its value is never read
 /// back, only its evaluation (and the memory reads that may be embedded
 /// in it) needs to survive into the SSA trace.
-static symbol_exprt get_datarace_assert_dummy(symbol_tablet &symbol_table)
+symbol_exprt get_datarace_assert_dummy(symbol_tablet &symbol_table)
 {
   const irep_idt name = CPROVER_PREFIX "datarace_assert_dummy";
   if(!symbol_table.has_symbol(name))

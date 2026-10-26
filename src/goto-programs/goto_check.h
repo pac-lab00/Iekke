@@ -32,6 +32,12 @@ void transform_assertions_assumptions(
 
 // __SZH_ADD_BEGIN__
 void add_dummy_assertion(goto_modelt &goto_model);
+
+class symbol_exprt;
+class symbol_tablet;
+/// The bool variable a disabled check's condition is assigned to under
+/// --datarace, so that the memory reads in the condition stay in the trace
+symbol_exprt get_datarace_assert_dummy(symbol_tablet &);
 // __SZH_ADD_END__
 
 #endif // CPROVER_GOTO_PROGRAMS_GOTO_CHECK_H
