@@ -106,10 +106,60 @@ static const symbol_exprt &register_por_symbol(const symbol_exprt &sym)
   return por_symbol_registry().back();
 }
 
-static void align_pointer_equalities(exprt &e)
+// Whether this node itself needs the alignment below.
+static bool misaligned_here(const exprt &e)
 {
+  if(e.id() == ID_equal || e.id() == ID_notequal)
+  {
+    const auto &binary = to_binary_expr(e);
+    return binary.op0().type() != binary.op1().type() &&
+           binary.op0().type().id() == ID_pointer &&
+           binary.op1().type().id() == ID_pointer;
+  }
+  if(e.id() == ID_if)
+  {
+    const auto &if_e = to_if_expr(e);
+    return if_e.true_case().type() != if_e.false_case().type() ||
+           if_e.type() != if_e.true_case().type();
+  }
+  if(e.id() == ID_with)
+    return to_with_expr(e).type() != to_with_expr(e).old().type();
+  return false;
+}
+
+// Whether a subtree holds a node to align, decided on the shared nodes
+// without touching them, once per node.
+static bool misaligned_below(
+  const exprt &e,
+  std::unordered_map<const void *, bool> &memo)
+{
+  const void *node = &e.read();
+  const auto known = memo.find(node);
+  if(known != memo.end())
+    return known->second;
+  bool found = misaligned_here(e);
+  for(const auto &op : e.operands())
+  {
+    if(found)
+      break;
+    found = misaligned_below(op, memo);
+  }
+  memo.emplace(node, found);
+  return found;
+}
+
+// Descends only into subtrees that need it: a non-const walk unshares every
+// node it visits, and walking every step's guard and condition copied the
+// equation's expression DAG into trees (on the adutux driver, 0.7 -> 17.6 GB
+// resident in this phase alone).
+static void align_pointer_equalities(
+  exprt &e,
+  std::unordered_map<const void *, bool> &memo)
+{
+  if(!misaligned_below(as_const(e), memo))
+    return;
   for(auto &op : e.operands())
-    align_pointer_equalities(op);
+    align_pointer_equalities(op, memo);
 
   if(e.id() == ID_equal || e.id() == ID_notequal)
   {
@@ -410,10 +460,17 @@ void lazy_pot::operator()(
   create_array_rf_constraints(equation);
   phase("array-read-from (late)");
 
+  // Shared across steps; emptied after any rewrite, since a replaced node
+  // may free an address that a later node then reuses.
+  std::unordered_map<const void *, bool> memo;
   for(auto &step : equation.SSA_steps)
   {
-    align_pointer_equalities(step.cond_expr);
-    align_pointer_equalities(step.guard);
+    const bool rewrites = misaligned_below(as_const(step.cond_expr), memo) ||
+                          misaligned_below(as_const(step.guard), memo);
+    align_pointer_equalities(step.cond_expr, memo);
+    align_pointer_equalities(step.guard, memo);
+    if(rewrites)
+      memo.clear();
   }
   phase("pointer-alignment");
 
