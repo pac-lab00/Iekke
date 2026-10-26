@@ -1,0 +1,16 @@
+CORE
+main.c
+--32 --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+B[0] = A[0] in one thread, B[M] = A[M] in another: with M == 0 they race
+on B[0]. The race encoding took the location of a store from the stored
+value, and found A's index there: the store to the split element B[[0]] was
+put at location M, so the race needed M == 0 on both sides of a comparison
+it could not satisfy. Only the event's own object gives an offset now.
+Reduced from weaver/popl20-more-parray-copy (no-data-race, expected false).
+See race_location_other_array_safe (M >= 1), which must stay SUCCESSFUL.

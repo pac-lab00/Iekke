@@ -3974,9 +3974,29 @@ symbol_exprt lazy_pot::no_interf_swap(symex_target_equationt &equation) {
 // Conservativo per costruzione: se i rami portano indici diversi non c'e' un
 // solo offset da attribuire all'accesso e si torna al sentinella, cioe' al
 // comportamento di prima.
-static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
+//
+// Only a `with` or an index of the event's own object gives its offset. The
+// value stored can index other arrays -- `B[i] = A[j]` reads A at j -- and
+// for an element field sensitivity has split off, the event's object is the
+// element itself, which has no offset: taking A's index for it put the store
+// to B[[0]] at location j, so a race with another thread's store to B[[0]]
+// needed j == 0 (popl20-more-parray-copy; ~/fa/race_assume/q6.c).
+static bool
+of_object(const exprt &array, const irep_idt &object)
 {
-  if(e.id() == ID_with && e.operands().size() == 3)
+  return is_ssa_expr(array) &&
+         to_ssa_expr(array).get_l1_object_identifier() == object;
+}
+
+static bool with_index_under_if(
+  const exprt &e,
+  exprt &out,
+  bool &found,
+  const irep_idt &object)
+{
+  if(
+    e.id() == ID_with && e.operands().size() == 3 &&
+    of_object(to_with_expr(e).old(), object))
   {
     const exprt &w = to_with_expr(e).where();
     if(found)
@@ -3996,7 +4016,7 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
   // sentinel, so a write (which does produce a `with`) and this kind of
   // read could never be seen as the same location: see
   // ~/tidrace_check/tid_symmalloc_only.c.
-  if(e.id() == ID_index)
+  if(e.id() == ID_index && of_object(to_index_expr(e).array(), object))
   {
     const index_exprt &idx = to_index_expr(e);
     if(found)
@@ -4017,8 +4037,8 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
   if(e.id() == ID_if)
   {
     const if_exprt &ife = to_if_expr(e);
-    return with_index_under_if(ife.true_case(), out, found) &&
-           with_index_under_if(ife.false_case(), out, found);
+    return with_index_under_if(ife.true_case(), out, found, object) &&
+           with_index_under_if(ife.false_case(), out, found, object);
   }
   // Reading `arr[k]` inside an `if`-condition (`if (arr[k] != 0) ...`),
   // rather than materialising it into a plain temporary first, folds the
@@ -4036,7 +4056,7 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
   {
     for(const auto &op : e.operands())
     {
-      if(!with_index_under_if(op, out, found))
+      if(!with_index_under_if(op, out, found, object))
         return false;
     }
     return true;
@@ -4052,18 +4072,19 @@ static bool with_index_under_if(const exprt &e, exprt &out, bool &found)
     e.id() == ID_byte_extract_little_endian ||
     e.id() == ID_byte_extract_big_endian)
   {
-    return with_index_under_if(to_byte_extract_expr(e).op(), out, found);
+    return with_index_under_if(
+      to_byte_extract_expr(e).op(), out, found, object);
   }
   return true;
 }
 
 /// \return l'offset dell'accesso se sotto gli `if` ce n'e' esattamente uno,
 ///   altrimenti nil.
-static exprt access_offset(const exprt &rhs)
+static exprt access_offset(const exprt &rhs, const irep_idt &object)
 {
   exprt out = nil_exprt{};
   bool found = false;
-  if(!with_index_under_if(rhs, out, found) || !found)
+  if(!with_index_under_if(rhs, out, found, object) || !found)
     return nil_exprt{};
   return out;
 }
@@ -4836,8 +4857,8 @@ void lazy_pot::collect_reads_and_writes(
           where = to_with_expr(next->ssa_rhs).where();
         }
         else if (next != ssa_steps.end() && next->is_assignment() &&
-                 access_offset(next->ssa_rhs).is_not_nil()) { //ARRAY sotto un if
-          where = access_offset(next->ssa_rhs);
+                 access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier()).is_not_nil()) { //ARRAY sotto un if
+          where = access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier());
         }
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
@@ -4943,8 +4964,8 @@ void lazy_pot::collect_reads_and_writes(
           where = to_index_expr(next->ssa_rhs).index();
         }
         else if (next != ssa_steps.end() && next->is_assignment() &&
-                 access_offset(next->ssa_rhs).is_not_nil()) { //ARRAY sotto un if
-          where = access_offset(next->ssa_rhs);
+                 access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier()).is_not_nil()) { //ARRAY sotto un if
+          where = access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier());
         }
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
