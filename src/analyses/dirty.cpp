@@ -52,14 +52,16 @@ void dirtyt::search_other(const goto_programt::instructiont &instruction)
       // invisible. See regression/thread-exclusivity/adv_Z_asm_addr.c.
       statement == ID_asm)
     {
-      // The array builtins take their arrays by address only to find the
-      // objects; they keep no pointer. A local whose address is taken only
-      // there does not escape -- memset's own local copy array, s_n, is the
-      // case that matters: marked dirty it became a shared object in every
-      // threaded program, its value reached the destination through a
-      // shared read, and the destination's update stayed a whole-array
-      // value (every one of the 144 driver arrays --array-rf declined as
-      // used whole). Indices inside the operand are still searched.
+      // Dirty means: may be accessed through a pointer at some other
+      // statement. The array builtins (array_set, array_equal, array_copy,
+      // array_replace) dereference their operands within the statement
+      // itself and store no pointer, so a symbol whose address appears only
+      // there, bare or as &a[i]..., cannot be reached from elsewhere; every
+      // client still sees the statement's own read or write of it through
+      // goto_rw or symex_other. Indices inside the operand are searched as
+      // usual. (The library's memset and memcpy pass their local copy
+      // arrays this way; marked dirty, those became shared objects in every
+      // threaded program.)
       const bool by_address_only =
         statement == ID_array_set || statement == ID_array_equal ||
         statement == ID_array_copy || statement == ID_array_replace;

@@ -129,6 +129,13 @@ REDUCED_SLICE = 30.0
 # believed; a SUCCESSFUL is never reported.
 UNSUGGESTED = 3
 SUGGEST_ROUNDS = 3
+# Bounds with at least this many rounds run with --por, the others without:
+# 7 is the smallest round count in the ladder at which bugs that need many
+# rounds appear (see the deep-rounds rungs above), and that is where partial-
+# order reduction pays; at fewer rounds it only adds constraints. One setting
+# per bound: SV-COMP limits CPU time over all cores, so running both settings
+# in parallel spends the budget twice as fast.
+POR_MIN_ROUNDS = 7
 SUGGEST_CAP = 1024
 SUGGEST_SLICE = 60.0
 SUGGEST_TIMEOUT = 30.0
@@ -389,15 +396,7 @@ for unwind, rounds, extra in bounds():
     bound_flags = ARRAY_RF_BYTES
     if "valid-memsafety.prp" not in property_path:
         bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
-    # POR only from 7 rounds up. It is what finds the bugs that need many
-    # rounds (fib_unsafe, triangular) far sooner -- 7.5x on fib_unsafe-10 --
-    # and at few rounds it costs: on the lock-free programs it blocks the
-    # search (elimination_backoff_stack, reachability: found in 193 s without
-    # it, not within 900 s with it). Cluster, full corpus, same commit:
-    # +1 answer, none lost, no new wrong one. Running both settings in
-    # parallel instead lost 36 points: SV-COMP's limit is CPU time over all
-    # cores, so two copies spend it twice as fast.
-    por = "--por" if rounds >= 7 else "--no-por"
+    por = "--por" if rounds >= POR_MIN_ROUNDS else "--no-por"
     cmd = ("./iekke_exe %s %s --unwind %d --rounds %d %s --verbosity 8 --glucose %s%s"
            % (program_path, flags, unwind, rounds, por, bound_flags, extra))
     print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"

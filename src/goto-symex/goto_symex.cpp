@@ -9,8 +9,6 @@ Author: Daniel Kroening, kroening@kroening.com
 /// \file
 /// Symbolic Execution
 
-#include <functional>
-#include <iostream>
 #include "goto_symex.h"
 
 #include "expr_skeleton.h"
@@ -28,6 +26,9 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/std_code.h>
 #include <util/string_expr.h>
 #include <util/string_utils.h>
+
+#include <functional>
+#include <iostream>
 
 #include <climits>
 
@@ -62,7 +63,8 @@ void goto_symext::symex_assign(
       ++targets;
       const exprt *r = &e;
       while(r->id() == ID_member || r->id() == ID_index ||
-            r->id() == ID_byte_extract_little_endian || r->id() == ID_typecast)
+            r->id() == ID_byte_extract_little_endian ||
+            r->id() == ID_byte_extract_big_endian || r->id() == ID_typecast)
         r = &r->operands()[0];
       if(is_ssa_expr(*r) &&
          id2string(to_ssa_expr(*r).get_object_name()) == assign_trace)

@@ -241,9 +241,10 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
         got = w[w.index("--dynamic-array-bound"):][:2] \
             if "--dynamic-array-bound" in w else []
         rounds = int(w[w.index("--rounds") + 1])
-        por = "--por" if rounds >= 7 else "--no-por"
+        # 7 = deagle_blind.POR_MIN_ROUNDS
+        por, other = ("--por", "--no-por") if rounds >= 7 else ("--no-por", "--por")
         if (got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a
-                or por not in w):
+                or por not in w or other in w):
             bad.append(a)
     ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
               for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]

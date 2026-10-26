@@ -342,9 +342,10 @@ void symex_target_equationt::constraint(
 /// LAZYPO_VAR_TALLY: how many SAT variables converting each SSA step creates,
 /// summed by the object the step assigns or by constraint kind, plus the
 /// backend's total before the solver's own post-processing (array theory,
-/// pointers), whose share is the final count minus that total. Measurement
-/// only: this is how the array constraints were found to be 88% of the adutux
-/// driver's formula.
+/// pointers), whose share is the final count minus that total. Steps of the
+/// kinds not tallied (declarations, function calls, I/O, assertions) are in
+/// the remainder too. Measurement only; with a decision procedure that is
+/// not a prop_conv_solvert every count reads 0.
 static bool var_tally_on()
 {
   static const bool on = getenv("LAZYPO_VAR_TALLY") != nullptr;

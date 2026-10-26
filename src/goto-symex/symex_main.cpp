@@ -620,10 +620,11 @@ void goto_symext::symex_step(
   const get_goto_functiont &get_goto_function,
   statet &state)
 {
-  // Every step's guard is merged into the equation, but only the step's copy
-  // was replaced: wherever the state's guard held a copy of a stored subtree,
-  // each step compared that copy node by node against the stored one again.
-  // On the ldv drivers that was three quarters of symbolic execution.
+  // Keep the state's guard merged with the equation's expressions.
+  // merge_irep replaces a subtree only by one that compares equal, so the
+  // guard's value is unchanged; sharing the stored nodes lets the merge of
+  // the next step's guard find them by pointer instead of comparing them
+  // node by node.
   state.guard = guardt{target.merged(state.guard.as_expr()), guard_manager};
 
   // __SZH_ADD_BEGIN__

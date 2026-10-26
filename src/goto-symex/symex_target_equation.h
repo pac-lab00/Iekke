@@ -350,7 +350,8 @@ public:
   std::map<event_it, exprt> read_dirties;
   // __SZH_ADD_END__
 
-  /// \p expr with every subtree already stored replaced by the stored one
+  /// \return \p expr with every subtree equal to one already stored in the
+  ///   equation replaced by the stored one: the same value, sharing nodes
   exprt merged(exprt expr)
   {
     merge_irep(expr);
