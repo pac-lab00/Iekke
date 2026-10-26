@@ -6,6 +6,7 @@
 #include <cctype>
 #include <optional>
 #include <tuple>
+#include <util/bitvector_types.h>
 #include <util/expr_util.h>
 #include <util/pointer_offset_size.h>
 #include <util/byte_operators.h>
@@ -106,7 +107,42 @@ static const symbol_exprt &register_por_symbol(const symbol_exprt &sym)
   return por_symbol_registry().back();
 }
 
-// Whether this node itself needs the alignment below.
+/// Memo for subtree_has: node address -> (the node, the answer).
+using subtree_memot = std::unordered_map<const void *, std::pair<exprt, bool>>;
+
+/// Whether some node of \p expr satisfies \p here, not looking inside nodes
+/// \p prune accepts, computed once per shared node and without writing to
+/// any. The memo holds every node it records: a held node is shared, so it is
+/// never changed in place (a write detaches a shared node) nor freed, and its
+/// address names the same unchanged node for as long as the memo lives.
+/// Used to make a non-const rewrite descend only where it changes something:
+/// a non-const walk unshares every node it visits, and over a whole equation
+/// that copies its expression DAG into trees.
+static bool subtree_has(
+  const exprt &expr,
+  const std::function<bool(const exprt &)> &here,
+  const std::function<bool(const exprt &)> &prune,
+  subtree_memot &memo)
+{
+  if(prune(expr))
+    return false;
+  const void *node = &expr.read();
+  const auto known = memo.find(node);
+  if(known != memo.end())
+    return known->second.second;
+  bool found = here(expr);
+  for(const auto &op : expr.operands())
+  {
+    if(found)
+      break;
+    found = subtree_has(op, here, prune, memo);
+  }
+  memo.emplace(node, std::make_pair(expr, found));
+  return found;
+}
+
+// Whether this node itself needs the alignment below: the three cases it
+// handles, tested in the same order.
 static bool misaligned_here(const exprt &e)
 {
   if(e.id() == ID_equal || e.id() == ID_notequal)
@@ -127,34 +163,14 @@ static bool misaligned_here(const exprt &e)
   return false;
 }
 
-// Whether a subtree holds a node to align, decided on the shared nodes
-// without touching them, once per node.
-static bool misaligned_below(
-  const exprt &e,
-  std::unordered_map<const void *, bool> &memo)
+static bool misaligned_below(const exprt &e, subtree_memot &memo)
 {
-  const void *node = &e.read();
-  const auto known = memo.find(node);
-  if(known != memo.end())
-    return known->second;
-  bool found = misaligned_here(e);
-  for(const auto &op : e.operands())
-  {
-    if(found)
-      break;
-    found = misaligned_below(op, memo);
-  }
-  memo.emplace(node, found);
-  return found;
+  return subtree_has(
+    e, misaligned_here, [](const exprt &) { return false; }, memo);
 }
 
-// Descends only into subtrees that need it: a non-const walk unshares every
-// node it visits, and walking every step's guard and condition copied the
-// equation's expression DAG into trees (on the adutux driver, 0.7 -> 17.6 GB
-// resident in this phase alone).
-static void align_pointer_equalities(
-  exprt &e,
-  std::unordered_map<const void *, bool> &memo)
+// Descends only into subtrees that hold a node to align (see subtree_has).
+static void align_pointer_equalities(exprt &e, subtree_memot &memo)
 {
   if(!misaligned_below(as_const(e), memo))
     return;
@@ -212,8 +228,9 @@ void lazy_pot::operator()(
   auto t_last = t_start;
   const auto phase = [&](const char *name) {
     const auto now = std::chrono::steady_clock::now();
-    // resident memory at the end of the phase, to attribute it as the time
-    long rss_kb = 0;
+    // the process's current resident memory (VmRSS, not the peak) at the end
+    // of the phase, where /proc provides it
+    long rss_kb = -1;
     {
       std::ifstream status("/proc/self/status");
       std::string line;
@@ -225,7 +242,10 @@ void lazy_pot::operator()(
       << "lazy_po phase " << name << ": "
       << std::chrono::duration_cast<std::chrono::milliseconds>(now - t_last)
            .count()
-      << "ms, resident " << rss_kb / 1024 << " MB" << messaget::eom;
+      << "ms, resident "
+      << (rss_kb < 0 ? std::string{"n/a"}
+                     : std::to_string(rss_kb / 1024) + " MB")
+      << messaget::eom;
     t_last = now;
   };
 
@@ -239,8 +259,10 @@ void lazy_pot::operator()(
 
   // LAZYPO_OWNWRITE_TALLY: reads that no other thread can reach between an
   // earlier write of the same thread and the read -- same label, no context
-  // switch in between -- so they read that write; and reads made before any
-  // thread is created (thread 0, label 0).
+  // switch in between -- so they read that write (when the write is
+  // executed); and how many of those writes store a constant, the value
+  // being the right-hand side of the assignment step that follows the write
+  // event.
   if(getenv("LAZYPO_OWNWRITE_TALLY") != nullptr)
   {
     std::size_t all = 0, own = 0, own_const = 0;
@@ -498,17 +520,12 @@ void lazy_pot::operator()(
   create_array_rf_constraints(equation);
   phase("array-read-from (late)");
 
-  // Shared across steps; emptied after any rewrite, since a replaced node
-  // may free an address that a later node then reuses.
-  std::unordered_map<const void *, bool> memo;
+  // one memo for all steps: it holds what it records (see subtree_has)
+  subtree_memot memo;
   for(auto &step : equation.SSA_steps)
   {
-    const bool rewrites = misaligned_below(as_const(step.cond_expr), memo) ||
-                          misaligned_below(as_const(step.guard), memo);
     align_pointer_equalities(step.cond_expr, memo);
     align_pointer_equalities(step.guard, memo);
-    if(rewrites)
-      memo.clear();
   }
   phase("pointer-alignment");
 
@@ -1266,13 +1283,15 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
           aw.condition = std::get<0>(*bu);
           aw.bytes = true;
           aw.offset = std::get<1>(*bu);
-          // memset(p, c, n) arrives as an update by ARRAY_OF(c) of n bytes, n
-          // often symbolic (a driver fills a buffer in parts of a length read
-          // from the device): a range write of the single byte c. Its bytes
-          // are known without a constant size.
+          // A byte update by ARRAY_OF(c) of n one-byte elements, n possibly
+          // symbolic (memset(p, c, n) arrives so), writes the byte c at each
+          // of [offset, offset + n): a range write, whose bytes are known
+          // without a constant size. Only for a bit-vector element, whose
+          // value is its own byte.
           const exprt &v = aw.value;
           if(
             v.id() == ID_array_of && v.type().id() == ID_array &&
+            can_cast_type<bitvector_typet>(to_array_type(v.type()).element_type()) &&
             pointer_offset_bits(to_array_type(v.type()).element_type(), ns) ==
               mp_integer{8})
           {
@@ -1563,15 +1582,19 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       if(!aw.whole_array && !aw.length.is_nil())
       {
         // a range write: [offset, offset + length), length an expression.
-        // Written p - offset < length, which cannot wrap once offset <= p,
-        // where offset + length could.
+        // Written offset <= p and p - offset < length, the difference taken
+        // in the unsigned type of the same width: once offset <= p it lies in
+        // [0, 2^w), so it is exact, where offset + length could wrap.
         const exprt lo = as_offset(aw.offset);
+        const unsignedbv_typet width{
+          to_bitvector_type(offset_type).get_width()};
         matches = and_exprt{
           matches,
           binary_relation_exprt{lo, ID_le, p},
           binary_relation_exprt{
-            minus_exprt{p, lo}, ID_lt,
-            typecast_exprt::conditional_cast(aw.length, offset_type)}};
+            typecast_exprt::conditional_cast(minus_exprt{p, lo}, width),
+            ID_lt,
+            typecast_exprt::conditional_cast(aw.length, width)}};
       }
       else if(!aw.whole_array)
       {
@@ -1637,20 +1660,16 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       const ssa_exprt elt{symbol_exprt{
         "arf_" + id2string(id) + "_" + std::to_string(fresh++), rtype}};
       const mp_integer n = *pointer_offset_size(rtype, ns);
-      // Static disjointness: a write at a constant range that misses a byte
-      // read at a constant offset can never be the one that byte reads, so
-      // it is left out of that byte's cascade. Without this every byte read
-      // carried every earlier write: on the adutux driver the byte-wise
-      // read-from was 17.4 GB of the 18.1 GB built before the solver.
-      const auto roff_c = numeric_cast<mp_integer>(simplify_expr(roff, ns));
+      // Static disjointness: where the byte's offset and the write's range
+      // are constants, the write's hit condition (byte_hits, the one the
+      // cascade below uses) is decided by simplification; a write whose hit
+      // condition is false is left out of the byte's cascade.
+      const bool roff_constant = simplify_expr(roff, ns).is_constant();
       const auto misses = [&](const array_writet &aw, const mp_integer &b) {
-        if(!roff_c.has_value() || aw.whole_array)
+        if(!roff_constant || aw.whole_array || !constant_range(aw).has_value())
           return false;
-        const auto range = constant_range(aw);
-        if(!range.has_value())
-          return false;
-        const mp_integer at = *roff_c + b;
-        return at < range->first || at >= range->first + range->second;
+        const exprt p = plus_exprt{roff, from_integer(b, offset_type)};
+        return simplify_expr(byte_hits(aw, true_exprt{}, p), ns).is_false();
       };
       const bool after_prologue = prologue.count(&*rdev.s_it) == 0;
       const std::vector<std::size_t> pre =
@@ -1700,37 +1719,24 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       return it->second;
     };
 
-    // rewrite every index(V#k, j) into a fresh scalar, and say what it holds
-    // Whether a subtree holds anything the rewrite replaces, decided on the
-    // shared nodes without touching them, once per node. The rewrite below
-    // descends only into such subtrees: its non-const walk unshares every
-    // node it visits, and walking every step's guard and right-hand side
-    // copied the whole equation's expression DAG into trees, once per
-    // object. On the adutux driver those copies were 17.4 GB of the 18.1 GB
-    // resident before the solver.
-    std::unordered_map<const void *, bool> holds_target;
-    std::function<bool(const exprt &)> contains = [&](const exprt &expr) {
-      if(expr.id() == ID_address_of)
-        return false;
-      const void *node = &expr.read();
-      const auto known = holds_target.find(node);
-      if(known != holds_target.end())
-        return known->second;
-      bool found =
-        (expr.id() == ID_index ||
-         (bytewise && expr.id() == ID_byte_extract_little_endian)) &&
-        !expr.operands().empty() && expr.operands()[0].id() == ID_symbol &&
-        narrowing_base(expr.operands()[0]) == variable;
-      for(const auto &op : expr.operands())
-      {
-        if(found)
-          break;
-        found = contains(op);
-      }
-      holds_target.emplace(node, found);
-      return found;
+    // Whether a subtree holds a read of this variable: the rewrite below
+    // descends only into such subtrees (see subtree_has). Addresses are not
+    // reads.
+    subtree_memot holds_target;
+    const auto reads_variable = [&](const exprt &expr) {
+      return (expr.id() == ID_index ||
+              (bytewise && expr.id() == ID_byte_extract_little_endian)) &&
+             !expr.operands().empty() && expr.operands()[0].id() == ID_symbol &&
+             narrowing_base(expr.operands()[0]) == variable;
+    };
+    const auto is_address = [](const exprt &expr) {
+      return expr.id() == ID_address_of;
+    };
+    const auto contains = [&](const exprt &expr) {
+      return subtree_has(expr, reads_variable, is_address, holds_target);
     };
 
+    // rewrite every index(V#k, j) into a fresh scalar, and say what it holds
     std::function<void(exprt &)> rewrite = [&](exprt &expr) {
       if(expr.id() == ID_address_of)
         return;
@@ -2099,13 +2105,14 @@ void lazy_pot::create_private_constraints(symex_target_equationt &equation)
       if(!found)
         continue; // reads the pre-first-write value, which constrains nothing
 
-      // Unconditional: the read's value is a fresh symbol nothing else
-      // constrains, and nothing executed depends on it when the read does not
-      // happen, so tying it there too changes no execution. It does make the
-      // read a plain definition, which the array encoding can then rely on:
-      // a private array read guarded by an implication kept its own
-      // Ackermann constraints (on the adutux driver, memset's local array:
-      // 29.1M -> 27.4M SAT variables).
+      // Unconditional. The read's value is a fresh symbol: a private object
+      // gets no shared or array read-from constraint, so this is the only
+      // constraint on it, and every use of it is later in the same thread,
+      // executed only where the read is. Tying it also where the read does
+      // not happen therefore changes no execution, and makes it a plain
+      // definition, which the solver's array theory treats as such
+      // (arrayst::defined_by_equality) instead of keeping its Ackermann
+      // constraints.
       equation.constraint(
         equal_exprt{narrowed_value(variable, read.s_it->ssa_lhs),
                     typecast_exprt::conditional_cast(
@@ -3992,33 +3999,11 @@ symbol_exprt lazy_pot::no_interf_swap(symex_target_equationt &equation) {
 // __SZH_DR_ADD_END__
 
 
-// L'offset di un accesso puo' essere sepolto sotto un `if`.
-//
-// Un oggetto dinamico di dimensione *simbolica* non viene spezzato per
-// elemento dalla field sensitivity (che richiede una size costante), quindi
-// `datas[i] = v` arriva nella SSA come
-//
-//   obj#4 == (datas == &obj ? obj#3 WITH [0:=v] : obj#2)
-//
-// La destra non e' un `with`: e' un `if` che lo contiene, perche' il
-// puntatore potrebbe puntare altrove. Il test sulla forma falliva, `where`
-// restava al sentinella -1 per *ogni* accesso all'oggetto, e la condizione di
-// corsa confronta `dr_loc(1) == dr_loc(2)` -- quindi due thread che scrivono
-// elementi diversi finivano sulla stessa locazione e venivano dichiarati in
-// corsa. E' la famiglia per-thread-array-index / per-thread-index-* / sssc12,
-// e il riproduttore minimo e' ~/heapidx/c_constthreads.c (22 righe, con il
-// controllo a indice uguale che deve restare FAILED).
-//
-// Conservativo per costruzione: se i rami portano indici diversi non c'e' un
-// solo offset da attribuire all'accesso e si torna al sentinella, cioe' al
-// comportamento di prima.
-//
-// Only a `with` or an index of the event's own object gives its offset. The
-// value stored can index other arrays -- `B[i] = A[j]` reads A at j -- and
-// for an element field sensitivity has split off, the event's object is the
-// element itself, which has no offset: taking A's index for it put the store
-// to B[[0]] at location j, so a race with another thread's store to B[[0]]
-// needed j == 0 (popl20-more-parray-copy; ~/fa/race_assume/q6.c).
+/// Whether \p array is \p object itself (an L2 version of it). Only a `with`
+/// over, or an index into, the event's own object gives the event's offset:
+/// the value stored may index other arrays (`B[i] = A[j]` reads A at j), and
+/// for an element field sensitivity has split off the event's object is the
+/// element itself, which has no offset within it.
 static bool
 of_object(const exprt &array, const irep_idt &object)
 {
@@ -4026,6 +4011,13 @@ of_object(const exprt &array, const irep_idt &object)
          to_ssa_expr(array).get_l1_object_identifier() == object;
 }
 
+/// The offset of an access to \p object may be buried under an `if`: an
+/// object field sensitivity does not split (of symbolic size) is stored as
+/// `obj#4 == (p == &obj ? obj#3 with [k := v] : obj#2)`, a choice because
+/// the pointer may point elsewhere. Collects into \p out the offset of every
+/// `with` over, or index into, \p object under the if-chain (and under the
+/// boolean and byte-extract wrappers below); false when two of them differ,
+/// so the access keeps the default offset.
 static bool with_index_under_if(
   const exprt &e,
   exprt &out,
@@ -4118,6 +4110,15 @@ static bool with_index_under_if(
 
 /// \return l'offset dell'accesso se sotto gli `if` ce n'e' esattamente uno,
 ///   altrimenti nil.
+/// The offset of an access to \p object read off the assignment that
+/// follows its event, or nil. Two events of one variable race only at equal
+/// locations, and an event whose offset is not found keeps the default -1,
+/// which equals only another -1. That is needed: the read of an array's old
+/// value that a store makes to build its update has no offset, and pairing
+/// it with another thread's write at any offset would report races at
+/// elements the program never reads. It is also a known incompleteness: a
+/// genuine access at an unknown offset is not paired with an access at a
+/// known one.
 static exprt access_offset(const exprt &rhs, const irep_idt &object)
 {
   exprt out = nil_exprt{};
@@ -4891,13 +4892,15 @@ void lazy_pot::collect_reads_and_writes(
         // ~/tidrace_check/tid_ifcond_const.c.
         if(next != ssa_steps.end() && next->type == goto_trace_stept::typet::GOTO)
           next++;
-        if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_with) { //ARRAY
-          where = to_with_expr(next->ssa_rhs).where();
-        }
-        else if (next != ssa_steps.end() && next->is_assignment() &&
-                 access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier()).is_not_nil()) { //ARRAY sotto un if
-          where = access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier());
-        }
+        // an array access: the offset of the event's own object, under the
+        // step's if-chain or bare (see access_offset)
+        const exprt offset =
+          next != ssa_steps.end() && next->is_assignment()
+            ? access_offset(
+                next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier())
+            : static_cast<exprt>(nil_exprt{});
+        if(offset.is_not_nil())
+          where = offset;
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
           auto pos = id.rfind("..");
@@ -4998,13 +5001,14 @@ void lazy_pot::collect_reads_and_writes(
         // read feeds an if-condition's guard update directly.
         if(next != ssa_steps.end() && next->type == goto_trace_stept::typet::GOTO)
           next++;
-        if (next != ssa_steps.end() && next->is_assignment() && next->ssa_rhs.id() == ID_index) { //ARRAY
-          where = to_index_expr(next->ssa_rhs).index();
-        }
-        else if (next != ssa_steps.end() && next->is_assignment() &&
-                 access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier()).is_not_nil()) { //ARRAY sotto un if
-          where = access_offset(next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier());
-        }
+        // see the write site
+        const exprt offset =
+          next != ssa_steps.end() && next->is_assignment()
+            ? access_offset(
+                next->ssa_rhs, s_it->ssa_lhs.get_l1_object_identifier())
+            : static_cast<exprt>(nil_exprt{});
+        if(offset.is_not_nil())
+          where = offset;
         else { //STRUCT
           std::string id = id2string(to_symbol_expr(s_it->ssa_lhs).get_identifier());
           auto pos = id.rfind("..");

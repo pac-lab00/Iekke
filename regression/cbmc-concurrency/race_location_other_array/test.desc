@@ -8,9 +8,9 @@ main.c
 ^VERIFICATION SUCCESSFUL$
 --
 B[0] = A[0] in one thread, B[M] = A[M] in another: with M == 0 they race
-on B[0]. The race encoding took the location of a store from the stored
-value, and found A's index there: the store to the split element B[[0]] was
-put at location M, so the race needed M == 0 on both sides of a comparison
-it could not satisfy. Only the event's own object gives an offset now.
+on B[0]. The race encoding gives each array access a location. Thread 1's store to
+the split element B[[0]] got the default location, thread 3's got M, the index
+of the read A[M] in the stored value, so the two never matched. Only the
+event's own object gives a location now.
 Reduced from weaver/popl20-more-parray-copy (no-data-race, expected false).
 See race_location_other_array_safe (M >= 1), which must stay SUCCESSFUL.
