@@ -237,6 +237,44 @@ void lazy_pot::operator()(
   collect_reads_and_writes(equation.SSA_steps);
   phase("collect-events");
 
+  // LAZYPO_OWNWRITE_TALLY: reads that no other thread can reach between an
+  // earlier write of the same thread and the read -- same label, no context
+  // switch in between -- so they read that write; and reads made before any
+  // thread is created (thread 0, label 0).
+  if(getenv("LAZYPO_OWNWRITE_TALLY") != nullptr)
+  {
+    std::size_t all = 0, own = 0, own_const = 0;
+    for(const auto &entry : reads)
+    {
+      const auto w = writes.find(entry.first);
+      for(const auto &r : entry.second)
+      {
+        ++all;
+        if(w == writes.end())
+          continue;
+        const shared_event *latest = nullptr;
+        for(const auto &e : w->second)
+          if(e.thread == r.thread && e.label == r.label && e.num < r.num &&
+             (latest == nullptr || e.num > latest->num))
+            latest = &e;
+        if(latest == nullptr)
+          continue;
+        ++own;
+        auto next = latest->s_it;
+        ++next;
+        while(next != equation.SSA_steps.end() && !next->is_assignment())
+          ++next;
+        if(next != equation.SSA_steps.end() &&
+           next->ssa_lhs.get_identifier() ==
+             latest->s_it->ssa_lhs.get_identifier() &&
+           next->ssa_rhs.is_constant())
+          ++own_const;
+      }
+    }
+    std::cerr << "OWNWRITE_TALLY reads=" << all << " after-own-write=" << own
+                << " of-a-constant=" << own_const << "\n";
+  }
+
   if(skipped_writes || skipped_reads)
     log.error() << "lazy_po: accessi shared SCARTATI dal modello di memoria -- W="
                 << skipped_writes << " R=" << skipped_reads

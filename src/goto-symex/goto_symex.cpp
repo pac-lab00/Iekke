@@ -9,6 +9,8 @@ Author: Daniel Kroening, kroening@kroening.com
 /// \file
 /// Symbolic Execution
 
+#include <functional>
+#include <iostream>
 #include "goto_symex.h"
 
 #include "expr_skeleton.h"
@@ -43,6 +45,35 @@ void goto_symext::symex_assign(
   const exprt &o_rhs)
 {
   exprt lhs = clean_expr(o_lhs, state, true);
+  // ASSIGN_TRACE=<object>: where the program's stores reach that object,
+  // and through how many targets
+  static const char *assign_trace = getenv("ASSIGN_TRACE");
+  if(assign_trace != nullptr)
+  {
+    std::size_t targets = 0;
+    bool hits = false;
+    std::function<void(const exprt &)> walk = [&](const exprt &e) {
+      if(e.id() == ID_if)
+      {
+        walk(to_if_expr(e).true_case());
+        walk(to_if_expr(e).false_case());
+        return;
+      }
+      ++targets;
+      const exprt *r = &e;
+      while(r->id() == ID_member || r->id() == ID_index ||
+            r->id() == ID_byte_extract_little_endian || r->id() == ID_typecast)
+        r = &r->operands()[0];
+      if(is_ssa_expr(*r) &&
+         id2string(to_ssa_expr(*r).get_object_name()) == assign_trace)
+        hits = true;
+    };
+    walk(lhs);
+    if(hits)
+      std::cerr << "ASSIGN_TRACE " << state.source.pc->source_location().get_line()
+                << " " << state.source.function_id << " targets=" << targets
+                << "\n";
+  }
   exprt rhs = clean_expr(o_rhs, state, false);
 
   DATA_INVARIANT(
@@ -118,6 +149,21 @@ void goto_symext::symex_assign(
     exprt::operandst lhs_if_then_else_conditions;
     symex_assign.assign_rec(
       lhs, expr_skeletont{}, rhs, lhs_if_then_else_conditions);
+    // VSTRACE=<text>: after an assignment to a symbol whose name contains
+    // the text, its rhs and its points-to set
+    static const char *vstrace = getenv("VSTRACE");
+    if(
+      vstrace != nullptr && is_ssa_expr(lhs) &&
+      id2string(to_ssa_expr(lhs).get_identifier()).find(vstrace) !=
+        std::string::npos)
+    {
+      std::cerr << "VSTRACE " << state.source.pc->source_location().get_line()
+                << " " << format(lhs) << " := " << format(rhs) << "\n   ->";
+      for(const auto &v :
+          state.value_set.get_value_set(state.rename<L1>(lhs, ns).get(), ns))
+        std::cerr << " " << format(v);
+      std::cerr << "\n";
+    }
   }
 }
 
