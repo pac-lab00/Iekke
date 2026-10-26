@@ -1606,8 +1606,40 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
     };
 
     // rewrite every index(V#k, j) into a fresh scalar, and say what it holds
+    // Whether a subtree holds anything the rewrite replaces, decided on the
+    // shared nodes without touching them, once per node. The rewrite below
+    // descends only into such subtrees: its non-const walk unshares every
+    // node it visits, and walking every step's guard and right-hand side
+    // copied the whole equation's expression DAG into trees, once per
+    // object. On the adutux driver those copies were 17.4 GB of the 18.1 GB
+    // resident before the solver.
+    std::unordered_map<const void *, bool> holds_target;
+    std::function<bool(const exprt &)> contains = [&](const exprt &expr) {
+      if(expr.id() == ID_address_of)
+        return false;
+      const void *node = &expr.read();
+      const auto known = holds_target.find(node);
+      if(known != holds_target.end())
+        return known->second;
+      bool found =
+        (expr.id() == ID_index ||
+         (bytewise && expr.id() == ID_byte_extract_little_endian)) &&
+        !expr.operands().empty() && expr.operands()[0].id() == ID_symbol &&
+        narrowing_base(expr.operands()[0]) == variable;
+      for(const auto &op : expr.operands())
+      {
+        if(found)
+          break;
+        found = contains(op);
+      }
+      holds_target.emplace(node, found);
+      return found;
+    };
+
     std::function<void(exprt &)> rewrite = [&](exprt &expr) {
       if(expr.id() == ID_address_of)
+        return;
+      if(!contains(as_const(expr)))
         return;
 
       if(
