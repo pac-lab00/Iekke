@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
+#include <fstream>
 #include <functional>
 #include <thread>
 #include <util/cprover_prefix.h>
@@ -161,11 +162,20 @@ void lazy_pot::operator()(
   auto t_last = t_start;
   const auto phase = [&](const char *name) {
     const auto now = std::chrono::steady_clock::now();
+    // resident memory at the end of the phase, to attribute it as the time
+    long rss_kb = 0;
+    {
+      std::ifstream status("/proc/self/status");
+      std::string line;
+      while(std::getline(status, line))
+        if(line.rfind("VmRSS:", 0) == 0)
+          rss_kb = std::atol(line.c_str() + 6);
+    }
     log.statistics()
       << "lazy_po phase " << name << ": "
       << std::chrono::duration_cast<std::chrono::milliseconds>(now - t_last)
            .count()
-      << "ms" << messaget::eom;
+      << "ms, resident " << rss_kb / 1024 << " MB" << messaget::eom;
     t_last = now;
   };
 
