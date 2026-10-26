@@ -1,0 +1,11 @@
+CORE
+main.c
+--allow-pointer-unsoundness --32 --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=10$
+^SIGNAL=0$
+^\[.*\] datarace: FAILURE$
+^VERIFICATION FAILED$
+--
+precondition_instance.*FAILURE
+--
+As datarace_only_races with a real race: still found, and only the race.

@@ -1100,6 +1100,35 @@ bool cbmc_parse_optionst::process_goto_program(
   if(options.get_bool_option("extern-pointers-own-object"))
     extern_pointers_own_object(goto_model, log);
 
+  // --datarace --no-assertions checks for races, and only races (it is how
+  // no-data-race is checked): the race property is added by the concurrency
+  // encoding, and every check left in the program -- --no-assertions removes
+  // the program's own assertions, not the preconditions of library
+  // functions -- made the answer FAILED for a violation that is not a race.
+  // On the adutux driver, kfree's "free argument must be dynamic object"
+  // did, under no-data-race: a wrong answer reported as a race. The checks
+  // are kept, as always true, not removed: with none left a truncated run
+  // has an empty property set, which is reported INCONCLUSIVE, where the
+  // race property's own result belongs (bigshot_s, pthread-finding-k-matches,
+  // no-data-race). With the program's assertions on, --datarace keeps every
+  // check as it is.
+  if(
+    options.get_bool_option("datarace") &&
+    !options.get_bool_option("assertions"))
+  {
+    std::size_t removed = 0;
+    for(auto &function : goto_model.goto_functions.function_map)
+      for(auto &instruction : function.second.body.instructions)
+        if(instruction.is_assert() && !instruction.condition().is_true())
+        {
+          instruction.condition_nonconst() = true_exprt{};
+          ++removed;
+        }
+    if(removed != 0)
+      log.status() << "--datarace: " << removed
+                   << " checks that are not races made true" << messaget::eom;
+  }
+
   // add failed symbols
   // needs to be done before pointer analysis
   add_failed_symbols(goto_model.symbol_table);
