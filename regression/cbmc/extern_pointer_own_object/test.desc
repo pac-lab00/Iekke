@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --extern-pointers-own-object
+^EXIT=0$
+^SIGNAL=0$
+^extern pointers given an object of their own: 1$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+An extern pointer to a struct, defined nowhere, gets an object of its own
+(or null): stores and loads through it agree.

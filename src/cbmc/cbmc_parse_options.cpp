@@ -74,6 +74,10 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <pointer-analysis/add_failed_symbols.h>
 
 #include <langapi/mode.h>
+#include <linking/static_lifetime_init.h>
+#include <goto-programs/goto_functions.h>
+#include <util/pointer_expr.h>
+#include <util/expr_initializer.h>
 
 #include "c_test_input_generator.h"
 
@@ -242,6 +246,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     }
     options.set_option("dynamic-array-bound", std::to_string(*bound));
   }
+
+  if(cmdline.isset("extern-pointers-own-object"))
+    options.set_option("extern-pointers-own-object", true);
 
   if(cmdline.isset("rounds"))
   {
@@ -994,6 +1001,71 @@ void cbmc_parse_optionst::preprocessing(const optionst &options)
     log.error() << "PREPROCESSING ERROR" << messaget::eom;
 }
 
+/// --extern-pointers-own-object: a pointer declared extern and defined
+/// nowhere starts nondeterministic, so pointer analysis cannot say where it
+/// points; once it is merged with the pointers that are published, its
+/// dereference reaches every object whose address the program stores (the
+/// adutux driver's `current_task`: 46 stores through it rewrote nine global
+/// structs, 36% of the formula). Here it points to an object of its own, or
+/// is null: the environment's objects are assumed not to be the program's.
+/// Only pointers to complete structs and unions are touched.
+static void extern_pointers_own_object(goto_modelt &goto_model, messaget &log)
+{
+  auto function = goto_model.goto_functions.function_map.find(
+    INITIALIZE_FUNCTION);
+  if(function == goto_model.goto_functions.function_map.end())
+    return;
+  const namespacet ns(goto_model.symbol_table);
+  goto_programt &body = function->second.body;
+  std::size_t count = 0;
+  for(auto it = body.instructions.begin(); it != body.instructions.end(); ++it)
+  {
+    if(!it->is_assign() || it->assign_lhs().id() != ID_symbol)
+      continue;
+    const irep_idt &name = to_symbol_expr(it->assign_lhs()).get_identifier();
+    const symbolt &symbol = ns.lookup(name);
+    if(
+      !symbol.is_extern || symbol.value.is_not_nil() ||
+      symbol.type.id() != ID_pointer ||
+      it->assign_rhs().id() != ID_side_effect)
+    {
+      continue;
+    }
+    const typet &target = to_pointer_type(symbol.type).base_type();
+    const typet &followed = ns.follow(target);
+    if(
+      (followed.id() != ID_struct && followed.id() != ID_union) ||
+      to_struct_union_type(followed).is_incomplete())
+    {
+      continue;
+    }
+    symbolt object;
+    object.name = id2string(name) + "$own_object";
+    object.base_name = object.name;
+    object.pretty_name = object.name;
+    object.type = target;
+    object.mode = symbol.mode;
+    object.location = symbol.location;
+    object.is_static_lifetime = true;
+    object.is_lvalue = true;
+    goto_model.symbol_table.add(object);
+    const auto contents = nondet_initializer(target, symbol.location, ns);
+    CHECK_RETURN(contents.has_value());
+    body.insert_before(
+      it,
+      goto_programt::make_assignment(
+        object.symbol_expr(), *contents, it->source_location()));
+    it->assign_rhs_nonconst() = if_exprt{
+      side_effect_expr_nondett{bool_typet{}, symbol.location},
+      address_of_exprt{object.symbol_expr()},
+      null_pointer_exprt{to_pointer_type(symbol.type)}};
+    ++count;
+  }
+  goto_model.goto_functions.update();
+  log.status() << "extern pointers given an object of their own: " << count
+               << messaget::eom;
+}
+
 bool cbmc_parse_optionst::process_goto_program(
   goto_modelt &goto_model,
   const optionst &options,
@@ -1024,6 +1096,9 @@ bool cbmc_parse_optionst::process_goto_program(
                  << messaget::eom;
     nondet_static(goto_model);
   }
+
+  if(options.get_bool_option("extern-pointers-own-object"))
+    extern_pointers_own_object(goto_model, log);
 
   // add failed symbols
   // needs to be done before pointer analysis

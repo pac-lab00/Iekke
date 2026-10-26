@@ -1,0 +1,11 @@
+CORE
+main.c
+--32 --extern-pointers-own-object
+^EXIT=10$
+^SIGNAL=0$
+^extern pointers given an object of their own: 1$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+As extern_pointer_own_object, with a wrong assertion: still found.

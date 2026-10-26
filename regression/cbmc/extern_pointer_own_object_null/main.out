@@ -1,0 +1,51 @@
+Deagle version 4.1.0 64-bit x86_64 linux
+which contains:
+CBMC version 5.67.0 (29571c48-dirty) 64-bit x86_64 linux
+Parsing main.c
+Converting
+Type-checking main
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+extern pointers given an object of their own: 1
+Running with 8 object bits, 24 offset bits (default)
+Starting Bounded Model Checking
+Unwinding successfully
+Start removing dummy accesses: 47 steps before removal
+47 steps after removal
+Runtime Symex: 0.000719962s
+size of program expression: 47 steps
+simple slicing removed 9 assignments
+Generated 4 VCC(s), 4 remaining after simplification
+Runtime Postprocess Equation: 7.143e-06s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000163622s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 4.1933e-05s
+Solving with Glucose Syrup with simplifier
+161 variables, 144 clauses
+decisions: 2 total, 0 from the POR fallback tier, 0 landing on a POR variable; conflicts: 0, propagations: 48; CS-first: on
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000196873s
+Runtime decision procedure: 0.00039063s
+Running propositional reduction
+Solving with Glucose Syrup with simplifier
+161 variables, 0 clauses
+SAT checker inconsistent: instance is UNSATISFIABLE
+Runtime Solver: 3.348e-06s
+Runtime decision procedure: 8.627e-06s
+
+** Results:
+main.c function main
+[main.pointer_dereference.1] line 4 dereference failure: pointer NULL in ep->x: FAILURE
+[main.pointer_dereference.2] line 4 dereference failure: pointer invalid in ep->x: SUCCESS
+[main.pointer_dereference.3] line 4 dereference failure: pointer outside object bounds in ep->x: FAILURE
+[main.pointer_dereference.4] line 4 dereference failure: invalid integer address in ep->x: SUCCESS
+
+** 2 of 4 failed (2 iterations)
+VERIFICATION FAILED
+EXIT=10
+SIGNAL=0
