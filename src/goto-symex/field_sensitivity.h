@@ -81,6 +81,20 @@ class symex_targett;
 /// `array[[0]] = other_array[[0]]`;
 /// `array[[1]] = other_array[[1]]`; etc.
 /// See \ref field_sensitivityt::field_assignments.
+/// The value stored by a store to one member path of an array element,
+/// `a[i].m1.m2...mn = v`, reaches symbolic execution as
+/// `with(B1, m1, with(B2, m2, ... with(Bn, mn, v)))`, B1 being the element
+/// `a[i]` and each B(k+1) the member `member(Bk, mk)`. Returns n, the number
+/// of member levels in which every base is exactly the previous base's
+/// member, or 0 when \p value does not start with a member update. It stops
+/// at v even when v is itself a member update: v is a value the program
+/// computed, not a base. That B1 is the element stored to is the caller's to
+/// check.
+/// With \p renamed, the bases have been renamed to L2 separately -- each is
+/// a read of its own, with its own generations -- so they are not compared
+/// whole: B(k+1) must be a member named mk of some compound.
+std::size_t member_store_depth(const exprt &value, bool renamed = false);
+
 class field_sensitivityt
 {
 public:

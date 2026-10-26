@@ -9,4 +9,4 @@ main.c
 The other direction of lost_update_constant_size_array: two threads
 increment the same element without a lock, a real lost update. The atomic
 section added to element stores covers only the copy of the other elements,
-not the program own read of the element, so the violation is still found.
+not the program's own read of the element, so the violation is still found.

@@ -6,4 +6,4 @@ main.c
 ^VERIFICATION SUCCESSFUL$
 --
 --
-Different members, stored at computed indices by two threads, are different memory locations: no data race. Rebuilding the element used to read every member, and those reads paired with the other thread store. Fails on a binary without the fix.
+Different members, stored at computed indices by two threads, are different memory locations: no data race. Rebuilding the element used to read every member, and those reads paired with the other thread's store. Fails on a binary without the fix.

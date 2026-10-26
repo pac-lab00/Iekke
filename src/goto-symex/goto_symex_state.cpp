@@ -281,23 +281,22 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       to_with_expr(expr.op2()).where().id() == ID_member_name &&
       to_with_expr(expr.op2()).old().id() == ID_index)
     {
-      // A store to one member at an undecided element, `a[i].m = v`:
-      // with(a, i, with(a[i], m, v)). The program reads nothing of a[i]: m is
-      // overwritten and the other members are carried back unpublished (see
-      // member_stored in field_sensitivity.cpp). Renamed with the plain walk,
-      // a[i] emitted a read event for every member of the element, so a
-      // thread storing a[i].f was paired with one storing a[j].g as a race
-      // (regression/cbmc-concurrency/datarace_struct_member_symbolic_index).
-      // Rename it with its read events switched off; the values still flow
-      // into this thread's own view.
-      // A nested member, `a[i].s.m = v`, is one `with` deeper per level;
-      // every carried base along the chain is renamed the same way.
+      // A store to one member path at an undecided element, `a[i].m = v`:
+      // with(a, i, with(a[i], m, v)), one `with` deeper per nested member
+      // (member_store_depth). The carried bases a[i], a[i].s, ... are not
+      // read by the program: only the path's leaf is written, and the other
+      // leaves are carried back. So they are renamed with their read events
+      // off. For a shared object a base's value is then unconstrained, but no
+      // one observes it: the leaves it fills are published under false
+      // (member_stored in field_sensitivity.cpp), and a later read of one of
+      // them is a fresh read with its own event. For an unshared object
+      // nothing is recorded and the bases are this thread's values.
       with_exprt &with = to_with_expr(expr);
+      std::size_t levels = member_store_depth(with.new_value());
       with.old() = rename<level>(std::move(with.old()), ns).get();
       with.where() = rename<level>(std::move(with.where()), ns).get();
       exprt *part = &with.new_value();
-      while(part->id() == ID_with && part->operands().size() == 3 &&
-            to_with_expr(*part).where().id() == ID_member_name)
+      for(; levels > 0; --levels)
       {
         with_exprt &member_with = to_with_expr(*part);
         {
@@ -457,13 +456,12 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       rename_leaves(byte_extract_expr.op(), 0);
     }
     // A load of one member at a symbolic element, after field sensitivity
-    // has expanded the array: `{s0, s1, ...}[i].m` with each s_k the struct of
-    // element k's leaves. Renamed as it stands, the index below conditions each
-    // element on i == k, but every member of the element still emitted a read
-    // event, so reading a[i].f paired with another thread's store to a[i].g as
-    // a data race (regression/cbmc-concurrency/
-    // datarace_struct_member_read_symbolic_index). Select the member first --
-    // `{s0.m, s1.m, ...}[i]`, the same value -- so only the m leaves are read.
+    // has expanded the array: `{s0, s1, ...}[i].m` with each s_k a struct
+    // literal of element k's leaves. Renamed as it stands, every member of
+    // the element would emit a read event, though the program reads only m.
+    // Select the member first: `{s0.m, s1.m, ...}[i]` is the same value,
+    // each s_k's operands following the components in order, and only the
+    // m leaves are read. Other shapes take the generic walk.
     else if(
       level == L2 && expr.id() == ID_member &&
       to_member_expr(expr).compound().id() == ID_index &&

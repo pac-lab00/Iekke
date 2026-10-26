@@ -153,21 +153,16 @@ void symex_assignt::assign_non_struct_symbol(
   const exprt &rhs,
   const exprt::operandst &guard)
 {
-  // A store into one element of a shared object that field sensitivity cannot
-  // split -- an array whose size is symbolic, `malloc(n * sizeof(int))` with
-  // n nondet, or constant but above the splitting bound of 64 elements -- is
-  // `a#new == with(a#old, i, v)`: the whole object, rebuilt from this thread's
-  // last view of it. Published as a whole, it put back elements another thread
-  // had stored to since that view: a lost update. Two threads filling disjoint
-  // halves of `a` each erased the other's half (weaver/popl20-more-vector-add,
-  // pthread-lit/sssc12_variant, unreach-call). The constant-size case was
-  // first left out, on the assumption that --array-rf answers those arrays;
-  // it declines some (by its cost model, or for a whole-object use), and then
-  // `char a[65]` filled in halves by two threads reported a false violation
-  // (regression/cbmc-concurrency/lost_update_constant_size_array).
-  // Read the old value and write the new one in an atomic section of their
-  // own, so the elements copied back are the current ones -- exactly what a
-  // store to element i alone leaves in the others. The index and the stored
+  // A store into one element of a shared array that field sensitivity does not
+  // split -- of symbolic size, or of constant size above
+  // max_field_sensitivity_array_size -- is `a#new == with(a#old, i, v)`: the
+  // whole array, rebuilt from this thread's last view of it. Published as a
+  // whole, it would put back elements another thread stored to since that
+  // view: a lost update. So the old value is read and the new one written in
+  // an atomic section of their own, and the elements copied back are the
+  // current ones -- exactly what a store to element i alone leaves in the
+  // others. A store to a member path of the element (`a[i].m = v`) renames
+  // the carried bases inside the section too, see member_store below. The index and the stored
   // value are renamed first, outside it: they are reads the program makes on
   // their own, and making them atomic with the store would hide races.
   // The section is atomic for values only: the data-race encoding still
@@ -192,28 +187,26 @@ void symex_assignt::assign_non_struct_symbol(
       guard.empty() ? static_cast<exprt>(true_exprt{})
                     : state.rename(conjunction(guard), ns).get();
     exprt l2_where = state.rename(rhs.op1(), ns).get();
-    // The stored value of `a[i].m = v` is `with(a[i], m, v)`. Its base a[i]
-    // is not a read the program makes -- the other members are carried back
-    // -- and read before the section it could be stale by the time of the
-    // store: the members another thread stored in between were lost
-    // (regression/cbmc-concurrency/lost_update_struct_member_large_array).
-    // That base is renamed inside the section, with the old value; v stays
-    // outside, so `a[i].m = a[i].m + 1` keeps its real lost update.
+    // The stored value of `a[i].m = v` is `with(a[i], m, v)` (deeper for a
+    // nested member, member_store_depth). Its bases are not reads the program
+    // makes -- the other members are carried back -- and, read before the
+    // section, they could be stale by the time of the store, losing the
+    // members another thread stored in between. So they are renamed inside
+    // the section, with the old value; v stays outside, so
+    // `a[i].m = a[i].m + 1` keeps its real lost update.
     const bool member_store =
       rhs.op2().id() == ID_with && rhs.op2().operands().size() == 3 &&
       to_with_expr(rhs.op2()).where().id() == ID_member_name &&
       to_with_expr(rhs.op2()).old().id() == ID_index &&
       to_index_expr(to_with_expr(rhs.op2()).old()).array() == rhs.op0();
     exprt l2_value = rhs.op2();
-    // the stored value at the end of the member chain (`a[i].s.m = v` is one
-    // `with` deeper per level)
-    const auto stored_value = [](exprt &e) -> exprt & {
+    const std::size_t member_levels =
+      member_store ? member_store_depth(rhs.op2()) : 0;
+    // the stored value at the end of the member chain
+    const auto stored_value = [member_levels](exprt &e) -> exprt & {
       exprt *part = &e;
-      while(part->id() == ID_with && part->operands().size() == 3 &&
-            to_with_expr(*part).where().id() == ID_member_name)
-      {
+      for(std::size_t level = 0; level < member_levels; ++level)
         part = &to_with_expr(*part).new_value();
-      }
       return *part;
     };
     if(member_store)
@@ -236,9 +229,10 @@ void symex_assignt::assign_non_struct_symbol(
       l2_old = state.rename(rhs.op0(), ns).get();
       if(member_store)
       {
+        // The bases' read events add nothing: the array is not split, and
+        // the read of its old value above already covers every element.
         exprt *part = &l2_value;
-        while(part->id() == ID_with && part->operands().size() == 3 &&
-              to_with_expr(*part).where().id() == ID_member_name)
+        for(std::size_t level = 0; level < member_levels; ++level)
         {
           with_exprt &member_with = to_with_expr(*part);
           member_with.old() = state.rename(member_with.old(), ns).get();
@@ -269,23 +263,19 @@ void symex_assignt::assign_non_struct_symbol(
     // Reads inside an atomic section are recorded regardless (see
     // goto_symex_statet::rename), so those are unchanged.
     //
-    // The old value of a struct field sensitivity splits is its members'
-    // current values: renamed on its own, as a bare symbol, the struct came
-    // back as its whole-object version, which nothing assigns once the
-    // members are separate, so the framed-back value was unconstrained. A
-    // memset or memcpy through a pointer with two struct targets then wiped
-    // the target it did not reach (regression/cbmc/
-    // memset_two_targets_struct; stock CBMC renames lhs inside the `if` and
-    // expands it).
+    // The old value of an object field sensitivity splits (a struct, or an
+    // array of constant size within the bound) is its leaves' current values.
+    // The bare symbol names the whole-object version, which no assignment
+    // updates once the object is split: for a struct it is unconstrained, for
+    // an array it predates every element store. So it is expanded to the
+    // leaves, as stock CBMC does inside the `if`.
     const exprt l2_cond = state.rename(conjunction(guard), ns).get();
     const exprt l2_new = state.rename(rhs, ns).get();
     state.record_events.push(false);
     const exprt l2_old =
       state
         .rename(
-          (lhs.type().id() == ID_struct || lhs.type().id() == ID_struct_tag ||
-           lhs.type().id() == ID_array) &&
-              state.field_sensitivity.is_divisible(lhs)
+          state.field_sensitivity.is_divisible(lhs)
             ? state.field_sensitivity.apply(ns, state, exprt{lhs}, false)
             : exprt{lhs},
           ns)

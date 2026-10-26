@@ -339,34 +339,17 @@ void field_sensitivityt::field_assignments(
   }
 }
 
-/// Assign to the individual fields \p lhs_fs of a non-expanded symbol \p lhs.
-/// This is required whenever prior steps have updated the full object rather
-/// than individual fields, e.g., in case of assignments to an array at an
-/// unknown index.
-/// \param ns: a namespace to resolve type symbols/tag types
-/// \param state: symbolic execution state
-/// \param lhs_fs: expanded symbol
-/// \param ssa_rhs: right-hand-side value to assign
-/// \param target: symbolic execution equation store
-/// \param allow_pointer_unsoundness: allow pointer unsoundness
-/// The condition under which the store \p rhs, assigned to an array that is
-/// a part of \p object, writes element \p k -- or nullopt when that is not
-/// known, in which case the element counts as written, as before:
-///   with(b, i, v)  at an undecided i:   i == k, or k is written in b (b is
-///                                      taken as the old value, as before,
-///                                      unless it is itself a store)
-///   c ? x : y                          c ? (k in x) : (k in y)
-///   object's own old value             false
-/// The `if` is what a store through a pointer with more than one target
-/// leaves, the old value being the other target's case.
-///
-/// The object's own old value: its symbol, or -- once field sensitivity has
-/// split it -- an array or struct of its leaves, as symex_assign frames it.
+/// Whether \p e is the old value of \p object: its symbol, or -- once field
+/// sensitivity has split it -- an array or struct of its leaves, as
+/// symex_assign frames it back. Any such literal of the object's leaves is
+/// accepted; only field_sensitivityt::apply builds one, from the object's
+/// current leaves.
 static bool is_own_old_value(const exprt &e, const irep_idt &object)
 {
   if(is_ssa_expr(e))
   {
-    // a leaf's own identifier names the field; its root object is the object
+    // For a leaf (`a[[0]]..m`) the cached L1 object identifier names the
+    // field; get_l1_object() strips the field path to the root object.
     return !object.empty() &&
            (to_ssa_expr(e).get_l1_object_identifier() == object ||
             to_ssa_expr(e).get_l1_object().get_identifier() == object);
@@ -381,6 +364,16 @@ static bool is_own_old_value(const exprt &e, const irep_idt &object)
   return false;
 }
 
+/// The condition under which the store \p rhs, assigned to an array that is
+/// a part of \p object, writes element \p k -- or nullopt when that is not
+/// known, in which case the element counts as written:
+///   with(b, i, v)  at an undecided i:   i == k, or k is written in b (b is
+///                                      the old value unless it is itself a
+///                                      recognised store)
+///   c ? x : y                          c ? (k in x) : (k in y)
+///   object's own old value             false
+/// The `if` is what a store through a pointer with more than one target
+/// leaves, the old value being the other target's case.
 static optionalt<exprt> element_written(
   const exprt &rhs,
   const irep_idt &object,
@@ -393,8 +386,8 @@ static optionalt<exprt> element_written(
       return {};
     const exprt here =
       equal_exprt{with.where(), from_integer(k, with.where().type())};
-    // The base is taken to be the array's old value unless it is itself a
-    // recognised store, as 6c5dd7e4 always took it.
+    // the base is the array's old value unless it is itself a recognised
+    // store
     const auto in_base = element_written(with.old(), object, k);
     if(!in_base.has_value() || in_base->is_false())
       return {here};
@@ -425,6 +418,34 @@ static optionalt<exprt> element_written(
 /// members of one element). Nullopt for any other shape, which keeps the
 /// element-wide condition. The `if` a store through a pointer with more than
 /// one target leaves is seen through as in element_written.
+std::size_t member_store_depth(const exprt &value, bool renamed)
+{
+  std::size_t depth = 0;
+  const exprt *part = &value;
+  const exprt *base = nullptr;
+  while(part->id() == ID_with && part->operands().size() == 3 &&
+        to_with_expr(*part).where().id() == ID_member_name)
+  {
+    const with_exprt &member_with = to_with_expr(*part);
+    if(base != nullptr)
+    {
+      const with_exprt &outer = to_with_expr(*base);
+      const irep_idt &name = outer.where().get(ID_component_name);
+      if(
+        member_with.old().id() != ID_member ||
+        to_member_expr(member_with.old()).get_component_name() != name ||
+        (!renamed && to_member_expr(member_with.old()).compound() != outer.old()))
+      {
+        break;
+      }
+    }
+    ++depth;
+    base = part;
+    part = &member_with.new_value();
+  }
+  return depth;
+}
+
 static optionalt<std::vector<irep_idt>>
 member_stored(const exprt &rhs, const irep_idt &object)
 {
@@ -451,8 +472,8 @@ member_stored(const exprt &rhs, const irep_idt &object)
     return {};
   std::vector<irep_idt> path;
   const exprt *element = &with.new_value();
-  while(element->id() == ID_with && element->operands().size() == 3 &&
-        to_with_expr(*element).where().id() == ID_member_name)
+  for(std::size_t level = member_store_depth(*element, true); level > 0;
+      --level)
   {
     path.push_back(to_with_expr(*element).where().get(ID_component_name));
     element = &to_with_expr(*element).new_value();
@@ -462,6 +483,17 @@ member_stored(const exprt &rhs, const irep_idt &object)
   return path;
 }
 
+/// Assign to the individual fields \p lhs_fs of a non-expanded symbol \p lhs.
+/// This is required whenever prior steps have updated the full object rather
+/// than individual fields, e.g., in case of assignments to an array at an
+/// unknown index.
+/// \param ns: a namespace to resolve type symbols/tag types
+/// \param state: symbolic execution state
+/// \param lhs_fs: expanded symbol
+/// \param ssa_rhs: right-hand-side value to assign
+/// \param target: symbolic execution equation store
+/// \param allow_pointer_unsoundness: allow pointer unsoundness
+/// \param lo: byte offset of \p lhs_fs in the object, or -1 if unknown
 void field_sensitivityt::field_assignments_rec(
   const namespacet &ns,
   goto_symex_statet &state,
@@ -598,6 +630,10 @@ void field_sensitivityt::field_assignments_rec(
                           : optionalt<std::vector<irep_idt>>{};
       if(path.has_value())
       {
+        // Publishes the leaves of element k on the member path under
+        // element_cond and the others under false. Returns false, having
+        // emitted nothing, when part_lhs is not split along the path; the
+        // caller then publishes that part whole under element_cond.
         std::function<bool(const exprt &, const exprt &, std::size_t,
                            const mp_integer &)>
           publish = [&](const exprt &part_lhs, const exprt &part_rhs,

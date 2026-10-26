@@ -8,7 +8,7 @@ main.c
 ^VERIFICATION FAILED$
 --
 A 65-byte array is above the splitting bound, so a store to one element
-rebuilds the whole array from this thread view of it. With many accesses
+rebuilds the whole array from this thread's view of it. With many accesses
 --array-rf declines it by its cost model, and before the fix the two halves
 written by the two threads could erase each other: a false violation. The
 store now reads and writes the array in an atomic section of its own, as it
