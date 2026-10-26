@@ -514,9 +514,12 @@ void boolbvt::set_to(const exprt &expr, bool value)
     return;
   const std::size_t first = array_equality_count();
   SUB::set_to(expr, value);
+  // Only in the root context is the equality's literal fixed to true; inside
+  // a pushed context it holds only under the context literal, and its lhs
+  // must keep its own Ackermann constraints.
   if(
     value && equal_expr && equal_expr->lhs().id() == ID_symbol &&
-    array_equality_count() > first)
+    assumption_stack.empty() && array_equality_count() > first)
   {
     record_defining_array_equality(first, equal_expr->lhs());
   }

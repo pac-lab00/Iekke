@@ -27,6 +27,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #  include <iostream>
 #endif
 
+#include <set>
 #include <unordered_set>
 
 arrayst::arrayst(
@@ -326,27 +327,76 @@ void arrayst::add_array_constraints()
   add_array_Ackermann_constraints();
 }
 
+/// Whether the update positions of \p with are pairwise different in every
+/// model: one update, or each position a constant, or each the same base
+/// plus a constant (the base alone counts as plus 0), the constants pairwise
+/// different. The with constraints assert x[u]=v for every update at once,
+/// and they agree with the Ackermann constraints of x only when no two
+/// positions coincide; byte-update lowering produces exactly such positions
+/// (offset, offset+1, ...).
+static bool distinct_update_positions(const with_exprt &with)
+{
+  const exprt::operandst &operands = with.operands();
+  if(operands.size() == 3)
+    return true;
+  optionalt<exprt> base;
+  std::set<mp_integer> constants;
+  for(std::size_t u = 1; u + 1 < operands.size(); u += 2)
+  {
+    const exprt &position = operands[u];
+    exprt this_base = nil_exprt{};
+    optionalt<mp_integer> constant;
+    if(position.is_constant())
+      constant = numeric_cast<mp_integer>(to_constant_expr(position));
+    else if(
+      position.id() == ID_plus && position.operands().size() == 2 &&
+      to_plus_expr(position).op1().is_constant())
+    {
+      this_base = to_plus_expr(position).op0();
+      constant =
+        numeric_cast<mp_integer>(to_constant_expr(to_plus_expr(position).op1()));
+    }
+    else
+    {
+      this_base = position;
+      constant = mp_integer{0};
+    }
+    if(!constant.has_value() || !constants.insert(*constant).second)
+      return false;
+    if(!base.has_value())
+      base = this_base;
+    else if(*base != this_base)
+      return false;
+  }
+  return true;
+}
+
 void arrayst::record_defining_array_equality(
   std::size_t first,
   const exprt &lhs)
 {
-  // record_array_equality appends the equality before converting its
-  // operands, so the first one appended by this assertion is the asserted one;
-  // any after it come from inside the operands and are not asserted.
-  auto it = array_equalities.begin();
-  std::advance(it, first);
+  // convert_equality calls record_array_equality before anything else, so the
+  // entry at position \p first is the equality just asserted (or its
+  // byte-lowered form); entries after it come from inside its operands and
+  // are not asserted.
+  auto it = std::prev(array_equalities.end(), array_equalities.size() - first);
   if(it->f1 == lhs)
     defining_equalities.emplace_back(it->f1, it->f2);
 }
 
-/// The array symbols whose Ackermann constraints are implied. x = e asserted,
-/// with e an update (with), a choice (if), a constant array (array or
-/// array_of) or another symbol, gives x[i] = e[i] for every i of the index
-/// set, and e is consistent as soon as the arrays it is built from are -- the
-/// reason the Ackermann loop skips if, with and array_of terms. So x is
-/// consistent if those arrays are: symbols that keep their own constraints,
-/// or symbols that are themselves defined this way. Computed as a least
-/// fixpoint, so a cycle of definitions never counts as defined.
+/// The array symbols whose Ackermann constraints are implied.
+/// x, e and every array e is built from are in one union-find class
+/// (record_array_equality and collect_arrays unite them), hence share one
+/// index set I. For x = e asserted at the root -- its literal fixed true by
+/// set_to, so x[i] = e[i] holds for every i in I -- with e an update (with,
+/// of pairwise distinct positions), a choice (if), a constant array (array or
+/// array_of) or another symbol, the with/if/array_of/array constraints tie
+/// every e[i] to a leaf array's element or to a value. So for i, j in I,
+/// i = j implies x[i] = x[j] as soon as each leaf array is consistent: a
+/// symbol that keeps its own Ackermann constraints, or one defined this way
+/// itself. Computed as a least fixpoint, so a cycle of definitions never
+/// counts as defined; the fixpoint rescans the definitions until none
+/// changes, quadratic in the length of a definition chain at worst.
 std::unordered_set<std::size_t> arrayst::defined_by_equality() const
 {
   // the array symbols a defining term is built from; false if it contains
@@ -359,8 +409,12 @@ std::unordered_set<std::size_t> arrayst::defined_by_equality() const
       todo.pop_back();
       if(cur->id() == ID_symbol)
         out.push_back(to_symbol_expr(*cur).get_identifier());
-      else if(cur->id() == ID_with)
+      else if(
+        cur->id() == ID_with &&
+        distinct_update_positions(to_with_expr(*cur)))
+      {
         todo.push_back(&to_with_expr(*cur).old());
+      }
       else if(cur->id() == ID_if)
       {
         todo.push_back(&to_if_expr(*cur).true_case());
@@ -470,18 +524,18 @@ void arrayst::add_array_Ackermann_constraints()
   // iterate over arrays
   for(std::size_t i=0; i<arrays.size(); i++)
   {
-    // x = c ? a : b and x = a with [i:=v, ...] are functionally consistent
-    // once a and b are: every index of the class is tied to a (or b, or a v)
-    // by the if/with constraints, so their own pairs are implied. x =
-    // array_of(v) ties every index to v.
+    // Terms c ? a : b, a with [u:=v, ...] (u pairwise distinct) and
+    // array_of(v): every index of the class is tied by their own constraints
+    // to a, b, an update value or v, so their pairs follow from those of a
+    // and b. The symbols in `defined` likewise (defined_by_equality).
     if(
-      arrays[i].id() == ID_if || arrays[i].id() == ID_with ||
-      arrays[i].id() == ID_array_of)
+      arrays[i].id() == ID_if || arrays[i].id() == ID_array_of ||
+      (arrays[i].id() == ID_with &&
+       distinct_update_positions(to_with_expr(arrays[i]))))
     {
       continue;
     }
 
-    // and so is a symbol defined as one of them (defined_by_equality)
     if(defined.count(i) != 0)
       continue;
 
@@ -557,9 +611,14 @@ void arrayst::add_array_Ackermann_constraints()
           return n.has_value() && *n < arrays[i].operands().size();
         };
 
+        // (the array-constant constraints compare the index in its own type,
+        // the pair below in i1's: they agree only when the types do)
+        const bool both_fixed_alike =
+          i1->type() == i2->type() &&
+          (fixed_in_constant(*i1) || fixed_in_constant(*i2));
         if(
           i1 != i2 && !(i1->is_constant() && i2->is_constant()) &&
-          !fixed_in_constant(*i1) && !fixed_in_constant(*i2))
+          !both_fixed_alike)
         {
 
           // index equality

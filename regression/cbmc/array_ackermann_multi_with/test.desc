@@ -11,3 +11,5 @@ main.c
 ^warning: ignoring
 --
 An int stored into a char array at a symbolic offset is an update of four
+The array is sized above MAX_FLATTENED_ARRAY_SIZE bits, so it goes through
+the array theory (arrayst), not flattening.

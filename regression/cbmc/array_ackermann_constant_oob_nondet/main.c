@@ -1,5 +1,5 @@
-// A constant array: an in-bounds index reads its operand; two reads at the
-// same out-of-bounds index still see the same (unconstrained) element.
+// With --constant-array-oob-nondet two reads at the same out-of-bounds index
+// of a constant array may differ; in-bounds reads still see their operand.
 const int t[100] = {1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2};
 
 int main()

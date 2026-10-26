@@ -14,3 +14,5 @@ array_ackermann_constant with --constant-array-oob-nondet: two out-of-bounds
 reads at the same index may now differ (assertion 1 fails), in-bounds reads
 still see their operand (assertion 2 holds). Without the option assertion 1
 holds; that is array_ackermann_constant.
+The array is sized above MAX_FLATTENED_ARRAY_SIZE bits, so it goes through
+the array theory (arrayst), not flattening.

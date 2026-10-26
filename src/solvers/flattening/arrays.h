@@ -52,9 +52,10 @@ public:
 
   literalt record_array_equality(const equal_exprt &expr);
 
-  /// No Ackermann pairs for constant arrays: their in-bounds elements are
-  /// fixed anyway, so this only lets two out-of-bounds reads at the same
-  /// index differ (--constant-array-oob-nondet).
+  /// Skip the Ackermann constraints of constant arrays
+  /// (--constant-array-oob-nondet). In-bounds reads are fixed by the
+  /// array-constant constraints; this lets two out-of-bounds reads at equal
+  /// indices differ.
   bool constant_array_oob_nondet = false;
 
   /// Record that the array equality at position \p first of the list of
