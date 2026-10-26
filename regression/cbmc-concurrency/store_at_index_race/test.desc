@@ -1,0 +1,14 @@
+CORE
+main.c
+--32 --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Thread 1 stores B[0], thread 3 stores B[M]; with M == 0 they race. The store
+at the undecided index is a guarded store per element, and the elements it
+does not reach were framed back from a stale whole-array version, which hid
+the race. Missed (SUCCESSFUL) before the array old-value fix, FAILED after.
+See store_at_index_race_safe (M >= 1), which must stay SUCCESSFUL.

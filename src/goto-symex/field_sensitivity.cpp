@@ -359,6 +359,28 @@ void field_sensitivityt::field_assignments(
 ///   object's own old value             false
 /// The `if` is what a store through a pointer with more than one target
 /// leaves, the old value being the other target's case.
+///
+/// The object's own old value: its symbol, or -- once field sensitivity has
+/// split it -- an array or struct of its leaves, as symex_assign frames it.
+static bool is_own_old_value(const exprt &e, const irep_idt &object)
+{
+  if(is_ssa_expr(e))
+  {
+    // a leaf's own identifier names the field; its root object is the object
+    return !object.empty() &&
+           (to_ssa_expr(e).get_l1_object_identifier() == object ||
+            to_ssa_expr(e).get_l1_object().get_identifier() == object);
+  }
+  if((e.id() == ID_array || e.id() == ID_struct) && e.has_operands())
+  {
+    for(const auto &op : e.operands())
+      if(!is_own_old_value(op, object))
+        return false;
+    return true;
+  }
+  return false;
+}
+
 static optionalt<exprt> element_written(
   const exprt &rhs,
   const irep_idt &object,
@@ -389,12 +411,8 @@ static optionalt<exprt> element_written(
       return {false_exprt{}};
     return {if_exprt{ite.cond(), *t, *f}};
   }
-  if(
-    is_ssa_expr(rhs) && !object.empty() &&
-    to_ssa_expr(rhs).get_l1_object_identifier() == object)
-  {
+  if(is_own_old_value(rhs, object))
     return {false_exprt{}};
-  }
   return {};
 }
 
@@ -414,8 +432,7 @@ member_stored(const exprt &rhs, const irep_idt &object)
   {
     const if_exprt &ite = to_if_expr(rhs);
     const auto own = [&object](const exprt &e) {
-      return is_ssa_expr(e) && !object.empty() &&
-             to_ssa_expr(e).get_l1_object_identifier() == object;
+      return is_own_old_value(e, object);
     };
     if(own(ite.false_case()))
       return member_stored(ite.true_case(), object);

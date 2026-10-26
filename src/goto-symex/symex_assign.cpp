@@ -283,7 +283,8 @@ void symex_assignt::assign_non_struct_symbol(
     const exprt l2_old =
       state
         .rename(
-          (lhs.type().id() == ID_struct || lhs.type().id() == ID_struct_tag) &&
+          (lhs.type().id() == ID_struct || lhs.type().id() == ID_struct_tag ||
+           lhs.type().id() == ID_array) &&
               state.field_sensitivity.is_divisible(lhs)
             ? state.field_sensitivity.apply(ns, state, exprt{lhs}, false)
             : exprt{lhs},

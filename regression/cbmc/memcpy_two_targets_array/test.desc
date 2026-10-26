@@ -1,0 +1,15 @@
+CORE
+main.c
+--32
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+The array version of memset_two_targets_struct. The copy is a guarded store
+to each possible target; where it is not taken, the old value is framed back.
+For an array that field sensitivity splits into elements, that old value was
+renamed as the bare whole-array symbol, whose version predates the store
+`a->buf[1] = 'e'` (made to the element), so the framed-back element lost it.
+Fails on a binary without the fix; stock CBMC 5.95 passes.
