@@ -313,6 +313,15 @@ bool irept::ordering(const irept &other) const
 /// comments are ignored
 int irept::compare(const irept &i) const
 {
+#ifdef SHARING
+  // A shared node is equal to itself: without this, comparing two references
+  // to one subtree walks all of it. Merging path conditions compares
+  // conjunctions whose common prefix is shared, and on the ldv-linux drivers
+  // a third of symex time went into such walks.
+  if(data == i.data)
+    return 0;
+#endif
+
   int r;
 
   r=id().compare(i.id());
