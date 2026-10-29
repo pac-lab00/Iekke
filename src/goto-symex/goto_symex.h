@@ -425,6 +425,7 @@ protected:
     statet &state,
     bool write,
     bool is_in_quantifier);
+  void replace_loads_outside_object(exprt &);
   exprt address_arithmetic(
     const exprt &,
     statet &,

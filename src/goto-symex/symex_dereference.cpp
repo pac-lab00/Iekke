@@ -19,6 +19,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/fresh_symbol.h>
 #include <util/invariant.h>
 #include <util/pointer_offset_size.h>
+#include <util/simplify_expr.h>
 
 #include <pointer-analysis/value_set_dereference.h>
 
@@ -254,6 +255,31 @@ goto_symext::cache_dereference(exprt &dereference_result, statet &state)
 /// when dereference caching is enabled).
 /// For full details of this method's pointer replacement and potential side-
 /// effects see \ref goto_symext::dereference
+/// Replace, in the result of a dereference, every byte extract whose offset
+/// is a constant and whose bytes all lie outside its operand by a fresh
+/// nondeterministic value of its type (see goto_symext::dereference_rec).
+void goto_symext::replace_loads_outside_object(exprt &expr)
+{
+  if(
+    expr.id() == ID_byte_extract_little_endian ||
+    expr.id() == ID_byte_extract_big_endian)
+  {
+    const byte_extract_exprt &be = to_byte_extract_expr(expr);
+    const auto offset = numeric_cast<mp_integer>(simplify_expr(be.offset(), ns));
+    const auto object_size = pointer_offset_size(be.op().type(), ns);
+    const auto value_size = pointer_offset_size(be.type(), ns);
+    if(
+      offset.has_value() && object_size.has_value() && value_size.has_value() &&
+      (*offset >= *object_size || *offset + *value_size <= 0))
+    {
+      expr = path_storage.build_symex_nondet(expr.type(), expr.source_location());
+      return;
+    }
+  }
+  for(auto &op : expr.operands())
+    replace_loads_outside_object(op);
+}
+
 void goto_symext::dereference_rec(
   exprt &expr,
   statet &state,
@@ -348,6 +374,18 @@ void goto_symext::dereference_rec(
     exprt tmp2 =
       dereference.dereference(tmp1, symex_config.show_points_to_sets);
     // std::cout << "**** " << format(tmp2) << '\n';
+
+    // A load whose bytes all lie outside the object it was resolved against
+    // reads nothing of that object: its value is unconstrained, as the
+    // solver makes every bit of a byte extract outside its operand. Left as
+    // a byte extract of the object, it read every member of it, each with a
+    // shared-read event and a read-from encoding, and those reads raced. On
+    // the ldv-linux irda driver nsc-ircc, whose netdev_priv is dev + 3200
+    // (3200 whole structs past dev), every load of the private state read
+    // all of struct net_device: 72% of the clauses. The store side is in
+    // symex_assignt::assign_byte_extract.
+    if(!write)
+      replace_loads_outside_object(tmp2);
 
 
     // this may yield a new auto-object
