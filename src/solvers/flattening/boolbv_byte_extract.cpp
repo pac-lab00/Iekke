@@ -88,6 +88,19 @@ bvt boolbvt::convert_byte_extract(const byte_extract_exprt &expr)
     return convert_bv(be);
   }
 
+  // Wholly outside the operand: every bit of the result is a fresh variable,
+  // as the constant-offset loop below would make it, and converting the
+  // operand first only creates variables that are never used. On the
+  // ldv-linux irda driver nsc-ircc, whose netdev_priv is dev + 3200 (that is
+  // 3200 whole structs past dev), each load of the private state converted
+  // all 15008 bits of struct net_device: 7.5 million variables in all.
+  if(
+    index.has_value() && op_bytes_opt.has_value() &&
+    (*index >= *op_bytes_opt || *index * 8 + width <= 0))
+  {
+    return prop.new_variables(width);
+  }
+
   const exprt &op=expr.op();
   PRECONDITION(
     expr.id() == ID_byte_extract_little_endian ||
