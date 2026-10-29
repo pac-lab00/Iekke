@@ -59,6 +59,11 @@ public:
   value_sett* overall_value_set = NULL;
   std::set<symbol_exprt> dynamic_objects;
 
+  /// Where the search for the next free symex::invalid_object$N name starts.
+  /// Owned by goto_symext and reset with each symex pass, so every pass
+  /// names its invalid objects alike; null searches from the start.
+  std::size_t *invalid_object_counter = nullptr;
+
   void replace_unknown(std::vector<exprt>& points_to_set);
   // __SZH_ADD_END__
 

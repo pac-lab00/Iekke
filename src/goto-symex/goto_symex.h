@@ -223,6 +223,10 @@ public:
   /// only grows, so the next union needs only what changed since.
   value_sett::valuest value_set_at_last_union;
   std::set<symbol_exprt> dynamic_objects;
+
+  /// See value_set_dereferencet::invalid_object_counter. Reset with
+  /// dynamic_counter at the start of each symex pass.
+  std::size_t invalid_object_counter = 0;
   // __SZH_ADD_END__
 
   /// Shared variables that a static whole-program analysis has proven to be

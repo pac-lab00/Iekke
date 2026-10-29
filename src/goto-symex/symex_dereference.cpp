@@ -336,6 +336,8 @@ void goto_symext::dereference_rec(
       expr_is_not_null,
       log);
 
+    dereference.invalid_object_counter = &invalid_object_counter;
+
     if(!try_finding_value_set)
     {
       dereference.overall_value_set = &overall_value_set;

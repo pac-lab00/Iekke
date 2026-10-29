@@ -221,6 +221,7 @@ void multi_path_symex_only_checkert::generate_equation()
     symex.path_storage.clear();
     symex.target.clear();
     symex.dynamic_counter = 0;
+    symex.invalid_object_counter = 0;
     symex.try_finding_value_set = true;
     symex.seed_published_reads = true;
 
@@ -269,6 +270,7 @@ void multi_path_symex_only_checkert::generate_equation()
       symex.path_storage.clear();
       symex.target.clear();
       symex.dynamic_counter = 0;
+      symex.invalid_object_counter = 0;
       symex.try_finding_value_set = true;
       symex.seed_value_set_from_overall = true;
       symex.overall_value_set_changed = false;
@@ -292,6 +294,7 @@ void multi_path_symex_only_checkert::generate_equation()
     symex.try_finding_value_set = false;
     symex.seed_value_set_from_overall = true;
     symex.dynamic_counter = 0;
+    symex.invalid_object_counter = 0;
 
     symex.symex_from_entry_point_of(
       goto_symext::get_goto_function(goto_model), symex_symbol_table);
