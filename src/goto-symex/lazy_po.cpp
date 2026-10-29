@@ -4165,10 +4165,12 @@ void lazy_pot::handling_datarace(
   irep_idt phases_name = "phases";
   symbol_exprt phases_symbl{phases_name, bool_typet{}};
   exprt phases_exp = false_exprt{};
+  exprt::operandst phases_ops;
   // __SZH_DR_ADD_BEGIN__
   irep_idt phases_swap_name = "phases_swap";
   symbol_exprt phases_swap_symbl{phases_swap_name, bool_typet{}};
   exprt phases_swap_exp = false_exprt{};
+  exprt::operandst phases_swap_ops;
   // __SZH_DR_ADD_END__
   if(getenv("IEKKE_DUMP_GLOBALS") != nullptr)
   {
@@ -4227,16 +4229,22 @@ void lazy_pot::handling_datarace(
     symbol_exprt pha_1 = phase_1(/*log,*/ equation, v);
     symbol_exprt pha_2 = phase_2(/*log,*/ equation, v);
     exprt pha_1_2 = and_exprt{pha_1, pha_2};
-    phases_exp = or_exprt{phases_exp, pha_1_2};
+    phases_ops.push_back(pha_1_2);
     // __SZH_DR_ADD_BEGIN__
     // Read-first/write-second pairing (see phase_1_swap): a race that
     // phase_1/phase_2 (write-first only) cannot witness.
     symbol_exprt pha_1_swap = phase_1_swap(equation, v);
     symbol_exprt pha_2_swap = phase_2_swap(equation, v);
     exprt pha_1_2_swap = and_exprt{pha_1_swap, pha_2_swap};
-    phases_swap_exp = or_exprt{phases_swap_exp, pha_1_2_swap};
+    phases_swap_ops.push_back(pha_1_2_swap);
     // __SZH_DR_ADD_END__
   }
+  // One disjunction over all shared objects. Was: or_exprt{previous, next}
+  // per object, a chain as deep as the number of objects, and simplifying
+  // it recursed once per level: on the ldv-linux irda driver nsc-ircc the
+  // stack overflowed (47000 frames) and the run died on SIGSEGV.
+  phases_exp = disjunction(phases_ops);
+  phases_swap_exp = disjunction(phases_swap_ops);
   phases_exp = equal_exprt{phases_symbl, phases_exp};
   simplify(phases_exp, ns);
   equation.constraint(
