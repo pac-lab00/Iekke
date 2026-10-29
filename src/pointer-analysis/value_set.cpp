@@ -1023,13 +1023,19 @@ void value_sett::get_value_set_rec(
 
       const struct_typet &struct_type = to_struct_type(op_type);
 
+      const auto comp_offsets = offset_int.has_value()
+                                  ? member_offsets(struct_type, ns)
+                                  : std::vector<optionalt<mp_integer>>{};
+      std::size_t comp_index = 0;
+
       for(const auto &c : struct_type.components())
       {
         const irep_idt &name = c.get_name();
+        const std::size_t this_index = comp_index++;
 
         if(offset_int.has_value())
         {
-          auto comp_offset = member_offset(struct_type, name, ns);
+          const auto &comp_offset = comp_offsets[this_index];
           if(comp_offset.has_value())
           {
             if(

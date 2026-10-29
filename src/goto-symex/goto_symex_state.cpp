@@ -423,10 +423,12 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
             if(e.operands().size() == type.components().size())
             {
               rename<level>(e.type(), irep_idt(), ns);
+              const auto offsets = member_offsets(type, ns);
               auto c_it = type.components().begin();
               for(auto &op : e.operands())
               {
-                const auto at = member_offset(type, c_it->get_name(), ns);
+                const auto &at =
+                  offsets[std::size_t(c_it - type.components().begin())];
                 if(at.has_value())
                   rename_leaves(op, lo + *at);
                 else

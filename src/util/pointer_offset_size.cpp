@@ -62,6 +62,49 @@ optionalt<mp_integer> member_offset(
   return result;
 }
 
+std::vector<optionalt<mp_integer>>
+member_offsets(const struct_typet &type, const namespacet &ns)
+{
+  // The loop of member_offset, recording the offset at every component.
+  std::vector<optionalt<mp_integer>> offsets;
+  offsets.reserve(type.components().size());
+  optionalt<mp_integer> result = mp_integer{0};
+  std::size_t bit_field_bits = 0;
+
+  for(const auto &comp : type.components())
+  {
+    offsets.push_back(result);
+    if(!result.has_value())
+      continue;
+
+    if(comp.type().id() == ID_c_bit_field)
+    {
+      const std::size_t w = to_c_bit_field_type(comp.type()).get_width();
+      bit_field_bits += w;
+      *result += bit_field_bits / 8;
+      bit_field_bits %= 8;
+    }
+    else if(comp.type().id() == ID_bool)
+    {
+      ++bit_field_bits;
+      *result += bit_field_bits / 8;
+      bit_field_bits %= 8;
+    }
+    else
+    {
+      DATA_INVARIANT(
+        bit_field_bits == 0, "padding ensures offset at byte boundaries");
+      const auto sub_size = pointer_offset_size(comp.type(), ns);
+      if(!sub_size.has_value())
+        result.reset();
+      else
+        *result += *sub_size;
+    }
+  }
+
+  return offsets;
+}
+
 optionalt<mp_integer> member_offset_bits(
   const struct_typet &type,
   const irep_idt &member,

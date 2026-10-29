@@ -553,13 +553,16 @@ void field_sensitivityt::field_assignments_rec(
       (lhs_fs.has_operands() && lhs_fs.operands().size() == components.size()));
 
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
+    const auto offsets = lo < 0 ? std::vector<optionalt<mp_integer>>{}
+                                : member_offsets(type, ns);
+    std::size_t comp_index = 0;
     for(const auto &comp : components)
     {
       const exprt member_rhs =
         simplify_opt(member_exprt{ssa_rhs, comp.get_name(), comp.type()}, ns);
       const exprt &member_lhs = *fs_it;
-      const auto at = lo < 0 ? optionalt<mp_integer>{}
-                             : member_offset(type, comp.get_name(), ns);
+      const auto at = lo < 0 ? optionalt<mp_integer>{} : offsets[comp_index];
+      ++comp_index;
 
       field_assignments_rec(
         ns,
@@ -657,11 +660,13 @@ void field_sensitivityt::field_assignments_rec(
             }
             const struct_typet &st = to_struct_type(part_type);
             exprt::operandst::const_iterator m_it = part_lhs.operands().begin();
+            const auto offsets = member_offsets(st, ns);
+            std::size_t comp_index = 0;
             for(const auto &comp : st.components())
             {
               const exprt member_rhs = simplify_opt(
                 member_exprt{part_rhs, comp.get_name(), comp.type()}, ns);
-              const auto offset = member_offset(st, comp.get_name(), ns);
+              const auto &offset = offsets[comp_index++];
               const mp_integer member_at = at >= 0 && offset.has_value()
                                              ? at + *offset
                                              : mp_integer{-1};
@@ -785,12 +790,14 @@ exprt field_sensitivityt::get_fields_in_range(
     struct_exprt::operandst fields;
     fields.reserve(type.components().size());
     const exprt &struct_op = ssa_expr.get_original_expr();
+    const auto offsets = member_offsets(type, ns);
+    std::size_t comp_index = 0;
     for(const auto &comp : type.components())
     {
       ssa_exprt tmp = ssa_expr;
       tmp.remove_level_2();
       tmp.set_expression(member_exprt{struct_op, comp.get_name(), comp.type()});
-      const auto at = member_offset(type, comp.get_name(), ns);
+      const auto &at = offsets[comp_index++];
       // Members are not conditioned: a load of one member of an element
       // still reads the element, and the untouched members of a store's
       // base are written back from what was read, which has to be current.
