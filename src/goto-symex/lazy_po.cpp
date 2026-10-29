@@ -3391,20 +3391,21 @@ void lazy_pot::create_active_thread_statements(
   equation.SSA_steps.emplace_back(active_step);
 }
 
-symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
+exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
 
   irep_idt phase_1_name =  as_string(v) + "_phase_1";
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
   exprt phase_1_exp = false_exprt{};
+  exprt::operandst phase_1_ops;
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
     irep_idt phase_1_t_name =  as_string(v) + "_phase_1_T" + std::to_string(thread);
     symbol_exprt phase_1_t_symbl{phase_1_t_name, bool_typet{}};
 
-    phase_1_exp = or_exprt{phase_1_exp, phase_1_t_symbl};
 
     exprt phase_1_t_exp = false_exprt{};
+    exprt::operandst phase_1_t_ops;
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
@@ -3423,7 +3424,7 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
 
-        phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
+        phase_1_t_ops.push_back(phase_1_t_v_symbl);
 
         int atom = write.s_it->in_program_atomic_section();
         exprt phase_1_t_v_exp =
@@ -3461,13 +3462,20 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
           phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
-    phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
+    // A thread with no candidate access contributes false: leave it out,
+    // rather than define its symbol as false (see handling_datarace).
+    if(phase_1_t_ops.empty())
+      continue;
+    phase_1_ops.push_back(phase_1_t_symbl);
+    phase_1_t_exp = equal_exprt {phase_1_t_symbl, disjunction(phase_1_t_ops)};
     simplify(phase_1_t_exp, ns);
     equation.constraint(
       phase_1_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
-  phase_1_exp = equal_exprt {phase_1_symbl, phase_1_exp};
+  if(phase_1_ops.empty())
+    return false_exprt{};
+  phase_1_exp = equal_exprt {phase_1_symbl, disjunction(phase_1_ops)};
   simplify(phase_1_exp, ns);
   equation.constraint(
     phase_1_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -3475,19 +3483,20 @@ symbol_exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
   return phase_1_symbl;
 }
 
-symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
+exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
   irep_idt phase_2_name = as_string(v) + "_phase_2";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
   exprt phase_2_exp = false_exprt{};
+  exprt::operandst phase_2_ops;
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
     irep_idt phase_2_t_name = as_string(v) + "_phase_2_T" + std::to_string(thread);
     symbol_exprt phase_2_t_symbl{phase_2_t_name, bool_typet{}};
 
-    phase_2_exp = or_exprt{phase_2_exp, phase_2_t_symbl};
 
     exprt phase_2_t_exp = false_exprt{};
+    exprt::operandst phase_2_t_ops;
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
@@ -3500,7 +3509,7 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
-        phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
+        phase_2_t_ops.push_back(phase_2_t_v_symbl);
 
         int atom = write.s_it->in_program_atomic_section();
         exprt phase_2_t_v_exp =
@@ -3549,7 +3558,7 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
         irep_idt phase_2_t_v_name =  as_string(v) + "_phase_2_r_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
-        phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
+        phase_2_t_ops.push_back(phase_2_t_v_symbl);
 
         int atom = read.s_it->in_program_atomic_section();
         exprt phase_2_t_v_exp =
@@ -3587,13 +3596,20 @@ symbol_exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
           phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
-    phase_2_t_exp = equal_exprt {phase_2_t_symbl, phase_2_t_exp};
+    // A thread with no candidate access contributes false: leave it out,
+    // rather than define its symbol as false (see handling_datarace).
+    if(phase_2_t_ops.empty())
+      continue;
+    phase_2_ops.push_back(phase_2_t_symbl);
+    phase_2_t_exp = equal_exprt {phase_2_t_symbl, disjunction(phase_2_t_ops)};
     simplify(phase_2_t_exp, ns);
     equation.constraint(
       phase_2_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
-  phase_2_exp = equal_exprt {phase_2_symbl, phase_2_exp};
+  if(phase_2_ops.empty())
+    return false_exprt{};
+  phase_2_exp = equal_exprt {phase_2_symbl, disjunction(phase_2_ops)};
   simplify(phase_2_exp, ns);
   equation.constraint(
     phase_2_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -3745,20 +3761,21 @@ symbol_exprt lazy_pot::no_interf(symex_target_equationt &equation) {
 // unrelated to roles 1/2). The final detection ORs both pairings
 // together in handling_datarace, so this is purely additive: it can only
 // add coverage, never remove or alter what roles 1/2 already detect.
-symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v) {
+exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v) {
 
   irep_idt phase_1_name =  as_string(v) + "_phase_1_swap";
   symbol_exprt phase_1_symbl{phase_1_name, bool_typet{}};
 
   exprt phase_1_exp = false_exprt{};
+  exprt::operandst phase_1_ops;
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
     irep_idt phase_1_t_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread);
     symbol_exprt phase_1_t_symbl{phase_1_t_name, bool_typet{}};
 
-    phase_1_exp = or_exprt{phase_1_exp, phase_1_t_symbl};
 
     exprt phase_1_t_exp = false_exprt{};
+    exprt::operandst phase_1_t_ops;
 
     if(this->reads.count(v) != 0) {
       for (auto read : reads.at(v)) {
@@ -3771,7 +3788,7 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
         irep_idt phase_1_t_v_name =  as_string(v) + "_phase_1_swap_T" + std::to_string(thread) + "_L" + std::to_string(read.label) + "_N" + std::to_string(read.num);
         symbol_exprt phase_1_t_v_symbl{phase_1_t_v_name, bool_typet{}};
 
-        phase_1_t_exp = or_exprt{phase_1_t_exp, phase_1_t_v_symbl};
+        phase_1_t_ops.push_back(phase_1_t_v_symbl);
 
         int atom = read.s_it->in_program_atomic_section();
         exprt phase_1_t_v_exp =
@@ -3809,13 +3826,20 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
           phase_1_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
-    phase_1_t_exp = equal_exprt {phase_1_t_symbl, phase_1_t_exp};
+    // A thread with no candidate access contributes false: leave it out,
+    // rather than define its symbol as false (see handling_datarace).
+    if(phase_1_t_ops.empty())
+      continue;
+    phase_1_ops.push_back(phase_1_t_symbl);
+    phase_1_t_exp = equal_exprt {phase_1_t_symbl, disjunction(phase_1_t_ops)};
     simplify(phase_1_t_exp, ns);
     equation.constraint(
       phase_1_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
-  phase_1_exp = equal_exprt {phase_1_symbl, phase_1_exp};
+  if(phase_1_ops.empty())
+    return false_exprt{};
+  phase_1_exp = equal_exprt {phase_1_symbl, disjunction(phase_1_ops)};
   simplify(phase_1_exp, ns);
   equation.constraint(
     phase_1_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -3826,19 +3850,20 @@ symbol_exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v
 // Mirror of phase_2, but writes-only (the read-iterating half is
 // dropped, since role 3 already covers the read side for this pairing;
 // a race needs at least one write, and role 3 = read here), using role 4.
-symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v) {
+exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v) {
   irep_idt phase_2_name = as_string(v) + "_phase_2_swap";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
   exprt phase_2_exp = false_exprt{};
+  exprt::operandst phase_2_ops;
 
   for (std::size_t thread = 0; thread <= threads; thread++) {
     irep_idt phase_2_t_name = as_string(v) + "_phase_2_swap_T" + std::to_string(thread);
     symbol_exprt phase_2_t_symbl{phase_2_t_name, bool_typet{}};
 
-    phase_2_exp = or_exprt{phase_2_exp, phase_2_t_symbl};
 
     exprt phase_2_t_exp = false_exprt{};
+    exprt::operandst phase_2_t_ops;
 
     if(this->writes.count(v) != 0) {
       for (auto write : writes.at(v)) {
@@ -3851,7 +3876,7 @@ symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v
         irep_idt phase_2_t_v_name = as_string(v) + "_phase_2_swap_w_T" + std::to_string(thread) + "_L" + std::to_string(write.label) + "_N" + std::to_string(write.num);
         symbol_exprt phase_2_t_v_symbl{phase_2_t_v_name, bool_typet{}};
 
-        phase_2_t_exp = or_exprt{phase_2_t_exp, phase_2_t_v_symbl};
+        phase_2_t_ops.push_back(phase_2_t_v_symbl);
 
         int atom = write.s_it->in_program_atomic_section();
         exprt phase_2_t_v_exp =
@@ -3889,13 +3914,20 @@ symbol_exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v
           phase_2_t_v_exp, "datarace constraint", equation.SSA_steps.begin()->source);
       }
     }
-    phase_2_t_exp = equal_exprt {phase_2_t_symbl, phase_2_t_exp};
+    // A thread with no candidate access contributes false: leave it out,
+    // rather than define its symbol as false (see handling_datarace).
+    if(phase_2_t_ops.empty())
+      continue;
+    phase_2_ops.push_back(phase_2_t_symbl);
+    phase_2_t_exp = equal_exprt {phase_2_t_symbl, disjunction(phase_2_t_ops)};
     simplify(phase_2_t_exp, ns);
     equation.constraint(
       phase_2_t_exp, "datarace constraint", equation.SSA_steps.begin()->source);
   }
 
-  phase_2_exp = equal_exprt {phase_2_symbl, phase_2_exp};
+  if(phase_2_ops.empty())
+    return false_exprt{};
+  phase_2_exp = equal_exprt {phase_2_symbl, disjunction(phase_2_ops)};
   simplify(phase_2_exp, ns);
   equation.constraint(
     phase_2_exp, "datarace constraint", equation.SSA_steps.begin()->source);
@@ -4226,17 +4258,29 @@ void lazy_pot::handling_datarace(
       continue;
     if (equation.symbol_is_atomic(ns,v))
       continue;
-    symbol_exprt pha_1 = phase_1(/*log,*/ equation, v);
-    symbol_exprt pha_2 = phase_2(/*log,*/ equation, v);
-    exprt pha_1_2 = and_exprt{pha_1, pha_2};
-    phases_ops.push_back(pha_1_2);
+    // A pairing needs both its accesses: where one side has no candidate
+    // the pairing is false, and the other side is not encoded at all. On
+    // the ldv-linux irda driver nsc-ircc each of the 23000 shared objects
+    // was encoded for every thread and both pairings, mostly as symbols
+    // defined false: the data-race phase took resident memory from 5 to
+    // 12 GB.
+    const exprt pha_1 = phase_1(/*log,*/ equation, v);
+    if(!pha_1.is_false())
+    {
+      const exprt pha_2 = phase_2(/*log,*/ equation, v);
+      if(!pha_2.is_false())
+        phases_ops.push_back(and_exprt{pha_1, pha_2});
+    }
     // __SZH_DR_ADD_BEGIN__
     // Read-first/write-second pairing (see phase_1_swap): a race that
     // phase_1/phase_2 (write-first only) cannot witness.
-    symbol_exprt pha_1_swap = phase_1_swap(equation, v);
-    symbol_exprt pha_2_swap = phase_2_swap(equation, v);
-    exprt pha_1_2_swap = and_exprt{pha_1_swap, pha_2_swap};
-    phases_swap_ops.push_back(pha_1_2_swap);
+    const exprt pha_1_swap = phase_1_swap(equation, v);
+    if(!pha_1_swap.is_false())
+    {
+      const exprt pha_2_swap = phase_2_swap(equation, v);
+      if(!pha_2_swap.is_false())
+        phases_swap_ops.push_back(and_exprt{pha_1_swap, pha_2_swap});
+    }
     // __SZH_DR_ADD_END__
   }
   // One disjunction over all shared objects. Was: or_exprt{previous, next}
