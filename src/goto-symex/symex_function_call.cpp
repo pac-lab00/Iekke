@@ -442,8 +442,49 @@ void goto_symext::symex_end_of_function(statet &state)
   auto call_lhs = state.call_stack().top().call_lhs;
   auto return_value_symbol = state.call_stack().top().return_value_symbol;
 
+  const guardt guard_at_start =
+    state.call_stack().top().guard_at_function_start;
+
   // now get rid of the frame
   pop_frame(state, path_storage, symex_config.doing_path_exploration);
+
+  // --summarise-guards. With one thread pop_frame resets the guard to the
+  // one at the call. With several it cannot: symex_assume_l2 then adds each
+  // assumption to the guard, and the guard coming out of the callee carries
+  // what is left of every branch and assumption inside it, built up by
+  // merge_gotos as nested disjunctions that never fold back. They pile up
+  // call after call: on the ldv-linux drivers the guard grew to 85000 nodes,
+  // 157 deep, and a third of symex went into comparing guards at merges.
+  //
+  // Here the guard coming out, g, becomes g0 && b, where g0 is the guard at
+  // the call and b a fresh guard symbol defined as g. Inside the call the
+  // guard is only strengthened (branch conditions, assumptions) or merged
+  // with other such strengthenings, so g implies g0 and g0 && b is g: the
+  // equation means the same. Only the representation changes: g is written
+  // once, in the definition of b, instead of in every later guard.
+  if(
+    symex_config.summarise_guards && state.threads.size() > 1 &&
+    !symex_config.doing_path_exploration && state.reachable)
+  {
+    const exprt exit_guard = state.guard.as_expr();
+    if(exit_guard != guard_at_start.as_expr())
+    {
+      symbol_exprt guard_symbol{statet::guard_identifier(), bool_typet()};
+      ssa_exprt lhs =
+        state.rename_ssa<L1>(ssa_exprt{guard_symbol}, ns).get();
+      lhs = state.assignment(std::move(lhs), exit_guard, ns, true, false).get();
+      target.assignment(
+        true_exprt{},
+        lhs,
+        lhs,
+        guard_symbol,
+        exit_guard,
+        state.source,
+        symex_targett::assignment_typet::GUARD);
+      state.guard = guard_at_start;
+      state.guard.add(lhs);
+    }
+  }
 
   // after dropping the frame, assign the return value, if any
   if(state.reachable && call_lhs.is_not_nil())

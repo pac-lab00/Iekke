@@ -68,6 +68,11 @@ struct symex_configt final
   /// of elements n gets K elements, under the condition n <= K (0: off)
   std::size_t dynamic_array_bound;
 
+  /// --summarise-guards: in a multi-threaded program, replace the guard
+  /// coming out of a function by the guard at the call and a fresh guard
+  /// symbol defined as the guard coming out (see symex_end_of_function)
+  bool summarise_guards;
+
   /// \brief Construct a symex_configt using options specified in an
   /// \ref optionst
   explicit symex_configt(const optionst &options);

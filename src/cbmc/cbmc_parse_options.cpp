@@ -251,6 +251,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("extern-pointers-own-object"))
     options.set_option("extern-pointers-own-object", true);
 
+  if(cmdline.isset("summarise-guards"))
+    options.set_option("summarise-guards", true);
+
   if(cmdline.isset("rounds"))
   {
     options.set_option(
@@ -1308,6 +1311,8 @@ void cbmc_parse_optionst::help()
     " --nondet-static              add nondeterministic initialization of variables with static lifetime\n"
     // NOLINTNEXTLINE(whitespace/line_length)
     " --extern-pointers-own-object an undefined extern pointer to a struct or union points to an object of its own, or is null\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --summarise-guards           with threads, the guard after a call is the guard at the call and one fresh symbol\n"
     "\n"
     "BMC options:\n"
     HELP_BMC
