@@ -1664,10 +1664,40 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       // are constants, the write's hit condition (byte_hits, the one the
       // cascade below uses) is decided by simplification; a write whose hit
       // condition is false is left out of the byte's cascade.
-      const bool roff_constant = simplify_expr(roff, ns).is_constant();
+      //
+      // With both constant, the hit condition is decided here by arithmetic
+      // when every value involved, and the end of the write, fit the offset
+      // type, so that the offset types arithmetic is the integers too; only
+      // otherwise by simplifying the condition. Was: always by simplifying,
+      // one condition built and simplified per read, byte and write -- on the
+      // ldv-linux drivers millions of them for a single heap block
+      // (spi-tegra20-slink, 234 writes, 3418 reads).
+      const exprt roff_simplified = simplify_expr(roff, ns);
+      const bool roff_constant = roff_simplified.is_constant();
+      const auto roff_value = numeric_cast<mp_integer>(roff_simplified);
+      const std::size_t offset_width =
+        to_bitvector_type(offset_type).get_width();
+      const mp_integer offset_min = offset_type.id() == ID_signedbv
+                                      ? -power(2, offset_width - 1)
+                                      : mp_integer{0};
+      const mp_integer offset_max =
+        (offset_type.id() == ID_signedbv ? power(2, offset_width - 1)
+                                         : power(2, offset_width)) -
+        1;
+      const auto fits = [&](const mp_integer &v) {
+        return v >= offset_min && v <= offset_max;
+      };
       const auto misses = [&](const array_writet &aw, const mp_integer &b) {
         if(!roff_constant || aw.whole_array || !constant_range(aw).has_value())
           return false;
+        const auto range = *constant_range(aw);
+        if(roff_value.has_value())
+        {
+          const mp_integer at = *roff_value + b;
+          const mp_integer end = range.first + range.second;
+          if(range.second >= 0 && fits(at) && fits(range.first) && fits(end))
+            return at < range.first || at >= end;
+        }
         const exprt p = plus_exprt{roff, from_integer(b, offset_type)};
         return simplify_expr(byte_hits(aw, true_exprt{}, p), ns).is_false();
       };
