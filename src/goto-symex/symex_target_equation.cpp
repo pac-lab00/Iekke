@@ -21,6 +21,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <chrono>
 
+#include <unordered_set>
 #include <util/std_expr.h>
 #include <util/find_symbols.h>
 #include <util/byte_operators.h>
@@ -1796,29 +1797,41 @@ void symex_target_equationt::remove_dummy_accesses()
 {
   std::set<std::string> solid_accesses;
 
+  // Every symbol named in a guard, a condition or an assignment. Was:
+  // find_symbols on each of them, which walks an expression as a tree. Guards
+  // share nearly all their nodes, so each step re-walked the whole shared
+  // part; on the ldv-linux drivers (spi-tegra20-slink) this pass alone took
+  // a third of the run. Visit each shared node once instead. Every child of a
+  // node is visited, comments and types included, so this finds at least
+  // what find_symbols finds: a symbol found in addition only keeps an access.
+  std::unordered_set<const void *> visited;
+  std::vector<const irept *> stack;
+  auto collect = [&](const irept &root) {
+    stack.push_back(&root);
+    while(!stack.empty())
+    {
+      const irept &node = *stack.back();
+      stack.pop_back();
+      if(!visited.insert(&node.read()).second)
+        continue;
+      if(node.id() == ID_symbol)
+        solid_accesses.insert(id2string(node.get(ID_identifier)));
+      for(const auto &sub : node.get_sub())
+        stack.push_back(&sub);
+      for(const auto &named : node.get_named_sub())
+        stack.push_back(&named.second);
+    }
+  };
+
   for(event_it e_it=SSA_steps.begin(); e_it!=SSA_steps.end(); e_it++)
   {
-    std::set<symbol_exprt> appeared_symbols;
-    find_symbols(e_it->guard, appeared_symbols);
-    find_symbols(e_it->cond_expr, appeared_symbols);
-
-    for(auto& appeared_symbol : appeared_symbols)
-    {
-      std::string appeared_str = appeared_symbol.get_identifier().c_str();
-      solid_accesses.insert(appeared_str);
-    }
+    collect(e_it->guard);
+    collect(e_it->cond_expr);
 
     if(e_it->is_assignment())
     {
-      std::string left_str = e_it->ssa_lhs.get_identifier().c_str();
-      solid_accesses.insert(left_str);
-
-      auto right_symbols = find_symbols(e_it->ssa_rhs);
-      for(auto& right_symbol : right_symbols)
-      {
-        std::string right_str = right_symbol.get_identifier().c_str();
-        solid_accesses.insert(right_str);
-      }
+      solid_accesses.insert(id2string(e_it->ssa_lhs.get_identifier()));
+      collect(e_it->ssa_rhs);
     }
   }
 
