@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --infer-alloc-types --verbosity 9
+^Allocation sizes tagged with a type: 1$
+^EXIT=10$
+^SIGNAL=0$
+^\[main\.assertion\.1\] .*: SUCCESS$
+^\[main\.assertion\.2\] .*: SUCCESS$
+^\[main\.assertion\.3\] .*: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

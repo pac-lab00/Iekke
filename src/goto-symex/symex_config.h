@@ -73,6 +73,10 @@ struct symex_configt final
   /// symbol defined as the guard coming out (see symex_end_of_function)
   bool summarise_guards;
 
+  /// --infer-alloc-types: an allocation tagged with sizeof(T) and larger
+  /// than T is typed {T object; unsigned char tail[...]} rather than as bytes
+  bool infer_alloc_types;
+
   /// \brief Construct a symex_configt using options specified in an
   /// \ref optionst
   explicit symex_configt(const optionst &options);

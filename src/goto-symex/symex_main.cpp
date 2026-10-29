@@ -58,7 +58,8 @@ symex_configt::symex_configt(const optionst &options)
     cache_dereferences{options.get_bool_option("symex-cache-dereferences")},
     lazy_po_rounds(options.get_unsigned_int_option("rounds")),
     dynamic_array_bound(options.get_unsigned_int_option("dynamic-array-bound")),
-    summarise_guards(options.get_bool_option("summarise-guards"))
+    summarise_guards(options.get_bool_option("summarise-guards")),
+    infer_alloc_types(options.get_bool_option("infer-alloc-types"))
 {
 }
 

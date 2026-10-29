@@ -16,10 +16,12 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <iostream>
 #include <memory>
 
+#include <util/arith_tools.h>
 #include <util/config.h>
 #include <util/exit_codes.h>
 #include <util/invariant.h>
 #include <util/make_unique.h>
+#include <util/pointer_offset_size.h>
 #include <util/version.h>
 
 #ifdef _MSC_VER
@@ -253,6 +255,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
 
   if(cmdline.isset("summarise-guards"))
     options.set_option("summarise-guards", true);
+
+  if(cmdline.isset("infer-alloc-types"))
+    options.set_option("infer-alloc-types", true);
 
   if(cmdline.isset("rounds"))
   {
@@ -1071,6 +1076,74 @@ static void extern_pointers_own_object(goto_modelt &goto_model, messaget &log)
   log.status() << "extern pointers given an object of their own: " << count
                << messaget::eom;
 }
+/// --infer-alloc-types: an allocation whose size was written as a number --
+/// `tmp = kzalloc(3816UL, 208U); cam = (struct cafe_camera *)tmp;`, as the
+/// ldv-linux tasks do throughout -- carries no sizeof(T), so symex_allocate
+/// makes it an array of bytes, with one points-to entry for the whole block:
+/// every pointer stored in any member is read back from every member. Here
+/// the number is tagged with sizeof(T), as the front end tags sizeof, when
+/// the call's result is cast to T * by the next assignment and exactly one
+/// argument is a constant between sizeof(T) and 2 sizeof(T) + 64 (the tasks
+/// carry LP64 sizes under ILP32). The tag travels with the constant through
+/// the allocation wrappers, as sizeof does.
+///
+/// Sound by construction: the tag only chooses how symex_allocate types a
+/// block of the same size (T, T[n], or T followed by bytes); the bytes, and
+/// so every value the program can read, are the same. A wrong guess costs
+/// efficiency, not correctness.
+static void infer_allocation_types(goto_modelt &goto_model, messaget &log)
+{
+  const namespacet ns(goto_model.symbol_table);
+  std::size_t tagged = 0;
+  for(auto &gf : goto_model.goto_functions.function_map)
+  {
+    auto &body = gf.second.body;
+    for(auto it = body.instructions.begin(); it != body.instructions.end(); ++it)
+    {
+      if(!it->is_function_call() || it->call_lhs().id() != ID_symbol)
+        continue;
+      // the cast, after any declarations and no-ops in between
+      auto next = std::next(it);
+      while(next != body.instructions.end() &&
+            (next->is_decl() || next->is_dead() || next->is_skip() ||
+             next->is_location()))
+      {
+        ++next;
+      }
+      if(next == body.instructions.end() || !next->is_assign())
+        continue;
+      const exprt &rhs = next->assign_rhs();
+      if(rhs.id() != ID_typecast || to_typecast_expr(rhs).op() != it->call_lhs())
+        continue;
+      if(rhs.type().id() != ID_pointer)
+        continue;
+      const typet &target = to_pointer_type(rhs.type()).base_type();
+      const typet &followed = ns.follow(target);
+      if(followed.id() != ID_struct && followed.id() != ID_union)
+        continue;
+      const auto t_size = pointer_offset_size(target, ns);
+      if(!t_size.has_value() || *t_size == 0)
+        continue;
+      exprt *only = nullptr;
+      std::size_t candidates = 0;
+      for(auto &arg : it->call_arguments())
+      {
+        const auto c = numeric_cast<mp_integer>(arg);
+        if(c.has_value() && *c >= *t_size && *c <= 2 * *t_size + 64)
+        {
+          only = &arg;
+          ++candidates;
+        }
+      }
+      if(candidates != 1)
+        continue;
+      only->set(ID_C_c_sizeof_type, target);
+      ++tagged;
+    }
+  }
+  log.statistics() << "Allocation sizes tagged with a type: " << tagged
+                   << messaget::eom;
+}
 
 bool cbmc_parse_optionst::process_goto_program(
   goto_modelt &goto_model,
@@ -1088,6 +1161,9 @@ bool cbmc_parse_optionst::process_goto_program(
     goto_model, log.get_message_handler(), cprover_cpp_library_factory);
   link_to_library(
     goto_model, log.get_message_handler(), cprover_c_library_factory);
+
+  if(options.get_bool_option("infer-alloc-types"))
+    infer_allocation_types(goto_model, log);
 
   // Common removal of types and complex constructs
   if(::process_goto_program(goto_model, options, log))
@@ -1313,6 +1389,8 @@ void cbmc_parse_optionst::help()
     " --extern-pointers-own-object an undefined extern pointer to a struct or union points to an object of its own, or is null\n"
     // NOLINTNEXTLINE(whitespace/line_length)
     " --summarise-guards           with threads, the guard after a call is the guard at the call and one fresh symbol\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --infer-alloc-types          type an allocation of a constant size by the cast of its result\n"
     "\n"
     "BMC options:\n"
     HELP_BMC

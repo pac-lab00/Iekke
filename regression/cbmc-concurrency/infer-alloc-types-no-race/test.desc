@@ -1,0 +1,9 @@
+CORE
+main.c
+--datarace --no-por --unwind 2 --rounds 2 --allow-pointer-unsoundness --infer-alloc-types --verbosity 9
+^Allocation sizes tagged with a type: 1$
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring

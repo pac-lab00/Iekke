@@ -131,6 +131,22 @@ void goto_symext::symex_allocate(
             if(elements * (*elem_size) == *alloc_size)
               object_type =
                 array_typet(*tmp_type, from_integer(elements, tmp_size.type()));
+            else if(symex_config.infer_alloc_types && elements >= 1)
+            {
+              // --infer-alloc-types: a T followed by the bytes left over.
+              // The ldv-linux tasks allocate their structs with LP64 sizes
+              // under ILP32, so every block is larger than its type. As
+              // bytes, the whole block has one points-to entry: each pointer
+              // stored in any member is read back from every member.
+              struct_typet::componentst components;
+              components.emplace_back("object", *tmp_type);
+              components.emplace_back(
+                "tail",
+                array_typet(
+                  unsigned_char_type(),
+                  from_integer(*alloc_size - *elem_size, tmp_size.type())));
+              object_type = struct_typet(std::move(components));
+            }
           }
         }
       }
