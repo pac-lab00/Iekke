@@ -535,7 +535,8 @@ void symex_assignt::assign_byte_extract(
   // rewriting all of it. Leave them out. An out-of-bounds access is still
   // reported by the pointer checks, which do not depend on this.
   {
-    const auto offset = numeric_cast<mp_integer>(simplify_expr(lhs.offset(), ns));
+    const auto offset =
+      numeric_cast<mp_integer>(simplify_expr(lhs.offset(), ns));
     const auto object_size = pointer_offset_size(lhs.op().type(), ns);
     const auto value_size = pointer_offset_size(rhs.type(), ns);
     if(

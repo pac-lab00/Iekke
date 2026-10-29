@@ -1666,12 +1666,12 @@ void lazy_pot::create_array_rf_constraints(symex_target_equationt &equation)
       // condition is false is left out of the byte's cascade.
       //
       // With both constant, the hit condition is decided here by arithmetic
-      // when every value involved, and the end of the write, fit the offset
-      // type, so that the offset types arithmetic is the integers too; only
-      // otherwise by simplifying the condition. Was: always by simplifying,
-      // one condition built and simplified per read, byte and write -- on the
-      // ldv-linux drivers millions of them for a single heap block
-      // (spi-tegra20-slink, 234 writes, 3418 reads).
+      // when every value involved, the end of the write included, fits the
+      // offset type, so that arithmetic in the offset type agrees with the
+      // integers; otherwise it is still decided by simplifying the condition.
+      // Was: always by simplifying, one condition built and simplified per
+      // read, byte and write -- on the ldv-linux drivers millions of them for
+      // a single heap block (spi-tegra20-slink, 234 writes, 3418 reads).
       const exprt roff_simplified = simplify_expr(roff, ns);
       const bool roff_constant = roff_simplified.is_constant();
       const auto roff_value = numeric_cast<mp_integer>(roff_simplified);

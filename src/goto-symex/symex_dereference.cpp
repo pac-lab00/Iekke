@@ -265,14 +265,16 @@ void goto_symext::replace_loads_outside_object(exprt &expr)
     expr.id() == ID_byte_extract_big_endian)
   {
     const byte_extract_exprt &be = to_byte_extract_expr(expr);
-    const auto offset = numeric_cast<mp_integer>(simplify_expr(be.offset(), ns));
+    const auto offset =
+      numeric_cast<mp_integer>(simplify_expr(be.offset(), ns));
     const auto object_size = pointer_offset_size(be.op().type(), ns);
     const auto value_size = pointer_offset_size(be.type(), ns);
     if(
       offset.has_value() && object_size.has_value() && value_size.has_value() &&
       (*offset >= *object_size || *offset + *value_size <= 0))
     {
-      expr = path_storage.build_symex_nondet(expr.type(), expr.source_location());
+      expr =
+        path_storage.build_symex_nondet(expr.type(), expr.source_location());
       return;
     }
   }
