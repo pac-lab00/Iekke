@@ -13,9 +13,12 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include "expr_skeleton.h"
 #include "goto_symex_state.h"
+#include <util/arith_tools.h>
 #include <util/byte_operators.h>
 #include <util/expr_util.h>
+#include <util/pointer_offset_size.h>
 #include <util/range.h>
+#include <util/simplify_expr.h>
 
 #include "symex_config.h"
 
@@ -521,6 +524,28 @@ void symex_assignt::assign_byte_extract(
     byte_update_id = ID_byte_update_big_endian;
   else
     UNREACHABLE;
+
+  // A store whose bytes all lie outside the object leaves the object as it
+  // was: the bytes of a byte_update that fall outside its operand are
+  // dropped. It still cost a write of every member, and a shared-write
+  // event on each, which then raced with any access to the object. Such
+  // stores come from a dereference resolved against an object the pointer
+  // does not point into: on the ldv-linux irda drivers a third of the stores
+  // into struct net_device (1872 bytes) were at offsets near 6 MB, each one
+  // rewriting all of it. Leave them out. An out-of-bounds access is still
+  // reported by the pointer checks, which do not depend on this.
+  {
+    const auto offset = numeric_cast<mp_integer>(simplify_expr(lhs.offset(), ns));
+    const auto object_size = pointer_offset_size(lhs.op().type(), ns);
+    const auto value_size = pointer_offset_size(rhs.type(), ns);
+    if(
+      offset.has_value() && object_size.has_value() &&
+      value_size.has_value() &&
+      (*offset >= *object_size || *offset + *value_size <= 0))
+    {
+      return;
+    }
+  }
 
   const byte_update_exprt new_rhs{byte_update_id, lhs.op(), lhs.offset(), rhs};
   const expr_skeletont new_skeleton =
