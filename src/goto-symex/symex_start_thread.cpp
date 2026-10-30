@@ -18,6 +18,29 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "path_storage.h"
 #include "symex_assign.h"
 
+#include <algorithm>
+#include <unordered_set>
+
+/// Whether \p a and \p b cannot both hold: a top-level conjunct of one is the
+/// negation of a top-level conjunct of the other. Syntactic, so a false answer
+/// only means "not shown".
+static bool guards_exclude(const exprt &a, const exprt &b)
+{
+  const auto conjuncts = [](const exprt &g) {
+    return g.id() == ID_and ? g.operands() : exprt::operandst{g};
+  };
+  const exprt::operandst of_a = conjuncts(a);
+  const std::unordered_set<exprt, irep_hash> set_a(of_a.begin(), of_a.end());
+  for(const exprt &c : conjuncts(b))
+  {
+    const exprt negation =
+      c.id() == ID_not ? to_not_expr(c).op() : exprt{not_exprt{c}};
+    if(set_a.count(negation) != 0)
+      return true;
+  }
+  return false;
+}
+
 void goto_symext::symex_start_thread(statet &state)
 {
   if(!state.reachable)
@@ -29,9 +52,6 @@ void goto_symext::symex_start_thread(statet &state)
       "this would require amendments to ordering constraints",
       state.source.pc->source_location());
 
-  // record this
-  target.spawn(state.guard.as_expr(), state.source);
-
   const goto_programt::instructiont &instruction=*state.source.pc;
 
   INVARIANT(instruction.targets.size() == 1, "start_thread expects one target");
@@ -39,22 +59,67 @@ void goto_symext::symex_start_thread(statet &state)
   goto_programt::const_targett thread_target=
     instruction.get_target();
 
-  // put into thread vector
-  const std::size_t new_thread_nr = state.threads.size();
-  state.threads.push_back(statet::threadt(guard_manager));
-  // statet::threadt &cur_thread=state.threads[state.source.thread_nr];
-  statet::threadt &new_thread=state.threads.back();
-  new_thread.pc=thread_target;
-  new_thread.function_id = state.source.function_id;
-  new_thread.guard=state.guard;
-  new_thread.call_stack.push_back(state.call_stack().top());
-  new_thread.call_stack.back().local_objects.clear();
-  new_thread.call_stack.back().goto_state_map.clear();
-  #if 0
-  new_thread.abstract_events=&(target.new_thread(cur_thread.abstract_events));
-  #endif
-
   const std::size_t current_thread_nr = state.source.thread_nr;
+  const exprt creation_guard = state.guard.as_expr();
+
+  // --merge-exclusive-threads: a thread this thread created earlier at the
+  // same instruction, every creation of which excludes this one, is still
+  // pending (threads run in order, after their parent ends), so it can be this
+  // thread as well: it runs under the disjunction of the creation guards, and
+  // the copies of the locals below take the value of the path that created
+  // it, through the phi functions where the paths meet. One body instead of
+  // one per path, with the same executions: the creations exclude each other,
+  // so at most one of them happens in each.
+  // Only for --rounds: the memory models without it number the threads by
+  // counting spawns (memory_model_sct::thread_spawn).
+  std::size_t new_thread_nr = state.threads.size();
+  if(symex_config.merge_exclusive_threads && symex_config.lazy_po_rounds > 0)
+  {
+    for(std::size_t t = 0; t < state.threads.size(); ++t)
+    {
+      const statet::threadt &other = state.threads[t];
+      if(
+        !other.creation_guards.empty() && other.pc == thread_target &&
+        other.parent_thread_nr == current_thread_nr &&
+        other.function_id == state.source.function_id &&
+        std::all_of(
+          other.creation_guards.begin(),
+          other.creation_guards.end(),
+          [&creation_guard](const exprt &g) {
+            return guards_exclude(g, creation_guard);
+          }))
+      {
+        new_thread_nr = t;
+        break;
+      }
+    }
+  }
+  const bool merged = new_thread_nr < state.threads.size();
+
+  // record this
+  target.spawn(creation_guard, state.source, new_thread_nr);
+
+  if(merged)
+  {
+    state.threads[new_thread_nr].guard |= state.guard;
+    log.statistics() << "thread creation merged into thread " << new_thread_nr
+                     << log.eom;
+  }
+  else
+  {
+    // put into thread vector
+    state.threads.push_back(statet::threadt(guard_manager));
+    statet::threadt &thread = state.threads.back();
+    thread.pc = thread_target;
+    thread.function_id = state.source.function_id;
+    thread.guard = state.guard;
+    thread.parent_thread_nr = static_cast<unsigned>(current_thread_nr);
+    thread.call_stack.push_back(state.call_stack().top());
+    thread.call_stack.back().local_objects.clear();
+    thread.call_stack.back().goto_state_map.clear();
+  }
+  statet::threadt &new_thread = state.threads[new_thread_nr];
+  new_thread.creation_guards.push_back(creation_guard);
 
   // create a copy of the local variables for the new thread
   framet &frame = state.call_stack().top();
@@ -76,12 +141,16 @@ void goto_symext::symex_start_thread(statet &state)
     // get L0 name for current thread
     const renamedt<ssa_exprt, L0> l0_lhs =
       symex_level0(std::move(lhs), ns, new_thread_nr);
-    const irep_idt &l0_name = l0_lhs.get().get_identifier();
-    std::size_t l1_index = path_storage.get_unique_l1_index(l0_name, 0);
-    CHECK_RETURN(l1_index == 0);
+    // a merged thread has its copy from an earlier creation
+    if(!state.level1.has(l0_lhs))
+    {
+      const irep_idt &l0_name = l0_lhs.get().get_identifier();
+      std::size_t l1_index = path_storage.get_unique_l1_index(l0_name, 0);
+      CHECK_RETURN(l1_index == 0);
 
-    // set up L1 name
-    state.level1.insert(l0_lhs, 0);
+      // set up L1 name
+      state.level1.insert(l0_lhs, 0);
+    }
 
     const ssa_exprt lhs_l1 = state.rename_ssa<L1>(l0_lhs.get(), ns).get();
     const irep_idt l1_name = lhs_l1.get_l1_object_identifier();

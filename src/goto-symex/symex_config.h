@@ -77,6 +77,11 @@ struct symex_configt final
   /// than T is typed {T object; unsigned char tail[...]} rather than as bytes
   bool infer_alloc_types;
 
+  /// --merge-exclusive-threads: a thread created by the same instruction of
+  /// the same parent as a pending thread, on a path that excludes every
+  /// creation of that thread, reuses it (see symex_start_thread); --rounds only
+  bool merge_exclusive_threads;
+
   /// \brief Construct a symex_configt using options specified in an
   /// \ref optionst
   explicit symex_configt(const optionst &options);

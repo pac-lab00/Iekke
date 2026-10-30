@@ -76,11 +76,13 @@ void symex_target_equationt::shared_write(
 /// spawn a new thread
 void symex_target_equationt::spawn(
   const exprt &guard,
-  const sourcet &source)
+  const sourcet &source,
+  std::size_t thread_nr)
 {
   SSA_steps.emplace_back(source, goto_trace_stept::typet::SPAWN);
   SSA_stept &SSA_step=SSA_steps.back();
   SSA_step.guard=guard;
+  SSA_step.spawned_thread_nr = thread_nr;
 
   merge_ireps(SSA_step);
 }

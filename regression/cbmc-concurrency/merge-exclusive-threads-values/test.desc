@@ -1,0 +1,10 @@
+CORE
+main.c
+--unwind 2 --no-por --rounds 2 --allow-pointer-unsoundness --merge-exclusive-threads
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^\[main.assertion.1\] line 26 .*: SUCCESS$
+^\[main.assertion.2\] line 27 .*: FAILURE$
+--
+^warning: ignoring

@@ -16,6 +16,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/pointer_offset_size.h>
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
+#include <util/string2int.h>
 
 #include <langapi/language_util.h>
 #include <pointer-analysis/add_failed_symbols.h>
@@ -791,13 +792,21 @@ static void merge_names(
   // don't merge (thread-)locals across different threads, which
   // may have been introduced by symex_start_thread (and will
   // only later be removed from level2.current_names by pop_frame
-  // once the thread is executed)
+  // once the thread is executed) -- unless that thread was created on more
+  // than one path (--merge-exclusive-threads): its copies then hold the
+  // value of the path that created it, which is what the phi node says
   const irep_idt level_0 = ssa.get_level_0();
   if(
     !level_0.empty() &&
     level_0 != std::to_string(dest_state.source.thread_nr) && dest_count != 0)
   {
-    return;
+    const std::size_t owner = unsafe_string2size_t(id2string(level_0));
+    if(
+      owner >= dest_state.threads.size() ||
+      dest_state.threads[owner].creation_guards.size() < 2)
+    {
+      return;
+    }
   }
 
   exprt goto_state_rhs = ssa, dest_state_rhs = ssa;

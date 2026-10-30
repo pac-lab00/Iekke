@@ -3203,7 +3203,6 @@ void lazy_pot::handling_active_threads(
         false_exprt{});
   }
 
-  unsigned thread_created = 1;
   thread_current = 0;
 
   // Was: a thread was deemed to have ended as soon as a step with a larger
@@ -3262,24 +3261,23 @@ void lazy_pot::handling_active_threads(
     // FAILED). CBMC already emits a dedicated SPAWN step for both spawn
     // forms (is_spawn()), which is exactly what CBMC's own memory models
     // use for the same purpose -- use that instead of the source-level
-    // pattern match. thread_created increments in spawn order, which is
-    // CBMC's own thread numbering order, so no heuristic is needed for
-    // the target thread index either. Using the spawn step's own
+    // pattern match. The spawn step names the thread it starts (several
+    // spawns start the same thread under --merge-exclusive-threads), so no
+    // heuristic is needed for the target thread index either. Using the spawn step's own
     // atomic_section_id (rather than a hard-coded 1, which was tuned
     // specifically for pthread_create's library wrapper) is correct for
     // both forms: a pthread_create SPAWN sits inside that library's
     // atomic section, an __CPROVER_ASYNC one does not.
     if(s_it->is_spawn())
     {
+      unsigned spawned = static_cast<unsigned>(s_it->spawned_thread_nr);
       create_active_thread_statements(
         s_it->source,
         guard,
         s_it->atomic_section_id,
-        thread_created,
+        spawned,
         temp_equation,
         true_exprt{});
-
-      thread_created++;
     }
 
     SSA_stept step{equation.SSA_steps.front()};
@@ -3349,19 +3347,10 @@ void lazy_pot::create_active_thread_statements(
   symex_target_equationt &equation,
   const exprt &value)
 {
-  // thread_created (the caller's index into this map) comes from a
-  // heuristic pthread_create-call-site match, independent of
-  // thread_current (the real max thread_nr in the trace, which is what
-  // populates this map up front in handling_active_threads). If that
-  // heuristic ever over-counts, active_threads_vector.at(thread) below
-  // throws an uncaught std::out_of_range and the whole run aborts with no
-  // diagnostic. Register defensively instead: emplace() is a no-op when
-  // thread is already present, so this only changes behaviour on the
-  // mismatch case, and only by warning + continuing instead of crashing.
-  // 'log' (a messaget local to operator()) isn't reachable from this
-  // member function, so this can only register silently rather than warn;
-  // still strictly better than the uncaught std::out_of_range this
-  // replaces.
+  // thread (the caller's index into this map) comes from the spawn step or
+  // the thread's last step; the map is populated up front from thread_current
+  // in handling_active_threads. Register defensively anyway: a missing entry
+  // would otherwise throw std::out_of_range below with no diagnostic.
   if(active_threads_vector.count(thread) == 0)
     create_active_thread_symbol(thread);
 

@@ -1,0 +1,8 @@
+CORE
+main.c
+--datarace --no-assertions --unwind 2 --no-por --rounds 2 --allow-pointer-unsoundness --merge-exclusive-threads
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

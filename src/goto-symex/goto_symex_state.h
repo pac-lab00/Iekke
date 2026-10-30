@@ -189,6 +189,10 @@ public:
     call_stackt call_stack;
     std::map<irep_idt, unsigned> function_frame;
     unsigned atomic_section_id = 0;
+    /// the thread that created it, and the guard of each creation
+    /// (--merge-exclusive-threads)
+    unsigned parent_thread_nr = 0;
+    std::vector<exprt> creation_guards;
     explicit threadt(guard_managert &guard_manager)
       : guard(true_exprt(), guard_manager)
     {

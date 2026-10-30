@@ -266,9 +266,11 @@ public:
   /// \param guard: Precondition for reaching spawning a new thread
   /// \param source: Pointer to location in the input GOTO program where a new
   ///  thread is to be spawned
+  /// \param thread_nr: Number of the thread this spawn starts
   virtual void spawn(
     const exprt &guard,
-    const sourcet &source)=0;
+    const sourcet &source,
+    std::size_t thread_nr) = 0;
 
   /// Record creating a memory barrier
   /// \param guard: Precondition for reaching this barrier

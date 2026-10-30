@@ -259,6 +259,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("infer-alloc-types"))
     options.set_option("infer-alloc-types", true);
 
+  if(cmdline.isset("merge-exclusive-threads"))
+    options.set_option("merge-exclusive-threads", true);
+
   if(cmdline.isset("rounds"))
   {
     options.set_option(
@@ -1391,6 +1394,7 @@ void cbmc_parse_optionst::help()
     " --summarise-guards           with threads, the guard after a call is the guard at the call and one fresh symbol\n"
     // NOLINTNEXTLINE(whitespace/line_length)
     " --infer-alloc-types          type an allocation of a constant size by the cast of its result\n"
+    " --merge-exclusive-threads    one thread for creations of the same code on paths that exclude each other\n"
     "\n"
     "BMC options:\n"
     HELP_BMC

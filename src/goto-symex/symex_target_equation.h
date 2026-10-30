@@ -190,7 +190,8 @@ public:
   /// \copydoc symex_targett::spawn()
   virtual void spawn(
     const exprt &guard,
-    const sourcet &source);
+    const sourcet &source,
+    std::size_t thread_nr);
 
   /// \copydoc symex_targett::memory_barrier()
   virtual void memory_barrier(
