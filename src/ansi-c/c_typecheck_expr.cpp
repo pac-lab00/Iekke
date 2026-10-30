@@ -4407,6 +4407,14 @@ protected:
   {
     if(e.id() == ID_infinity)
       return true;
+    else if(e.id() == ID_compound_literal)
+    {
+      // a compound literal is as constant as its initializer
+      return std::all_of(
+        e.operands().begin(), e.operands().end(), [this](const exprt &op) {
+          return is_constant(op);
+        });
+    }
     else
       return is_constantt::is_constant(e);
   }
