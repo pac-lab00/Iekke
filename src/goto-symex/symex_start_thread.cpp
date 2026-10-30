@@ -162,9 +162,11 @@ void goto_symext::symex_start_thread(statet &state)
 
     exprt::operandst lhs_conditions;
     state.record_events.push(false);
+    state.own_view_thread = static_cast<int>(new_thread_nr);
     symex_assignt{
       state, symex_targett::assignment_typet::HIDDEN, ns, symex_config, target}
       .assign_symbol(lhs_l1, expr_skeletont{}, rhs, lhs_conditions);
+    state.own_view_thread = -1;
     const exprt l2_lhs = state.rename(lhs_l1, ns).get();
     state.record_events.pop();
 
@@ -216,9 +218,11 @@ void goto_symext::symex_start_thread(statet &state)
     // thread (libvsync/arraylock, no-data-race).
     exprt::operandst lhs_conditions;
     state.record_events.push(false);
+    state.own_view_thread = static_cast<int>(new_thread_nr);
     symex_assignt{
       state, symex_targett::assignment_typet::HIDDEN, ns, symex_config, target}
       .assign_symbol(lhs, expr_skeletont{}, rhs, lhs_conditions);
+    state.own_view_thread = -1;
     const ssa_exprt lhs_l1 = state.rename_ssa<L1>(lhs, ns).get();
     const exprt l2_lhs = state.rename(lhs_l1, ns).get();
     state.record_events.pop();

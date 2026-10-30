@@ -263,6 +263,9 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("merge-exclusive-threads"))
     options.set_option("merge-exclusive-threads", true);
 
+  if(cmdline.isset("own-view-reads"))
+    options.set_option("own-view-reads", true);
+
   if(cmdline.isset("rounds"))
   {
     options.set_option(
@@ -1403,6 +1406,8 @@ void cbmc_parse_optionst::help()
     // NOLINTNEXTLINE(whitespace/line_length)
     " --infer-alloc-types          type an allocation of a constant size by the cast of its result\n"
     " --merge-exclusive-threads    one thread for creations of the same code on paths that exclude each other\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --own-view-reads             read a shared object no other thread writes after the first spawn from the thread's own view\n"
     "\n"
     "BMC options:\n"
     HELP_BMC

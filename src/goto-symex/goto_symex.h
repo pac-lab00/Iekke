@@ -15,6 +15,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/message.h>
 
 #include "complexity_limiter.h"
+#include "own_view_writers.h"
 #include "symex_config.h"
 
 class address_of_exprt;
@@ -240,6 +241,11 @@ public:
   /// like thread-locals (constant propagation, hence early loop-unwinding
   /// termination). Empty means "behave exactly as before".
   std::unordered_set<irep_idt> thread_exclusive_variables;
+
+  /// --own-view-reads: what the passes record and assume, handed to the symex
+  /// state when \ref own_view_reads is set (see own_view_writers.h).
+  own_view_statet own_view;
+  bool own_view_reads = false;
 
   /// Loop identifiers (\c goto_programt::loop_id form) of loops that a static
   /// pre-symex analysis has shown to do nothing but spawn or join threads over

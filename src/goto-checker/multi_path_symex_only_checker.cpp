@@ -504,6 +504,17 @@ void multi_path_symex_only_checkert::generate_equation()
     }
   }
 
+  // --own-view-reads (goto-symex/own_view_writers.h): every pass records
+  // what each thread writes after the first spawn; the second pass reads
+  // from a thread's own view what only that thread writes. Gated like the
+  // analyses above.
+  const bool own_view_reads = options.get_bool_option("own-view-reads") &&
+                              options.get_unsigned_int_option("rounds") > 0;
+  symex.own_view_reads = own_view_reads;
+  symex.own_view.known.clear();
+  symex.own_view.active = false;
+  symex.own_view.start_pass();
+
   // __SZH_ADD_BEGIN__
   // if the program has threads, we need to symex twice
   symex.try_finding_value_set = true;
@@ -555,9 +566,19 @@ void multi_path_symex_only_checkert::generate_equation()
   if(symex.target.has_threads() &&
      !options.get_bool_option("refined-pointer-analysis"))
   {
+    // Under --own-view-reads the first pass's writers decide which reads the
+    // seeded passes make from a thread's own view. A pass that finds such an
+    // assumption broken -- its points-to sets are topped up, the first
+    // pass's were not -- is repeated with what it found; a few times, and
+    // then once more without own-view reads.
+    symex.own_view.finish_pass();
+    symex.own_view.active = own_view_reads;
     const std::size_t max_seeded_passes = 8;
+    const std::size_t max_own_view_repetitions = 3;
     std::size_t seeded_passes = 0;
+    std::size_t own_view_repetitions = 0;
     bool consulted_grew = false;
+    bool own_view_broken = false;
 
     do
     {
@@ -570,6 +591,7 @@ void multi_path_symex_only_checkert::generate_equation()
       symex.consulted_published.clear();
       const value_sett before = symex.overall_value_set;
 
+      symex.own_view.start_pass();
       symex.symex_from_entry_point_of(
         goto_symext::get_goto_function(goto_model), symex_symbol_table);
       ++seeded_passes;
@@ -589,7 +611,18 @@ void multi_path_symex_only_checkert::generate_equation()
           break;
         }
       }
-    } while(consulted_grew && seeded_passes < max_seeded_passes);
+
+      own_view_broken = symex.own_view.active && symex.own_view.finish_pass();
+      if(own_view_broken)
+      {
+        log.status() << "Own-view reads: an object read from one thread's own "
+                        "view is written by another; symexing again"
+                     << messaget::eom;
+        if(++own_view_repetitions == max_own_view_repetitions)
+          symex.own_view.active = false;
+      }
+    } while((consulted_grew && seeded_passes < max_seeded_passes) ||
+            own_view_broken);
 
     if(consulted_grew)
     {
@@ -603,6 +636,14 @@ void multi_path_symex_only_checkert::generate_equation()
     {
       log.status() << "points-to sets of shared pointers converged after "
                    << seeded_passes << " seeded symex pass(es)"
+                   << messaget::eom;
+    }
+
+    if(own_view_reads)
+    {
+      log.status() << "Own-view reads: " << symex.own_view.reads
+                   << " shared reads read from the thread's own view"
+                   << (symex.own_view.active ? "" : " (given up)")
                    << messaget::eom;
     }
   }

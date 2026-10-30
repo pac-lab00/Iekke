@@ -14,6 +14,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "goto_symex_is_constant.h"
 
 #include <functional>
+#include <optional>
 #include <iostream>
 
 #include <util/as_const.h>
@@ -21,9 +22,11 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/byte_operators.h>
 #include <util/c_types.h>
 #include <util/exception_utils.h>
+#include <util/cprover_prefix.h>
 #include <util/expr_util.h>
 #include <util/invariant.h>
 #include <util/pointer_offset_size.h>
+#include <util/prefix.h>
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
 
@@ -86,6 +89,8 @@ renamedt<ssa_exprt, L2> goto_symex_statet::assignment(
   lhs = rename_ssa<L1>(std::move(lhs), ns).get();
   irep_idt l1_identifier=lhs.get_identifier();
 
+  own_view_record(l1_identifier);
+
   // the type might need renaming
   rename<L2>(lhs.type(), l1_identifier, ns);
   lhs.update_type();
@@ -125,8 +130,13 @@ renamedt<ssa_exprt, L2> goto_symex_statet::assignment(
   }
   // __SZH_ADD_END__
 
-  // Update constant propagation map -- the RHS is L2
-  if(!is_shared && record_value && goto_symex_is_constantt()(rhs))
+  // Update constant propagation map -- the RHS is L2. A shared object that
+  // only this thread writes after the first spawn keeps its value for this
+  // thread's own reads (--own-view-reads, own_view_writers.h); the other
+  // threads read it through events, which the map does not affect.
+  if(
+    (!is_shared || own_view_readable(lhs, ns)) && record_value &&
+    goto_symex_is_constantt()(rhs))
   {
     const auto propagation_entry = propagation.find(l1_identifier);
     if(!propagation_entry.has_value())
@@ -723,6 +733,23 @@ bool goto_symex_statet::l2_thread_read_encoding(
 
   const ssa_exprt ssa_l1 = remove_level_2(expr);
   const irep_idt &l1_identifier=ssa_l1.get_identifier();
+
+  // Only the reads the program makes count as readers (not, for instance,
+  // the old value a guarded store frames back, which no event records).
+  if(own_view != nullptr && record_events.top())
+    own_view->recorded_readers[l1_identifier].insert(source.thread_nr);
+
+  // --own-view-reads: no other thread writes this object after the first
+  // spawn, so this read sees this thread's own last write, or the value at
+  // the first spawn, which is its current L2 name or propagated constant in
+  // this state (own_view_writers.h). Read it like a thread-local: no event,
+  // and constant propagation applies -- inside an atomic section too.
+  if(own_view_readable(ssa_l1, ns))
+  {
+    ++own_view->reads;
+    return false;
+  }
+
   const exprt guard_as_expr = guard.as_expr();
 
   // No event and no fresh index, but avoid constant propagation -- inside an
@@ -871,9 +898,27 @@ if(atomic_section_id!=0)
     return true;
   }
 
-  // produce a fresh L2 name
+  // produce a fresh L2 name -- but under --own-view-reads keep the current
+  // one for an object with at most one writer after the first spawn: it
+  // stands for the writer's own view, which this read does not change
+  // (own_view_writers.h)
+  const bool keep_name = own_view_candidate(ssa_l1, ns);
+  std::optional<std::pair<ssa_exprt, std::size_t>> kept_name;
+  if(keep_name)
+  {
+    const auto current = level2.current_names.find(l1_identifier);
+    if(current.has_value())
+      kept_name = current->get();
+  }
   level2.increase_generation(l1_identifier, ssa_l1, fresh_l2_name_provider);
   expr = set_indices<L2>(std::move(ssa_l1), ns).get();
+  if(keep_name)
+  {
+    if(kept_name.has_value())
+      level2.current_names.replace(l1_identifier, std::move(*kept_name));
+    else
+      level2.current_names.erase(l1_identifier);
+  }
 
   seed_published_targets(expr, l1_identifier, ns);
 
@@ -935,6 +980,61 @@ void goto_symex_statet::seed_published_targets(
   // --refined-pointer-analysis suppress real races as well as spurious ones.
   value_sett::entryt target{l1_identifier, entry->suffix};
   value_set.update_entry(target, expr.type(), entry->object_map, true);
+}
+
+/// Shared objects --own-view-reads may treat: the program's own, and the
+/// same object in every thread.
+static bool own_view_eligible(const ssa_exprt &expr, const namespacet &ns)
+{
+  const irep_idt &object_name = expr.get_object_name();
+  if(has_prefix(id2string(object_name), CPROVER_PREFIX))
+    return false;
+  // A whole array, one field sensitivity does not split (of symbolic size, or
+  // above its bound): its phi functions and value chains, encoded as
+  // arrays, cost more than the read events they save (measured on
+  // pthread/reorder_2, two variable-length arrays of thread handles: 32637
+  // clauses without --own-view-reads, 40012 with arrays, 25203 without).
+  if(expr.type().id() == ID_array)
+    return false;
+  const symbolt *symbol;
+  if(ns.lookup(object_name, symbol))
+    return false;
+  return !(symbol->is_static_lifetime && symbol->is_thread_local);
+}
+
+bool goto_symex_statet::own_view_readable(
+  const ssa_exprt &expr,
+  const namespacet &ns)
+{
+  if(own_view == nullptr || !own_view->active || threads.size() <= 1)
+    return false;
+  const irep_idt l1_object = expr.get_l1_object_identifier();
+  if(
+    !own_view->known.only_by(l1_object, source.thread_nr) ||
+    !own_view->useful(l1_object))
+  {
+    return false;
+  }
+  if(!own_view_eligible(expr, ns))
+    return false;
+  // Never assigned on this path: there is no value to stand for the read.
+  if(level2.latest_index(l1_object) == 0)
+    return false;
+  own_view->read_by[l1_object].insert(source.thread_nr);
+  return true;
+}
+
+bool goto_symex_statet::own_view_candidate(
+  const ssa_exprt &expr,
+  const namespacet &ns)
+{
+  if(own_view == nullptr || !own_view->active)
+    return false;
+  const irep_idt l1_object = expr.get_l1_object_identifier();
+  if(!own_view->useful(l1_object) || !own_view_eligible(expr, ns))
+    return false;
+  own_view->candidates.insert(l1_object);
+  return true;
 }
 
 goto_symex_statet::write_is_shared_resultt goto_symex_statet::write_is_shared(
@@ -1307,6 +1407,8 @@ ssa_exprt goto_symex_statet::add_object(
 ssa_exprt goto_symex_statet::declare(ssa_exprt ssa, const namespacet &ns)
 {
   const irep_idt &l1_identifier = ssa.get_identifier();
+
+  own_view_record(l1_identifier);
 
   // rename type to L2
   rename(ssa.type(), l1_identifier, ns);

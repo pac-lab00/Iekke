@@ -1,0 +1,9 @@
+CORE
+main.c
+--rounds 2 --unwind 2 --no-por --allow-pointer-unsoundness --own-view-reads
+^EXIT=10$
+^SIGNAL=0$
+^Own-view reads: [1-9][0-9]* shared reads read from the thread.s own view$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

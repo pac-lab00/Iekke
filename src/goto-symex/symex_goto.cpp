@@ -781,10 +781,14 @@ static void merge_names(
   // it inside a branch is never phi-merged at the join, and the tool
   // silently believes the write happened unconditionally (unsound in both
   // directions: can hide a real assertion violation, or fabricate one).
+  // Under --own-view-reads an object with at most one writer after the first
+  // spawn is merged as well: its L2 name stands for the writer's own view
+  // (own_view_writers.h).
   if(
     dest_state.atomic_section_id == 0 && dest_state.threads.size() >= 2 &&
     (symbol.is_shared() || dirty(symbol.name)) &&
-    !dest_state.is_thread_exclusive(obj_identifier))
+    !dest_state.is_thread_exclusive(obj_identifier) &&
+    !dest_state.own_view_candidate(ssa, ns))
   {
     return; // no phi nodes for shared stuff
   }
@@ -853,8 +857,10 @@ static void merge_names(
   }
 
   dest_state.record_events.push(false);
+  dest_state.own_view_in_phi = true;
   const ssa_exprt new_lhs =
     dest_state.assignment(ssa, rhs, ns, true, true).get();
+  dest_state.own_view_in_phi = false;
   dest_state.record_events.pop();
 
   log.conditional_output(

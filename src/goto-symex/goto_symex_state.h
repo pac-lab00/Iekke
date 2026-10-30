@@ -26,6 +26,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "call_stack.h"
 #include "field_sensitivity.h"
 #include "goto_state.h"
+#include "own_view_writers.h"
 #include "renaming_level.h"
 #include "symex_target_equation.h"
 
@@ -368,6 +369,43 @@ public:
     return thread_exclusive != nullptr &&
            thread_exclusive->find(identifier) != thread_exclusive->end();
   }
+
+  /// --own-view-reads: what the earlier passes found written after the first
+  /// spawn and by which thread, what this pass records and assumes (see
+  /// own_view_writers.h). Null otherwise.
+  own_view_statet *own_view = nullptr;
+
+  /// Set around a phi function's assignment, which only names a merged
+  /// value and is not recorded as a change of the object.
+  bool own_view_in_phi = false;
+
+  /// When not negative, the thread a change of an L2 name is recorded for:
+  /// the copies of the locals that symex_start_thread makes for a new thread
+  /// are assigned by its creator but belong to the new thread.
+  int own_view_thread = -1;
+
+  /// Record that \p l1_identifier gets a new L2 name, or loses it (see
+  /// own_view_writers.h). Nothing before the first spawn.
+  void own_view_record(const irep_idt &l1_identifier)
+  {
+    if(own_view == nullptr || own_view_in_phi || threads.size() <= 1)
+      return;
+    own_view->recorded.record(
+      l1_identifier,
+      own_view_thread >= 0 ? static_cast<unsigned>(own_view_thread)
+                           : source.thread_nr);
+  }
+
+  /// \return true if \p expr, an L1 object of the program (not CBMC's own
+  ///   bookkeeping, not a thread-local static), is written after the first
+  ///   spawn by no thread but the current one, so this thread may read it
+  ///   from its own view; recorded as an assumption of this pass
+  bool own_view_readable(const ssa_exprt &expr, const namespacet &ns);
+
+  /// \return true if \p expr, as above, is written after the first spawn by
+  ///   at most one thread, so its L2 name has to stand for the value of the
+  ///   writer's view (see own_view_writers.h); recorded as an assumption
+  bool own_view_candidate(const ssa_exprt &expr, const namespacet &ns);
 
   goto_programt::const_targett saved_target;
 

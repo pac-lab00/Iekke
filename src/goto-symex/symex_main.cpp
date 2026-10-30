@@ -476,6 +476,9 @@ std::unique_ptr<goto_symext::statet> goto_symext::initialize_entry_point_state(
   if(symex_config.lazy_po_rounds > 0 && !thread_exclusive_variables.empty())
     state->thread_exclusive = &thread_exclusive_variables;
 
+  if(own_view_reads)
+    state->own_view = &own_view;
+
   // Only enable loop analysis when complexity is enabled.
   if(symex_config.complexity_limits_active)
   {
