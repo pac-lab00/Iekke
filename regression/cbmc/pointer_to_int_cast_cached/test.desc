@@ -1,0 +1,13 @@
+CORE
+main.c
+
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Two pointer-to-integer casts of the same element of a large (unbounded) pointer
+array must see the same pointer.  The cast converted its operand outside the
+cache, so the second conversion of arr[i] got fresh literals that no array
+constraint ties to the first: a false alarm (port of upstream 115b2148ed).
