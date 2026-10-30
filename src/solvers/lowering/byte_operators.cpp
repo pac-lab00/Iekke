@@ -557,7 +557,9 @@ static exprt unpack_array_vector(
       first_element = *offset_bytes / el_bytes;
       // insert offset_bytes-many nil bytes into the output array
       byte_operands.resize(
-        numeric_cast_v<std::size_t>(*offset_bytes - (*offset_bytes % el_bytes)),
+        numeric_cast_v<std::size_t>(std::min(
+          *offset_bytes - (*offset_bytes % el_bytes),
+          *num_elements * el_bytes)),
         from_integer(0, bv_typet{8}));
     }
   }
@@ -744,13 +746,27 @@ static array_exprt unpack_struct(
       !bit_fields.has_value(),
       "all preceding members should have been processed");
 
-    exprt sub = unpack_rec(
-      member, little_endian, offset_in_member, max_bytes_left, ns, true);
+    if(
+      component_bits.has_value() && offset_in_member.has_value() &&
+      *offset_in_member * 8 >= *component_bits)
+    {
+      // we won't actually need this component, fill in zeros instead of
+      // computing an unpacking
+      byte_operands.resize(
+        byte_operands.size() +
+          numeric_cast_v<std::size_t>(*component_bits / 8),
+        from_integer(0, bv_typet{8}));
+    }
+    else
+    {
+      exprt sub = unpack_rec(
+        member, little_endian, offset_in_member, max_bytes_left, ns, true);
 
-    byte_operands.insert(
-      byte_operands.end(),
-      std::make_move_iterator(sub.operands().begin()),
-      std::make_move_iterator(sub.operands().end()));
+      byte_operands.insert(
+        byte_operands.end(),
+        std::make_move_iterator(sub.operands().begin()),
+        std::make_move_iterator(sub.operands().end()));
+    }
 
     if(component_bits.has_value())
       member_offset_bits += *component_bits;
