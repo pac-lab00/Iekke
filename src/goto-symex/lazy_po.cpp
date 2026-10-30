@@ -2906,9 +2906,6 @@ void lazy_pot::create_cs_constraint(
             enabled_expr, "cs constraint", equation.SSA_steps.begin()->source);
         }
 
-        static const bool hoist_guards =
-          getenv("LAZYPO_GUARD_HOIST") != nullptr;
-
         const auto git = guards[thread].find(label);
         const bool has_guards = (label > 0 && git != guards[thread].end());
         unsigned nmax =
@@ -2918,7 +2915,7 @@ void lazy_pot::create_cs_constraint(
           exprt expr_5;
           if (has_guards) {
             exprt g = git->second.at(num);
-            if(hoist_guards && !g.is_true() && !g.is_false())
+            if(!g.is_true() && !g.is_false())
             {
               // Define the guard once and refer to it by name afterwards, so
               // the round loop conjoins a literal rather than re-embedding the

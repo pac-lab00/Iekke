@@ -505,6 +505,39 @@ bool boolbvt::boolbv_set_equality_to_true(const equal_exprt &expr)
   return true;
 }
 
+/// `c => (a = b)` over bit-vectors asserted at the top level, as the 2w
+/// clauses `c => (a_i <=> b_i)`, instead of a fresh literal per bit, one for
+/// their conjunction, and the implication over that: the same models, w+1
+/// fewer variables and 3w+2 fewer clauses, and unit propagation reaches the
+/// same literals in both directions (c and a_i give b_i; a_i, !b_i give !c).
+/// The equality's own literal is not created, so nothing else can share it;
+/// set_to is only reached for top-level constraints, where nothing does.
+bool boolbvt::set_implied_equality_to_true(const implies_exprt &expr)
+{
+  if(!assumption_stack.empty() || expr.rhs().id() != ID_equal)
+    return false;
+  const auto &eq = to_equal_expr(expr.rhs());
+  if(
+    eq.lhs().type().id() == ID_bool || is_unbounded_array(eq.lhs().type()) ||
+    is_unbounded_array(eq.rhs().type()))
+  {
+    return false;
+  }
+  const literalt c = convert(expr.lhs());
+  const bvt &a = convert_bv(eq.lhs());
+  const bvt &b = convert_bv(eq.rhs());
+  if(a.size() != b.size() || a.empty())
+    return false;
+  for(std::size_t i = 0; i < a.size(); ++i)
+  {
+    if(a[i] == b[i])
+      continue;
+    prop.lcnf({!c, !a[i], b[i]});
+    prop.lcnf({!c, a[i], !b[i]});
+  }
+  return true;
+}
+
 void boolbvt::set_to(const exprt &expr, bool value)
 {
   PRECONDITION(expr.type().id() == ID_bool);
@@ -512,6 +545,12 @@ void boolbvt::set_to(const exprt &expr, bool value)
   const auto equal_expr = expr_try_dynamic_cast<equal_exprt>(expr);
   if(value && equal_expr && !boolbv_set_equality_to_true(*equal_expr))
     return;
+  if(
+    value && expr.id() == ID_implies &&
+    set_implied_equality_to_true(to_implies_expr(expr)))
+  {
+    return;
+  }
   const std::size_t first = array_equality_count();
   SUB::set_to(expr, value);
   // Only in the root context is the equality's literal fixed to true; inside

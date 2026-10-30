@@ -865,7 +865,10 @@ void symex_target_equationt::convert_function_calls(
           const irep_idt identifier="symex::args::"+std::to_string(argument_count++);
           symbol_exprt symbol(identifier, arg.type());
 
-          equal_exprt eq(arg, symbol);
+          // Symbol on the left: set_to binds the fresh symbol to the
+          // argument's own literals instead of giving it new bits and
+          // asserting a bitwise equality. It is only read back for the trace.
+          equal_exprt eq(symbol, arg);
           merge_irep(eq);
 
           decision_procedure.set_to(eq, true);
@@ -903,7 +906,10 @@ void symex_target_equationt::convert_io(decision_proceduret &decision_procedure)
             "symex::io::" + std::to_string(io_count++);
           symbol_exprt symbol(identifier, arg.type());
 
-          equal_exprt eq(arg, symbol);
+          // Symbol on the left: set_to binds the fresh symbol to the
+          // argument's own literals instead of giving it new bits and
+          // asserting a bitwise equality. It is only read back for the trace.
+          equal_exprt eq(symbol, arg);
           merge_irep(eq);
 
           decision_procedure.set_to(eq, true);

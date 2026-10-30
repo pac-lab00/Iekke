@@ -4,7 +4,7 @@ main.c
 ^EXIT=10$
 ^SIGNAL=0$
 ^VERIFICATION FAILED$
-^Racing read in thread
-^Racing write in thread
+^Racing [a-z]* in thread 1$
+^Racing write in thread 0$
 --
 ^warning: ignoring
