@@ -161,6 +161,16 @@ def array_bound(unwind):
 # bounds of twalock fast and safe, and the stop rule then reported a wrong TRUE.
 ARRAY_RF_BYTES = "--array-rf-bytes "
 
+# Two encoding options that change only how the program is written into the
+# formula. --summarise-guards: after a call, the path condition is "condition
+# at the call AND one fresh symbol" instead of the whole exit condition, so it
+# stops growing with the call depth (cafe_ccic: 85000 nodes -> about 300).
+# --infer-alloc-types: a block allocated with a constant size and cast at once
+# is typed by the cast, so pointer analysis keeps one entry per member.
+# Full corpus on the cluster (2026-10-29): no answer changed apart from tasks
+# near the time limit (+2 correct, -1).
+ENCODING_FLAGS = "--summarise-guards --infer-alloc-types "
+
 # --thread-symmetry is NOT passed. It was, from 2026-10-21, without a corpus
 # measurement; on unwind3-100 at (256,3) it made the solver 8x slower (42 s ->
 # 344 s, past the 290 s slice), so the bug was no longer found and the stop
@@ -393,7 +403,7 @@ for unwind, rounds, extra in bounds():
 
     slice_ = min(left, SLICE if not extra else
                  SUGGEST_SLICE if extra.startswith("--unwindset") else REDUCED_SLICE)
-    bound_flags = ARRAY_RF_BYTES
+    bound_flags = ARRAY_RF_BYTES + ENCODING_FLAGS
     if "valid-memsafety.prp" not in property_path:
         bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
     por = "--por" if rounds >= POR_MIN_ROUNDS else "--no-por"
