@@ -1612,18 +1612,6 @@ void goto_convertt::do_function_call_symbol(
   // __SZH_ADD_END__
   else
   {
-    // __SZH_ADD_BEGIN__
-    if(identifier == "pthread_key_create")
-    {
-      auto dtor = simplify_expr(arguments[1], ns);
-      if(dtor.id() != ID_constant)
-      {
-        std::cout << "Destroyer functions are yet unsupported in pthread_key_create\n";
-        std::exit(0);
-      }
-    }
-    // __SZH_ADD_END__
-
     do_function_call_symbol(*symbol);
 
     // insert function call
