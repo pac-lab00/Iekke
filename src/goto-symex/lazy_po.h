@@ -222,6 +222,7 @@ private:
 
   void compute_private_objects();
   void create_private_constraints(symex_target_equationt &);
+  void schema_tally(const symex_target_equationt &) const;
   exprt happens_in_any_round(const shared_event &);
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;

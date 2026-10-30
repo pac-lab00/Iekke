@@ -321,6 +321,9 @@ void lazy_pot::operator()(
   create_read_constraints(equation);
   phase("base-reads");
 
+  if(getenv("LAZYPO_SCHEMA_TALLY") != nullptr)
+    schema_tally(equation);
+
   create_private_constraints(equation);
   phase("private-reads");
 
@@ -6730,4 +6733,86 @@ lazy_pot::get_next_read(unsigned thread, unsigned label, unsigned num,
   if(it == v.end())
     return std::nullopt;
   return *it;
+}
+
+/// LAZYPO_SCHEMA_TALLY: per shared object, the quantities the size of each
+/// read-from schema depends on, and the size that schema would have, in units
+/// of one bit cell (a mux bit or an equality bit). Measurement only.
+void lazy_pot::schema_tally(const symex_target_equationt &equation) const
+{
+  std::set<const SSA_stept *> prologue;
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(step.is_spawn())
+      break;
+    prologue.insert(&step);
+  }
+  const std::size_t R = rounds;
+  double tot_value = 0, tot_fold = 0, tot_index = 0, tot_select = 0;
+  std::size_t tot_w = 0, tot_r = 0, tot_wp = 0, tot_rp = 0;
+  for(const auto &gv : global_variables)
+  {
+    if(array_rf_writes.count(gv) != 0)
+      continue;
+    const std::size_t nw = writes.count(gv) ? writes.at(gv).size() : 0;
+    const std::size_t nr = reads.count(gv) ? reads.at(gv).size() : 0;
+    if(nw == 0 && nr == 0)
+      continue;
+    const exprt &any =
+      nw ? writes.at(gv).front().s_it->ssa_lhs : reads.at(gv).front().s_it->ssa_lhs;
+    const auto bits_opt =
+      pointer_offset_bits(narrowed_type(gv, any.type()), ns);
+    const std::size_t w =
+      bits_opt.has_value() ? numeric_cast_v<std::size_t>(*bits_opt) : 0;
+    std::size_t wp = 0, rp = 0, cand = 0;
+    std::set<unsigned> writers;
+    if(nw)
+      for(const auto &e : writes.at(gv))
+      {
+        writers.insert(e.thread);
+        if(prologue.count(&*e.s_it))
+          ++wp;
+      }
+    if(nr)
+      for(const auto &r : reads.at(gv))
+      {
+        if(prologue.count(&*r.s_it))
+          ++rp;
+        std::size_t c = 1; // the initial value
+        if(nw)
+          for(const auto &e : writes.at(gv))
+            if(
+              e.thread != r.thread ||
+              std::tie(e.label, e.num) < std::tie(r.label, r.num))
+              ++c;
+        cand += c;
+      }
+    std::size_t b = 1;
+    while((std::size_t(1) << b) < nw + 1)
+      ++b;
+    const double value = double(R) * double(nw + nr) * w;
+    const double fold =
+      (double(R) * double(nw - wp + nr - rp) + double(wp + rp)) * w;
+    const double index =
+      double(R) * double(nw + nr) * b + double(cand) * (w + b);
+    const double select = double(cand) * w;
+    tot_value += value;
+    tot_fold += fold;
+    tot_index += index;
+    tot_select += select;
+    tot_w += nw;
+    tot_r += nr;
+    tot_wp += wp;
+    tot_rp += rp;
+    std::cerr << "SCHEMA_TALLY var w=" << w << " W=" << nw << " Rd=" << nr
+              << " Wpro=" << wp << " Rpro=" << rp
+              << " writers=" << writers.size() << " cand=" << cand
+              << " value=" << value << " fold=" << fold
+              << " index=" << index << " select=" << select << " name=" << gv
+              << "\n";
+  }
+  std::cerr << "SCHEMA_TALLY TOTAL R=" << R << " W=" << tot_w
+            << " Rd=" << tot_r << " Wpro=" << tot_wp << " Rpro=" << tot_rp
+            << " value=" << tot_value << " fold=" << tot_fold
+            << " index=" << tot_index << " select=" << tot_select << "\n";
 }
