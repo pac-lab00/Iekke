@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 2 --rounds 3
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.6\] line 21 reach r4 == 2: FAILURE$
+^VERIFICATION FAILED$
+--
+^\[main.assertion.[1-5]\] .*: FAILURE$
+--
+The value of an assignment expression is the value of the left operand after
+the assignment, in the left operand's type (bit-fields included); the _Atomic
+read-modify-write must keep working (port of upstream 623cde5a03).
