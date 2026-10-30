@@ -10,6 +10,7 @@ Date: June 2003
 
 #include "goto_convert_functions.h"
 
+#include <util/cprover_prefix.h>
 #include <util/prefix.h>
 #include <util/std_code.h>
 #include <util/symbol_table.h>
@@ -341,6 +342,32 @@ static bool reaches_pthread_exit(
   return false;
 }
 
+// Does the program have state of its own per thread?
+//
+// The collapse runs the thread body in the creating thread, so it reads and
+// writes the creator's copies: a worker's write to a __thread variable
+// reached main's copy, and a thread-specific value set in the worker was
+// main's, so its destructor never ran when the worker ended.
+static bool uses_thread_local_storage(const symbol_table_baset &symbol_table)
+{
+  if(
+    symbol_table.has_symbol("pthread_key_create") ||
+    symbol_table.has_symbol("pthread_self"))
+  {
+    return true;
+  }
+  for(const auto &entry : symbol_table.symbols)
+  {
+    if(
+      entry.second.is_thread_local &&
+      !has_prefix(id2string(entry.first), CPROVER_PREFIX))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 void goto_convert_functionst::simplify_pthread_create_join(codet& code)
 {
   if(code.get_statement() != ID_block)
@@ -394,6 +421,12 @@ void goto_convert_functionst::simplify_pthread_create_join(codet& code)
       continue;
     }
     exprt final_function = args[2].op0();
+
+    if(uses_thread_local_storage(symbol_table))
+    {
+      it++;
+      continue;
+    }
 
     // Only collapse a thread whose body cannot reach pthread_exit. An
     // unresolvable target (a function pointer, say) is left alone too: the
