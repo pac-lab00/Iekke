@@ -194,6 +194,7 @@ exprt value_set_dereferencet::dereference(
 
     if(
       can_cast_type<pointer_typet>(pointer_expr.type()) &&
+      pointer_expr.id() != ID_typecast &&
       !can_cast_type<pointer_typet>(offset_expr.type()) &&
       !can_cast_expr<constant_exprt>(offset_expr))
     {
