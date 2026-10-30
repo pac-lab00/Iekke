@@ -22,11 +22,12 @@ void clear_por_auxiliary_symbols();
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false, const unsigned thread_symmetry = 0, const bool array_rf_bytes = false)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false, const unsigned thread_symmetry = 0, const bool array_rf_bytes = false, const bool index_chain = false)
     : ns(ns), rounds(rounds), datarace(datarace), por(por),
       read_implication(read_implication), narrow_shared(narrow_shared),
       thread_private(thread_private), array_rf(array_rf),
-      thread_symmetry(thread_symmetry), array_rf_bytes(array_rf_bytes)
+      thread_symmetry(thread_symmetry), array_rf_bytes(array_rf_bytes),
+      index_chain(index_chain)
   {
   }
 
@@ -66,6 +67,10 @@ private:
   /// and byte_update at any offset), byte by byte; see
   /// create_array_rf_constraints
   const bool array_rf_bytes = false;
+  /// with three rounds or more, let the chain of an object carry the index of
+  /// the last write instead of its value where that is smaller; see
+  /// choose_index_chains
+  const bool index_chain = false;
 
   void compute_narrowings(const symex_target_equationt &);
   /// The value the lazy chain carries for `variable`: the whole value, or the
@@ -223,6 +228,20 @@ private:
   void compute_private_objects();
   void create_private_constraints(symex_target_equationt &);
   void schema_tally(const symex_target_equationt &) const;
+
+  /// objects whose chain carries the index of the last write instead of its
+  /// value (--index-chain); a read then selects its value by that index
+  std::set<irep_idt> index_chain_vars;
+  std::map<irep_idt, std::size_t> index_chain_bits;
+  /// per index-chain object: element 0 the value before the first write,
+  /// element k the value written by the k-th write
+  std::map<irep_idt, std::vector<exprt>> index_chain_values;
+  /// returns a one-line summary for the log
+  std::string choose_index_chains();
+  std::string index_chain_summary;
+  /// the indices a read of `v` can find in the chain at its position
+  std::vector<std::size_t>
+  index_candidates(const irep_idt &v, const shared_event &read) const;
   exprt happens_in_any_round(const shared_event &);
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;

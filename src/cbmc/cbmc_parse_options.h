@@ -39,7 +39,7 @@ class optionst;
   "(narrow-shared)(no-narrow-shared)" \
   "(thread-private)(no-thread-private)" \
   "(thread-symmetry):" \
-  "(array-rf)(no-array-rf)(array-rf-bytes)(constant-array-oob-nondet)(mutex-shadow)(dynamic-array-bound):(extern-pointers-own-object)(summarise-guards)(infer-alloc-types)(merge-exclusive-threads)" \
+  "(array-rf)(no-array-rf)(array-rf-bytes)(constant-array-oob-nondet)(mutex-shadow)(dynamic-array-bound):(extern-pointers-own-object)(summarise-guards)(infer-alloc-types)(merge-exclusive-threads)(index-chain)" \
   "(no-por)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \

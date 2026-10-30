@@ -146,6 +146,7 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   // where nothing is lost at any bound; strong always does, which can move a
   // violation to a larger number of rounds. Off by default until measured.
   options.set_option("thread-symmetry", 0);
+  options.set_option("index-chain", false);
   // An array write is a read-modify-write of the whole array in the SSA, so the
   // chain carries every element once per round, and array objects are 64-90% of
   // the formula across the data-race family. --array-rf answers an element read
@@ -327,6 +328,13 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     // the writes that cover each byte. Off by default until measured.
     if(cmdline.isset("array-rf-bytes"))
       options.set_option("array-rf-bytes", true);
+
+    // With three rounds or more, an object's chain may carry the index of the
+    // last write instead of its value, where an estimate finds that smaller:
+    // the index is a few bits wide and the value is decoded once per read.
+    // The same executions either way. Off by default until measured.
+    if(cmdline.isset("index-chain"))
+      options.set_option("index-chain", true);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))

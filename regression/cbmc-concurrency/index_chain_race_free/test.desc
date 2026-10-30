@@ -1,0 +1,14 @@
+CORE
+main.c
+--datarace --no-assertions --por --unwind 2 --rounds 7 --index-chain --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^index chain: [1-9][0-9]* of
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Both accesses of x are under the mutex, so there is no race. Mutual exclusion
+goes through the mutex's chain, which --index-chain may also turn into an index
+chain: a wrong decode there would let both threads into the critical section
+and report a race the program does not have.

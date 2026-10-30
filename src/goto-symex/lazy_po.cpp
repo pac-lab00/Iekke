@@ -316,6 +316,9 @@ void lazy_pot::operator()(
   }
 
   create_write_constraints(equation);
+  if(!index_chain_summary.empty())
+    log.statistics() << "index chain: " << index_chain_summary
+                     << messaget::eom;
   phase("base-writes");
 
   create_read_constraints(equation);
@@ -2273,6 +2276,7 @@ void lazy_pot::create_write_constraints(
   // Both this chain and create_read_constraints, which runs straight after,
   // are built from it.
   compute_narrowings(equation);
+  index_chain_summary = choose_index_chains();
 
   for(auto global_variable : global_variables)
   {
@@ -2281,6 +2285,74 @@ void lazy_pot::create_write_constraints(
     const ssa_exprt &initial =
       this->writes.at(global_variable).front().s_it->ssa_lhs;
     const typet chain_type = narrowed_type(global_variable, initial.type());
+
+    if(index_chain_vars.count(global_variable) != 0)
+    {
+      // The chain carries which write was the last one, not what it wrote:
+      // index 0 is the value before the first write (the same round-0 value
+      // the value chain starts from), index k the k-th write.
+      const unsignedbv_typet idx_type{index_chain_bits.at(global_variable)};
+      const auto &ws = this->writes.at(global_variable);
+      auto &vals = index_chain_values[global_variable];
+      vals.push_back(narrowed_value(global_variable, initial));
+      for(const auto &write : ws)
+        vals.push_back(narrowed_value(global_variable, write.s_it->ssa_lhs));
+
+      const symbol_exprt sentinel{
+        id2string(initial.get_identifier()) + "_IDX_T0_L0_R0", idx_type};
+      equation.constraint(
+        equal_exprt{sentinel, from_integer(0, idx_type)},
+        "write constraint " + id2string(global_variable),
+        ws.front().s_it->source);
+      irep_idt sentinel_id_name =
+        "id_T0_L0_N0_R0_V" + id2string(global_variable);
+      symbol_exprt sentinel_id_symbol{
+        sentinel_id_name, unsignedbv_typet(bit_writes[global_variable])};
+      this->lazy_variables[global_variable].emplace_back(
+        lazy_variable{0, 0, 0, 0, 0, sentinel, sentinel_id_symbol});
+
+      exprt previous = sentinel;
+      for(std::size_t round = 1; round <= rounds; ++round)
+      {
+        for(std::size_t k = 1; k <= ws.size(); ++k)
+        {
+          const auto &write = ws[k - 1];
+          const symbol_exprt link{
+            id2string(write.s_it->ssa_lhs.get_identifier()) + "_IDX_T" +
+              std::to_string(write.thread) + "_L" +
+              std::to_string(write.label) + "_R" + std::to_string(round),
+            idx_type};
+          irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
+                             std::to_string(write.label) + "_N" +
+                             std::to_string(write.num) + "_R" +
+                             std::to_string(round) + "_V" +
+                             id2string(global_variable);
+          symbol_exprt id_symbol{
+            id_name, unsignedbv_typet(bit_writes[global_variable])};
+          this->lazy_variables[global_variable].emplace_back(lazy_variable{
+            round, write.label, write.num, write.thread, 0, link, id_symbol});
+
+          const symbol_exprt exec =
+            create_exec_symbol(write.label, write.num, write.thread, round);
+          equation.constraint(
+            equal_exprt{
+              link, if_exprt{exec, from_integer(k, idx_type), previous}},
+            "write constraint " + id2string(global_variable),
+            write.s_it->source);
+          previous = link;
+        }
+      }
+
+      auto &lvs = this->lazy_variables[global_variable];
+      std::sort(lvs.begin(), lvs.end(),
+        [](const lazy_variable &a, const lazy_variable &b) {
+          return std::tie(a.round, a.thread, a.label, a.num)
+               < std::tie(b.round, b.thread, b.label, b.num);
+        });
+      for(std::size_t i = 0; i < lvs.size(); ++i)
+        lvs[i].id = static_cast<unsigned>(i);
+      continue;
+    }
 
     // The chain's round-0 element is the object's value before the first
     // write. Unnarrowed that is the SSA symbol itself; narrowed it has to be a
@@ -2374,6 +2446,56 @@ void lazy_pot::create_read_constraints(
     if(array_rf_writes.count(global_variable) != 0)
       continue;
     const bool implication_form = read_implication;
+
+    if(index_chain_vars.count(global_variable) != 0)
+    {
+      // The read takes the index the chain holds at its position in the round
+      // it runs in, as the value chain's read takes the value; the value is
+      // then the one written by the write of that index. Only the indices
+      // that can stand before the read are decoded (index_candidates).
+      const auto &vals = index_chain_values.at(global_variable);
+      const unsignedbv_typet idx_type{index_chain_bits.at(global_variable)};
+      for(const auto &read : this->reads.at(global_variable))
+      {
+        const exprt read_value =
+          narrowed_value(global_variable, read.s_it->ssa_lhs);
+        const typet read_type =
+          narrowed_type(global_variable, read.s_it->ssa_lhs.type());
+        const symbol_exprt rf{
+          "rfidx::" + id2string(read.s_it->ssa_lhs.get_identifier()),
+          idx_type};
+        exprt::operandst ran;
+        for(std::size_t round = 1; round <= rounds; ++round)
+        {
+          const symbol_exprt exec =
+            create_exec_symbol(read.label, read.num, read.thread, round);
+          std::optional<symbol_exprt> previous = previous_shared(
+            global_variable, read.label, read.num, read.thread, round);
+          if(!previous.has_value())
+            continue;
+          ran.push_back(exec);
+          equation.constraint(
+            implies_exprt{exec, equal_exprt{rf, previous.value()}},
+            "read constraint " + id2string(global_variable),
+            read.s_it->source);
+        }
+        if(ran.empty())
+          continue;
+        const exprt ran_any = disjunction(ran);
+        for(const std::size_t k : index_candidates(global_variable, read))
+        {
+          equation.constraint(
+            implies_exprt{
+              and_exprt{ran_any, equal_exprt{rf, from_integer(k, idx_type)}},
+              equal_exprt{
+                read_value,
+                typecast_exprt::conditional_cast(vals.at(k), read_type)}},
+            "read constraint " + id2string(global_variable),
+            read.s_it->source);
+        }
+      }
+      continue;
+    }
 
     for(const auto &read : this->reads.at(global_variable))
     {
@@ -6815,4 +6937,86 @@ void lazy_pot::schema_tally(const symex_target_equationt &equation) const
             << " Rd=" << tot_r << " Wpro=" << tot_wp << " Rpro=" << tot_rp
             << " value=" << tot_value << " fold=" << tot_fold
             << " index=" << tot_index << " select=" << tot_select << "\n";
+}
+
+
+std::vector<std::size_t> lazy_pot::index_candidates(
+  const irep_idt &v,
+  const shared_event &read) const
+{
+  // The chain at (round, thread, label, num) holds 0 or the index of an
+  // executed write that comes before that position in the schedule order
+  // (round, thread, label, num). A write of another thread can come before
+  // the read in some round -- in the same round only if its thread is
+  // numbered lower, so with one round only those. A write of the reading
+  // thread comes before it only if it comes first in program order: one
+  // later in program order would have to run in an earlier round, which the
+  // monotone context switches exclude.
+  std::vector<std::size_t> result{0};
+  const auto &ws = writes.at(v);
+  for(std::size_t i = 0; i < ws.size(); ++i)
+  {
+    const auto &e = ws[i];
+    const bool before =
+      e.thread != read.thread
+        ? (rounds > 1 || e.thread < read.thread)
+        : std::tie(e.label, e.num) < std::tie(read.label, read.num);
+    if(before)
+      result.push_back(i + 1);
+  }
+  return result;
+}
+
+/// --index-chain: per object, the chain carries the value of the last write
+/// or its index, whichever the estimate below, in bit cells, finds smaller. A
+/// value chain costs a mux of the value's width per (write, round) and an
+/// equality of that width per (read, round); an index chain costs the same at
+/// the index's width, plus one equality of the value's width per write a read
+/// can see (index_candidates). Below three rounds the gain measured about 1%
+/// and the estimate chose wrongly on 12 of 142 tasks, so it is not used there.
+/// Objects answered by --array-rf have no chain to change, and the
+/// active-thread flags are read by the schedule encoding through
+/// previous_shared, which must keep returning values for them.
+std::string lazy_pot::choose_index_chains()
+{
+  index_chain_vars.clear();
+  index_chain_bits.clear();
+  index_chain_values.clear();
+  if(!index_chain || rounds < 3)
+    return {};
+  std::size_t chosen = 0, considered = 0;
+  for(const auto &gv : global_variables)
+  {
+    if(writes.count(gv) == 0 || array_rf_writes.count(gv) != 0)
+      continue;
+    if(has_prefix(id2string(gv), "__CPROVER_active_thread_"))
+      continue;
+    const auto &ws = writes.at(gv);
+    const auto wbits = pointer_offset_bits(
+      narrowed_type(gv, ws.front().s_it->ssa_lhs.type()), ns);
+    if(!wbits.has_value())
+      continue;
+    ++considered;
+    const double w = static_cast<double>(numeric_cast_v<std::size_t>(*wbits));
+    std::size_t b = 1;
+    while((std::size_t(1) << b) < ws.size() + 1)
+      ++b;
+    const std::size_t nr = reads.count(gv) ? reads.at(gv).size() : 0;
+    double cand = 0;
+    if(nr)
+      for(const auto &rd : reads.at(gv))
+        cand += static_cast<double>(index_candidates(gv, rd).size());
+    const double accesses = static_cast<double>(ws.size() + nr);
+    const double value_cost = double(rounds) * accesses * w;
+    const double index_cost =
+      double(rounds) * accesses * double(b) + cand * (w + double(b));
+    if(index_cost < value_cost)
+    {
+      index_chain_vars.insert(gv);
+      index_chain_bits[gv] = b;
+      ++chosen;
+    }
+  }
+  return std::to_string(chosen) + " of " + std::to_string(considered) +
+         " objects";
 }
