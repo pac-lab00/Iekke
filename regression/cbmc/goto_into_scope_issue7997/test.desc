@@ -1,0 +1,11 @@
+CORE
+main.c
+
+^\[main\.assertion\.1\] line [0-9]* assertion tmp_ndt_4 > 0: FAILURE$
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+The assertion is falsifiable: goto switch_2_1 brings tmp_ndt_4 into scope
+without initialising it (upstream regression/cbmc/declaration-goto/issue7997).

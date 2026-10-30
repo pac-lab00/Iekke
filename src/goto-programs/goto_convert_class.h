@@ -12,20 +12,21 @@ Author: Daniel Kroening, kroening@kroening.com
 #ifndef CPROVER_GOTO_PROGRAMS_GOTO_CONVERT_CLASS_H
 #define CPROVER_GOTO_PROGRAMS_GOTO_CONVERT_CLASS_H
 
-#include <list>
-#include <vector>
-#include <unordered_set>
-
 #include <util/message.h>
 #include <util/namespace.h>
 #include <util/replace_expr.h>
 #include <util/std_code.h>
 
 #include "allocate_objects.h"
-#include "destructor_tree.h"
 #include "goto_program.h"
+#include "scope_tree.h"
+
+#include <list>
+#include <unordered_set>
+#include <vector>
 
 class side_effect_expr_overflowt;
+struct build_declaration_hops_inputst;
 
 class goto_convertt:public messaget
 {
@@ -359,8 +360,16 @@ protected:
     const source_locationt &source_location,
     goto_programt &dest,
     const irep_idt &mode,
-    optionalt<node_indext> destructor_start_point = {},
-    optionalt<node_indext> destructor_end_point = {});
+    optionalt<node_indext> destructor_end_point = {},
+    optionalt<node_indext> destructor_start_point = {});
+
+  typedef std::list<
+    std::pair<goto_programt::targett, goto_programt::instructiont>>
+    declaration_hop_instrumentationt;
+  declaration_hop_instrumentationt build_declaration_hops(
+    goto_programt &dest,
+    std::unordered_map<irep_idt, symbolt, irep_id_hash> &label_flags,
+    const build_declaration_hops_inputst &inputs);
 
   //
   // gotos
@@ -388,7 +397,7 @@ protected:
     labelst labels;
     gotost gotos;
     computed_gotost computed_gotos;
-    destructor_treet destructor_stack;
+    scope_treet scope_stack;
 
     casest cases;
     cases_mapt cases_map;
@@ -418,14 +427,14 @@ protected:
     {
       break_set=true;
       break_target=_break_target;
-      break_stack_node=destructor_stack.get_current_node();
+      break_stack_node = scope_stack.get_current_node();
     }
 
     void set_continue(goto_programt::targett _continue_target)
     {
       continue_set=true;
       continue_target=_continue_target;
-      continue_stack_node=destructor_stack.get_current_node();
+      continue_stack_node = scope_stack.get_current_node();
     }
 
     void set_default(goto_programt::targett _default_target)
@@ -444,14 +453,14 @@ protected:
     {
       throw_set=true;
       throw_target=_throw_target;
-      throw_stack_node=destructor_stack.get_current_node();
+      throw_stack_node = scope_stack.get_current_node();
     }
 
     void set_leave(goto_programt::targett _leave_target)
     {
       leave_set=true;
       leave_target=_leave_target;
-      leave_stack_node=destructor_stack.get_current_node();
+      leave_stack_node = scope_stack.get_current_node();
     }
   } targets;
 
@@ -490,7 +499,7 @@ protected:
       default_set=targets.default_set;
       break_target=targets.break_target;
       default_target=targets.default_target;
-      break_stack_node=targets.destructor_stack.get_current_node();
+      break_stack_node = targets.scope_stack.get_current_node();
       cases=targets.cases;
       cases_map=targets.cases_map;
     }
@@ -522,7 +531,7 @@ protected:
     {
       throw_set=targets.throw_set;
       throw_target=targets.throw_target;
-      throw_stack_node=targets.destructor_stack.get_current_node();
+      throw_stack_node = targets.scope_stack.get_current_node();
     }
 
     void restore(targetst &targets)
@@ -544,7 +553,7 @@ protected:
     {
       leave_set=targets.leave_set;
       leave_target=targets.leave_target;
-      leave_stack_node=targets.destructor_stack.get_current_node();
+      leave_stack_node = targets.scope_stack.get_current_node();
     }
 
     void restore(targetst &targets)

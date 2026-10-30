@@ -1582,7 +1582,7 @@ void goto_convertt::do_function_call_symbol(
       dead_object_sym};
     code_assignt assign{
       std::move(dead_object_sym), std::move(rhs), source_location};
-    targets.destructor_stack.add(assign);
+    targets.scope_stack.add(assign, {});
   }
   // __SZH_ADD_BEGIN__ : C11 and LKMM builtin functions
   else if(identifier == CPROVER_PREFIX "atomic_store")

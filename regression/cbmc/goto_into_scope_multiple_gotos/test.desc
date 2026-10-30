@@ -1,0 +1,10 @@
+CORE
+main.c
+
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+A goto into a scope passes over a declaration: the variable is indeterminate
+(upstream regression/cbmc/declaration-goto/multiple_goto_single_label).
