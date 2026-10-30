@@ -169,7 +169,10 @@ ARRAY_RF_BYTES = "--array-rf-bytes "
 # is typed by the cast, so pointer analysis keeps one entry per member.
 # Full corpus on the cluster (2026-10-29): no answer changed apart from tasks
 # near the time limit (+2 correct, -1).
-ENCODING_FLAGS = "--summarise-guards --infer-alloc-types "
+# --merge-exclusive-threads: thread creations on paths that exclude each other
+# share one thread. On 55 driver tasks (2026-10-30) no answer changed; it fires
+# on the large ldv drivers only (nsc-ircc: 23.4M -> 17.0M clauses, 8.1 -> 5.9 GB).
+ENCODING_FLAGS = "--summarise-guards --infer-alloc-types --merge-exclusive-threads "
 
 # --thread-symmetry is NOT passed. It was, from 2026-10-21, without a corpus
 # measurement; on unwind3-100 at (256,3) it made the solver 8x slower (42 s ->
