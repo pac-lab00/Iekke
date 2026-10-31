@@ -922,6 +922,9 @@ void goto_symex_statet::seed_published_targets(
   if(published_value_set == nullptr || expr.type().id() != ID_pointer)
     return;
 
+  if(consulted_published != nullptr)
+    consulted_published->insert(l1_identifier);
+
   const auto *entry = published_value_set->find_entry(l1_identifier);
   if(entry == nullptr)
     return;

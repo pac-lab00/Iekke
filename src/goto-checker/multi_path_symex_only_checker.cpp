@@ -215,18 +215,79 @@ void multi_path_symex_only_checkert::generate_equation()
   //
   // Only for programs that have threads: without them there is no ordering
   // mismatch and the second pass would be pure cost.
+  //
+  // One seeded pass is not a fixpoint. A publication that travels through a
+  // second thread -- the updater stores &n2 into g2, a relay copies g2 into
+  // g1, the reader reads g1 -- reaches the relay's copy only in the seeded
+  // pass, so g1's collected entry gains &n2 only after the reader, symexed
+  // first, has read g1 against the old one. That read then resolves against
+  // a stale set exactly as in #305: a real interleaving is never encoded, or
+  // a dereference lands on the wrong object (libvsync/cnalock hands its
+  // secondary queue over through two threads, and the stale read of
+  // sec_tail->next gave a false NULL dereference). Reproductions:
+  // regression/cbmc-concurrency/published_pointer_two_hops{,_false_alarm}.
+  //
+  // So repeat the seeded pass until no entry it consulted has grown. A pass
+  // depends on the collected set only through the entries its seeded reads
+  // consulted; if none of them grew during the pass, every such read already
+  // saw its final value, the next pass would be the same, and this pass's
+  // equation is the one kept. Growth elsewhere -- locals, objects never read
+  // as published pointers -- cannot change the next pass; counting it as well
+  // kept the loop going to its cap on the ldv drivers (nsc-ircc: 8 passes,
+  // no verdict in 900 s, 183 s before).
   if(symex.target.has_threads() &&
      !options.get_bool_option("refined-pointer-analysis"))
   {
-    symex.path_storage.clear();
-    symex.target.clear();
-    symex.dynamic_counter = 0;
-    symex.invalid_object_counter = 0;
-    symex.try_finding_value_set = true;
-    symex.seed_published_reads = true;
+    const std::size_t max_seeded_passes = 8;
+    std::size_t seeded_passes = 0;
+    bool consulted_grew = false;
 
-    symex.symex_from_entry_point_of(
-      goto_symext::get_goto_function(goto_model), symex_symbol_table);
+    do
+    {
+      symex.path_storage.clear();
+      symex.target.clear();
+      symex.dynamic_counter = 0;
+      symex.invalid_object_counter = 0;
+      symex.try_finding_value_set = true;
+      symex.seed_published_reads = true;
+      symex.consulted_published.clear();
+      const value_sett before = symex.overall_value_set;
+
+      symex.symex_from_entry_point_of(
+        goto_symext::get_goto_function(goto_model), symex_symbol_table);
+      ++seeded_passes;
+
+      consulted_grew = false;
+      for(const auto &id : symex.consulted_published)
+      {
+        const auto *now = symex.overall_value_set.find_entry(id);
+        if(now == nullptr)
+          continue;
+        const auto *was = before.find_entry(id);
+        if(
+          was == nullptr ||
+          before.make_union_would_change(was->object_map, now->object_map))
+        {
+          consulted_grew = true;
+          break;
+        }
+      }
+    } while(consulted_grew && seeded_passes < max_seeded_passes);
+
+    if(consulted_grew)
+    {
+      log.warning() << "points-to sets of shared pointers did not converge in "
+                    << seeded_passes
+                    << " symex passes; a pointer published late may be"
+                       " missing from a dereference"
+                    << messaget::eom;
+    }
+    else
+    {
+      log.status() << "points-to sets of shared pointers converged after "
+                   << seeded_passes << " seeded symex pass(es)"
+                   << messaget::eom;
+    }
   }
 
   // NOT suitable as a default, measured over the whole 3220-pair corpus on

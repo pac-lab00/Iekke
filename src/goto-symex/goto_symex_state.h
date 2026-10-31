@@ -331,6 +331,10 @@ public:
   /// goto_symext while \ref goto_symext::seed_value_set_from_overall is on.
   const value_sett *published_value_set = nullptr;
 
+  /// Where set, the objects whose entry \ref seed_published_targets consulted:
+  /// the only entries of \ref published_value_set a seeded pass depends on.
+  std::unordered_set<irep_idt> *consulted_published = nullptr;
+
   /// Top up \p expr's points-to set from \ref published_value_set, for a
   /// shared read of a pointer. Does nothing otherwise.
   void seed_published_targets(

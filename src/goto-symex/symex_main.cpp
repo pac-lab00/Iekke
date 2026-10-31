@@ -659,7 +659,10 @@ void goto_symext::symex_step(
   // object's entry at a shared read of a pointer, which is the only place the
   // staleness can bite. See goto_symex_statet::seed_published_targets.
   if(seed_value_set_from_overall || seed_published_reads)
+  {
     state.published_value_set = &overall_value_set;
+    state.consulted_published = &consulted_published;
+  }
   // __SZH_ADD_END__
 
   // Print debug statements if they've been enabled.

@@ -218,6 +218,10 @@ public:
   /// a whole pass leaves it false, i.e. at the fixpoint.
   bool overall_value_set_changed = false;
 
+  /// The objects whose collected entry a seeded shared read consulted in the
+  /// current pass (see goto_symex_statet::consulted_published).
+  std::unordered_set<irep_idt> consulted_published;
+
   /// The state's value set as it was at the last union into
   /// \ref overall_value_set. Every entry of it is in overall_value_set, which
   /// only grows, so the next union needs only what changed since.
