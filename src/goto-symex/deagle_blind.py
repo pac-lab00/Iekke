@@ -172,13 +172,13 @@ ARRAY_RF_BYTES = "--array-rf-bytes "
 # --merge-exclusive-threads: thread creations on paths that exclude each other
 # share one thread. On 55 driver tasks (2026-10-30) no answer changed; it fires
 # on the large ldv drivers only (nsc-ircc: 23.4M -> 17.0M clauses, 8.1 -> 5.9 GB).
-# --index-chain: from 3 rounds up, the chain of a shared object carries the
-# index of the last write instead of its value, where that is smaller. Same
-# executions; 2026-10-30 A/B at u2, r3-r7: 0 verdict changes on 87 + 60 + 283
-# unreach-call and 246 data-race tasks, 10-46% fewer clauses. At 2 rounds it
-# does nothing.
-ENCODING_FLAGS = ("--summarise-guards --infer-alloc-types --merge-exclusive-threads "
-                  "--index-chain ")
+# --index-chain is NOT passed. It gives 10-46% fewer clauses from 3 rounds up
+# with the same verdicts at u2, but the solver can be far slower on it:
+# triangular-longer-2 at (32,13) took 168 s instead of 3.7 s with 38% fewer
+# clauses, so on the cluster (2026-10-31) the bugs of fib_unsafe-10/11,
+# triangular-longer-2/longest-2 and unwind3-100 were no longer found in the
+# slice and the stop rule reported five wrong TRUEs.
+ENCODING_FLAGS = "--summarise-guards --infer-alloc-types --merge-exclusive-threads "
 
 # --thread-symmetry is NOT passed. It was, from 2026-10-21, without a corpus
 # measurement; on unwind3-100 at (256,3) it made the solver 8x slower (42 s ->
