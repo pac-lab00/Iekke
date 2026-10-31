@@ -533,19 +533,16 @@ extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
 extern void (*__CPROVER_thread_key_dtors[])(void *);
 extern __CPROVER_thread_local unsigned long __CPROVER_next_thread_key;
 
+void __CPROVER_run_thread_key_dtors(void);
+
 void pthread_exit(void *value_ptr)
 {
   __CPROVER_HIDE:;
   if(value_ptr!=0) (void)*(char*)value_ptr;
-  // the destructor of each key with a value, as the thread ends; with no key
-  // the loop is empty
-  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
-  {
-    const void *key = __CPROVER_thread_keys[i];
-    __CPROVER_thread_keys[i] = 0;
-    if(__CPROVER_thread_key_dtors[i] && key)
-      __CPROVER_thread_key_dtors[i](key);
-  }
+  // the destructors of the thread-specific values; defined with
+  // pthread_key_create, so a program that creates no key calls a function
+  // with no body, which does nothing
+  __CPROVER_run_thread_key_dtors();
   __CPROVER_threads_exited[__CPROVER_thread_id]=1;
   __CPROVER_assume(0);
 #ifdef LIBRARY_CHECK
@@ -796,6 +793,8 @@ extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
 extern void (*__CPROVER_thread_key_dtors[])(void *);
 extern __CPROVER_thread_local unsigned long __CPROVER_next_thread_key;
 
+void __CPROVER_run_thread_key_dtors(void);
+
 void __spawned_thread(
   unsigned long this_thread_id,
   unsigned long next_thread_key,
@@ -820,15 +819,10 @@ __CPROVER_HIDE:;
     "RRcumul",
     "RWcumul",
     "WRcumul");
-  // the destructor of each key with a value, as the thread ends; with no key
-  // the loop is empty
-  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
-  {
-    const void *key = __CPROVER_thread_keys[i];
-    __CPROVER_thread_keys[i] = 0;
-    if(__CPROVER_thread_key_dtors[i] && key)
-      __CPROVER_thread_key_dtors[i](key);
-  }
+  // the destructors of the thread-specific values; defined with
+  // pthread_key_create, so a program that creates no key calls a function
+  // with no body, which does nothing
+  __CPROVER_run_thread_key_dtors();
   __CPROVER_threads_exited[this_thread_id] = 1;
 }
 
@@ -1161,6 +1155,25 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
 extern void (*__CPROVER_thread_key_dtors[])(void *);
 extern __CPROVER_thread_local unsigned long __CPROVER_next_thread_key;
+
+// The destructor of each key with a value, as a thread ends (return from its
+// start routine, or pthread_exit). Defined here, in pthread_key_create's own
+// block, so that it is linked only into programs that create a key: in every
+// other program the thread-end call has no body. Defined for all of them, the
+// loop over the keys made each thread end dispatch a function pointer over
+// every function of a compatible type wherever symex could not tell the count
+// was zero (pthread-theta/unwind3-100: 12.5 GB, the bug lost).
+void __CPROVER_run_thread_key_dtors(void)
+{
+__CPROVER_HIDE:;
+  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
+  {
+    const void *key = __CPROVER_thread_keys[i];
+    __CPROVER_thread_keys[i] = 0;
+    if(__CPROVER_thread_key_dtors[i] && key)
+      __CPROVER_thread_key_dtors[i](key);
+  }
+}
 
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 {
