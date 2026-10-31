@@ -668,10 +668,16 @@ optionalt<exprt> get_subexpression_at_offset(
     const auto elem_size_bits =
       pointer_offset_bits(array_type.element_type(), ns);
 
-    // no arrays of non-byte-aligned, zero-, or unknown-sized objects
+    // no arrays of non-byte-aligned, zero-, or unknown-sized objects; and an
+    // array is not narrowed to one cell: the program may index it past its
+    // declared end, as in the struct hack (`char data[1]` at the end of a
+    // struct in a larger block), and an index past the cell then landed
+    // inside it -- `data[1]` was byte 1 of the cell of `data[0]`, so the
+    // store was lost and the load read nothing
     if(
       elem_size_bits.has_value() && *elem_size_bits > 0 &&
-      *elem_size_bits % 8 == 0 && *target_size_bits <= *elem_size_bits)
+      *elem_size_bits % 8 == 0 && *target_size_bits <= *elem_size_bits &&
+      ns.follow(target_type_raw).id() != ID_array)
     {
       const mp_integer elem_size_bytes = *elem_size_bits / 8;
       const auto offset_inside_elem = offset_bytes % elem_size_bytes;
