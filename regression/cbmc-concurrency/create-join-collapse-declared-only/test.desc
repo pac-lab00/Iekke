@@ -1,0 +1,10 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --no-por --trace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+function worker line [0-9]* thread 0$
+--
+^warning: ignoring
+function worker line [0-9]* thread 1$

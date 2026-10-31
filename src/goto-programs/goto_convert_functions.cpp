@@ -11,6 +11,7 @@ Date: June 2003
 #include "goto_convert_functions.h"
 
 #include <util/cprover_prefix.h>
+#include <util/expr_iterator.h>
 #include <util/prefix.h>
 #include <util/std_code.h>
 #include <util/symbol_table.h>
@@ -348,21 +349,35 @@ static bool reaches_pthread_exit(
 // writes the creator's copies: a worker's write to a __thread variable
 // reached main's copy, and a thread-specific value set in the worker was
 // main's, so its destructor never ran when the worker ended.
+//
+// The functions count only where the program refers to them: every program
+// that includes pthread.h declares them, and a test for the declaration
+// turned the collapse off nearly everywhere (pthread-theta/unwind3-100 then
+// ran its hundred threads for real and lost its bug to the time limit).
 static bool uses_thread_local_storage(const symbol_table_baset &symbol_table)
 {
-  if(
-    symbol_table.has_symbol("pthread_key_create") ||
-    symbol_table.has_symbol("pthread_self"))
-  {
-    return true;
-  }
   for(const auto &entry : symbol_table.symbols)
   {
+    // a variable: the flag is also set on some type symbols (pthread_attr_t)
     if(
-      entry.second.is_thread_local &&
+      entry.second.is_thread_local && !entry.second.is_type &&
+      entry.second.is_static_lifetime &&
       !has_prefix(id2string(entry.first), CPROVER_PREFIX))
     {
       return true;
+    }
+  }
+  for(const auto &entry : symbol_table.symbols)
+  {
+    for(auto it = entry.second.value.depth_cbegin();
+        it != entry.second.value.depth_cend();
+        ++it)
+    {
+      if(it->id() != ID_symbol)
+        continue;
+      const irep_idt &id = to_symbol_expr(*it).get_identifier();
+      if(id == "pthread_key_create" || id == "pthread_self")
+        return true;
     }
   }
   return false;
