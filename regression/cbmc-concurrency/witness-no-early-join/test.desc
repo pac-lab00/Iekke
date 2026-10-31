@@ -1,0 +1,9 @@
+CORE
+main.c
+--unwind 2 --rounds 1 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+<data key="threadId">2</data>
+--
+^warning: ignoring
+<data key="startline">42</data>
