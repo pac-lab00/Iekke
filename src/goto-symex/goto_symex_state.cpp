@@ -999,6 +999,14 @@ static bool own_view_eligible(const ssa_exprt &expr, const namespacet &ns)
   const symbolt *symbol;
   if(ns.lookup(object_name, symbol))
     return false;
+  // A failed symbol (p$object) is not an object of its own: it stands for
+  // whatever an unresolved pointer points to, which other threads may write
+  // under other names. Its reads stay events, which read it as anything.
+  // Read from the own view, two reads of adutux dev->udev around another
+  // thread write agreed, and the reachable ldv_assert was reported safe
+  // (ldv-linux-3.14-races/...adutux, unreach-call, expected false).
+  if(symbol->type.get_bool(ID_C_is_failed_symbol))
+    return false;
   return !(symbol->is_static_lifetime && symbol->is_thread_local);
 }
 

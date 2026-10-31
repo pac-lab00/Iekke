@@ -784,11 +784,20 @@ static void merge_names(
   // Under --own-view-reads an object with at most one writer after the first
   // spawn is merged as well: its L2 name stands for the writer's own view
   // (own_view_writers.h).
+  //
+  // Such an object is never merged with the shortcuts below for a branch
+  // that has not assigned it (generation zero), before the spawn either:
+  // there its value is the initial one, which nothing constrains, and a read
+  // event on that path could read it -- taking the other branch value
+  // instead would drop those executions.
+  const bool own_view_merge =
+    (symbol.is_shared() || dirty(symbol.name)) &&
+    !dest_state.is_thread_exclusive(obj_identifier) &&
+    dest_state.own_view_candidate(ssa, ns);
   if(
     dest_state.atomic_section_id == 0 && dest_state.threads.size() >= 2 &&
     (symbol.is_shared() || dirty(symbol.name)) &&
-    !dest_state.is_thread_exclusive(obj_identifier) &&
-    !dest_state.own_view_candidate(ssa, ns))
+    !dest_state.is_thread_exclusive(obj_identifier) && !own_view_merge)
   {
     return; // no phi nodes for shared stuff
   }
@@ -845,9 +854,9 @@ static void merge_names(
     rhs = goto_state_rhs;
   else if(!goto_state.reachable)
     rhs = dest_state_rhs;
-  else if(goto_count == 0)
+  else if(goto_count == 0 && !own_view_merge)
     rhs = dest_state_rhs;
-  else if(dest_count == 0)
+  else if(dest_count == 0 && !own_view_merge)
     rhs = goto_state_rhs;
   else
   {
