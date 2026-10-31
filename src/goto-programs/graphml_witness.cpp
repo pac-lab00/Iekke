@@ -243,6 +243,24 @@ static bool filter_out(
     !it->is_shared_read() && !it->is_shared_write())
     return true;
 
+  // The arguments of pthread_join are bound at the call site, which a trace
+  // without partial-order reduction may place before the joined thread has
+  // run at all. A validator reads an edge on the line of the call as the call
+  // having happened, and the call cannot return before the joined thread
+  // ends, so the edge made the witness infeasible: pthread/lazy01 at
+  // --no-por was rejected by CPAchecker (confirmed with --por). What the join
+  // does is in the steps after it; its argument binding is not needed.
+  if(it->is_assignment())
+  {
+    const auto lhs_object = it->get_lhs_object();
+    if(
+      lhs_object.has_value() &&
+      has_prefix(id2string(lhs_object->get_identifier()), "pthread_join::"))
+    {
+      return true;
+    }
+  }
+
   // we filter out steps with the same source location
   // TODO: if these are assignments we should accumulate them into
   //       a single edge
