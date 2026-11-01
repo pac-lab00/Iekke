@@ -15,6 +15,7 @@ Author: Daniel Kroening
 #include <util/byte_operators.h>
 #include <util/c_types.h>
 #include <util/cprover_prefix.h>
+#include <util/find_symbols.h>
 #include <util/pointer_predicates.h>
 #include <util/prefix.h>
 #include <util/ssa_expr.h>
@@ -290,6 +291,45 @@ static bool filter_out(
   return false;
 }
 
+/// Is this function built in (CPROVER library), without a body, or not in the
+/// symbol table? Its locals mean nothing to a validator.
+static bool is_function_built_in_or_extern(
+  const namespacet &ns,
+  const irep_idt &function_id)
+{
+  const symbolt *symbol_ptr = nullptr;
+  if(ns.lookup(function_id, symbol_ptr))
+    return true;
+  if(symbol_ptr->type.id() != ID_code)
+    return true;
+  if(symbol_ptr->value.is_nil())
+    return true;
+  return symbol_ptr->location.is_built_in();
+}
+
+/// Are all symbols of an expression visible in a function? Locals are named
+/// "function::N::var" by the C front end; CPROVER symbols are skipped here and
+/// rejected on the left-hand side instead.
+static bool all_symbols_in_scope(const exprt &expr, const irep_idt &function_id)
+{
+  find_symbols_sett symbols;
+  find_symbols(expr, symbols);
+  for(const auto &symbol_id : symbols)
+  {
+    const std::string symbol_str = id2string(symbol_id);
+    if(symbol_str.find(CPROVER_PREFIX) != std::string::npos)
+      continue;
+    const auto scope_sep = symbol_str.find("::");
+    if(
+      scope_sep != std::string::npos &&
+      symbol_str.substr(0, scope_sep) != id2string(function_id))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool contains_symbol_prefix(const exprt &expr, const std::string &prefix)
 {
   if(
@@ -561,27 +601,32 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
                to_multi_ary_expr(it->full_lhs_value).op0().get(ID_value)),
              "INVALID-")))
         {
-          // __SZH_EDIT_BEGIN__ witnesslint does not know function name, do not generate them
+          // An assumption a validator cannot read makes it give up on the
+          // edge: CPROVER internals (__CPROVER_dead_object), the locals of
+          // library or extern functions, and locals of another function
+          // (upstream CBMC 1b78fa1fc8, issue #5264).
+          irep_idt scope_function = it->function_id;
+          const auto sep = lhs_id.find("::");
+          if(sep != std::string::npos)
+            scope_function = lhs_id.substr(0, sep);
           code_assignt assign{it->full_lhs, it->full_lhs_value};
-          std::string assign_data = convert_assign_rec(lhs_id, assign);
-
-          // xmlt &val_s = edge.new_element("data");
-          // val_s.set_attribute("key", "assumption.scope");
-          // irep_idt function_id = it->function_id;
-          // const symbolt *symbol_ptr = nullptr;
-          // if(!ns.lookup(lhs_id, symbol_ptr) && symbol_ptr->is_parameter)
-          // {
-          //   function_id = lhs_id.substr(0, lhs_id.find("::"));
-          // }
-          // val_s.data = id2string(function_id);
-
-          if(!has_prefix(assign_data, "\\result ="))
+          if(
+            !has_prefix(lhs_id, CPROVER_PREFIX) &&
+            scope_function != CPROVER_PREFIX "initialize" &&
+            !is_function_built_in_or_extern(ns, scope_function) &&
+            all_symbols_in_scope(assign.rhs(), scope_function))
           {
-            xmlt &val = edge.new_element("data");
-            val.set_attribute("key", "assumption");
-            val.data = assign_data;
+            const std::string assign_data = convert_assign_rec(lhs_id, assign);
+            // __SZH_EDIT: witnesslint did not know the function names, so the
+            // scope keys and with them the \result assumptions are left out
+            // (adding them back confirmed no more witnesses, 2026-11-01).
+            if(!has_prefix(assign_data, "\\result ="))
+            {
+              xmlt &val = edge.new_element("data");
+              val.set_attribute("key", "assumption");
+              val.data = assign_data;
+            }
           }
-          // __SZH_EDIT_END__
         }
       }
       else if(it->type == goto_trace_stept::typet::GOTO && it->pc->is_goto())
