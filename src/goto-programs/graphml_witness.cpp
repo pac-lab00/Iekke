@@ -426,6 +426,44 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
   // rather than "the violation is here". Give it a real violation node to end
   // on. Where the loop did mark one, that node is the violation and this
   // stays a no-op.
+  // A data race is the state in which its second racing access is about to
+  // happen, the first having happened: that is where a validator expects the
+  // violation node, and how the witnesses it confirms end. The trace goes on
+  // past that state to the end of the schedule, and ending the witness there
+  // put the violation after an unrelated statement (an unlock); validators
+  // rejected such witnesses (pthread-race-challenges/thread-join-*). Make the
+  // node of the second racing access -- the later of the two shared accesses
+  // the trace blames -- the violation, or the last node before it where that
+  // step is filtered out, and cut what follows.
+  if(!marked_a_violation_node)
+  {
+    auto race = goto_trace.steps.end();
+    for(auto s_it = goto_trace.steps.begin(); s_it != goto_trace.steps.end();
+        ++s_it)
+    {
+      if(s_it->is_shared_read() || s_it->is_shared_write())
+        race = s_it;
+    }
+    if(race != goto_trace.steps.end())
+    {
+      graphmlt::node_indext at_race = sink;
+      for(auto s_it = goto_trace.steps.begin();; ++s_it)
+      {
+        if(step_to_node[s_it->step_nr] != sink)
+          at_race = step_to_node[s_it->step_nr];
+        if(s_it == race)
+          break;
+      }
+      if(at_race != sink)
+      {
+        graphml[at_race].is_violation = true;
+        marked_a_violation_node = true;
+        for(auto s_it = std::next(race); s_it != goto_trace.steps.end(); ++s_it)
+          step_to_node[s_it->step_nr] = sink;
+      }
+    }
+  }
+
   graphmlt::node_indext violation_node = sink;
   if(!marked_a_violation_node)
   {
