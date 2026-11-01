@@ -1,0 +1,11 @@
+CORE
+main.c
+--datarace --no-assertions --own-view-reads --no-por --unwind 4 --rounds 2 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The same program without the mutexes races on whichever node both pick,
+the last branch's included: conditioning that branch must not hide it.

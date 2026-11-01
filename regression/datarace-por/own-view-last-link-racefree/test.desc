@@ -1,0 +1,15 @@
+CORE
+main.c
+--datarace --no-assertions --own-view-reads --no-por --unwind 4 --rounds 2 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+slot[] is written only before the spawn, so --own-view-reads gives the exact
+pointers and main's slot[j]->next becomes `p == &b ? b..next : a..next`: the
+last branch is a real object, not the unknown one. Read with the plain guard,
+main read a..next on every path (and, under the last link alone, when p was &c) and was paired with the thread writing it
+under the other mutex (goblint-regression/09-regions_11-arraylist_nr). The
+last branch is read under the negation of the last link.

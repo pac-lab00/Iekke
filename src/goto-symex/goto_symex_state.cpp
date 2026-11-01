@@ -342,12 +342,13 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       // conjoined onto the rest of the chain: the objects further down are
       // other objects, which their own conditions already separate, and
       // conjoining it made the k-th target's condition k terms long. The
-      // chain's last branch, the unknown object, keeps the plain path guard.
+      // chain's last branch is read where no link holds (below).
       // Nor are other `if`s conditioned: on per-thread-array-join-counter-2
       // at u2 r2, conditioning every `if` took 46 s against 10.5 s for the
       // links only (8.7 s before any of this), with the same verdicts on
       // every test here. Leaving a condition out only adds a read, so none
-      // of this can lose a race.
+      // of this can lose a race -- but an added read can report one that is
+      // not there.
       //
       // A condition that renaming has already decided (`&a == &a` once the
       // pointer is constant-propagated) is left alone, for the reason given
@@ -370,7 +371,30 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
          (datarace && to_equal_expr(cond).lhs().id() == ID_pointer_object &&
           to_equal_expr(cond).rhs().id() == ID_pointer_object)) &&
         !simplify_expr(cond, ns).is_constant();
-      expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
+      // The chain's last branch is the unknown object only when the value
+      // set is not exact. Once the pointer's targets are all known (own-view
+      // reads constant-propagate it) the last branch is a real object:
+      // renamed with the plain guard, `p == &b ? b : a` read a on every path,
+      // and a thread writing a under another lock was reported racing
+      // (goblint-regression/09-regions_11-arraylist_nr). Read it where no
+      // link of the chain holds -- all of them: under the last link's
+      // negation alone, `p == &c ? c : (p == &b ? b : a)` read a when p is &c
+      // and raced again. An extra read is not harmless under --datarace.
+      if(link)
+      {
+        chain_link_negations.push_back(not_exprt{cond});
+        if(expr.op2().id() == ID_if)
+          expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
+        else
+        {
+          const shared_read_condition_scopet read_cond{
+            *this, conjunction(chain_link_negations)};
+          expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
+        }
+        chain_link_negations.pop_back();
+      }
+      else
+        expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
       if(link)
       {
         const shared_read_condition_scopet read_cond{*this, exprt{cond}};

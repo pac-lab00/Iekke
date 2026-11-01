@@ -283,6 +283,10 @@ public:
   /// a new term, and the solver encoded it afresh each time.
   exprt shared_read_cond = true_exprt{};
 
+  /// The negations of the links of the dereference chain being renamed,
+  /// outermost first: its last branch is read where none of them holds.
+  std::vector<exprt> chain_link_negations;
+
   /// The property is about accesses (--datarace). Only then does a read
   /// event recorded for an object the program does not read change the
   /// answer -- for any other property only the value read is consumed -- so
