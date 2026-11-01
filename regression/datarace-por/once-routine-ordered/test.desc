@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Whichever thread calls pthread_once first runs the routine; the other waits
+until it has returned. Before this model the call was an undefined function
+and the routine never ran, so the assertions failed.

@@ -1044,23 +1044,43 @@ int __VERIFIER_nondet_int();
 // no pthread_barrier_t on the Mac
 // slightly different declaration on OpenBSD
 #if !defined(__APPLE__) && !defined(__OpenBSD__)
+#ifndef __CPROVER_barrier_state_defined
+#define __CPROVER_barrier_state_defined
+// The modelled state of a barrier, laid over the front of the real object as
+// the mutex state is (see __CPROVER_mutex_state_t, also for the 16 bits): the
+// number of threads it waits for, how many have arrived in the current cycle,
+// and the number of that cycle; and whether it is process-shared.
+typedef struct
+{
+  unsigned short count;
+  unsigned short arrived;
+  unsigned short cycle;
+  unsigned short shared;
+} __CPROVER_barrier_state_t;
+#endif
+
 int pthread_barrier_init(
   pthread_barrier_t *restrict barrier,
   const pthread_barrierattr_t *restrict attr,
   unsigned count)
 {
   __CPROVER_HIDE:;
-  (void)barrier;
-  (void)attr;
-  (void)count;
-
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_set_must(barrier, "barrier-init");
   __CPROVER_clear_may(barrier, "barrier-destroyed");
   #endif
 
-  int result=__VERIFIER_nondet_int();
-  return result;
+  // POSIX: a count of zero is EINVAL
+  if(count == 0)
+    return 22;
+  __CPROVER_barrier_state_t *__state = (__CPROVER_barrier_state_t *)barrier;
+  __state->count = (unsigned short)count;
+  __state->arrived = 0;
+  __state->cycle = 0;
+  // the attribute object holds its pshared value (pthread_barrierattr_init)
+  __state->shared =
+    attr != 0 && *(const int *)attr == PTHREAD_PROCESS_SHARED;
+  return 0;
 }
 #endif
 
@@ -1127,11 +1147,24 @@ int __VERIFIER_nondet_int();
 
 // no pthread_barrier_t on the Mac
 #ifndef __APPLE__
+#ifndef __CPROVER_barrier_state_defined
+#define __CPROVER_barrier_state_defined
+// The modelled state of a barrier, laid over the front of the real object as
+// the mutex state is (see __CPROVER_mutex_state_t, also for the 16 bits): the
+// number of threads it waits for, how many have arrived in the current cycle,
+// and the number of that cycle; and whether it is process-shared.
+typedef struct
+{
+  unsigned short count;
+  unsigned short arrived;
+  unsigned short cycle;
+  unsigned short shared;
+} __CPROVER_barrier_state_t;
+#endif
+
 int pthread_barrier_wait(pthread_barrier_t *barrier)
 {
   __CPROVER_HIDE:;
-
-  (void)barrier;
 
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_assert(__CPROVER_get_must(barrier, "barrier-init"),
@@ -1140,8 +1173,38 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
                    "pthread barrier must not be destroyed");
   #endif
 
-  int result=__VERIFIER_nondet_int();
-  return result;
+  // A thread arrives; the one that completes the count starts the next cycle
+  // and returns PTHREAD_BARRIER_SERIAL_THREAD, the others wait until it has.
+  // A cycle that never completes (more threads expected than ever arrive)
+  // blocks them for good, which prunes the rest of each such thread. The
+  // previous model returned at once, so the barrier ordered nothing.
+  __CPROVER_barrier_state_t *__state = (__CPROVER_barrier_state_t *)barrier;
+  unsigned short __cycle;
+  int __last;
+  __CPROVER_atomic_begin();
+  __cycle = __state->cycle;
+  __state->arrived = __state->arrived + 1;
+  __last = __state->arrived == __state->count;
+  if(__last)
+  {
+    __state->arrived = 0;
+    __state->cycle = __state->cycle + 1;
+  }
+  __CPROVER_atomic_end();
+  // A process-shared barrier can also be completed by processes this model
+  // does not have (fork() is not a second process here): such a thread may
+  // also go on without the cycle completing. Blocking it for good made
+  // pthread-barrier/unreach-reachable-process-shared-wait report safe.
+  if(!__last && (!__state->shared || __VERIFIER_nondet_int()))
+  {
+    __CPROVER_atomic_begin();
+    __CPROVER_assume(__state->cycle != __cycle);
+    __CPROVER_atomic_end();
+  }
+
+  __CPROVER_fence("WWfence", "RRfence", "RWfence", "WRfence",
+                  "WWcumul", "RRcumul", "RWcumul", "WRcumul");
+  return __last ? PTHREAD_BARRIER_SERIAL_THREAD : 0;
 }
 #endif
 
@@ -1230,5 +1293,88 @@ int pthread_setspecific(pthread_key_t key, const void *value)
 {
 __CPROVER_HIDE:;
   __CPROVER_thread_keys[key] = value;
+  return 0;
+}
+
+/* FUNCTION: pthread_once */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+// The first caller runs the routine; every other caller waits until it has
+// returned, so what the routine writes is ordered before every call's return.
+// The control holds PTHREAD_ONCE_INIT (0) until a call starts the routine, 1
+// while it runs and 2 once it has returned. Without this model the call was
+// an undefined function: the routine never ran.
+int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
+{
+__CPROVER_HIDE:;
+  int __run;
+  __CPROVER_atomic_begin();
+  __run = *once_control == 0;
+  if(__run)
+    *once_control = 1;
+  __CPROVER_atomic_end();
+  if(__run)
+  {
+    init_routine();
+    __CPROVER_atomic_begin();
+    *once_control = 2;
+    __CPROVER_atomic_end();
+  }
+  else
+  {
+    __CPROVER_atomic_begin();
+    __CPROVER_assume(*once_control == 2);
+    __CPROVER_atomic_end();
+  }
+  return 0;
+}
+
+/* FUNCTION: pthread_barrierattr_init */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+// The attribute object holds only its pshared value, read by
+// pthread_barrier_init.
+int pthread_barrierattr_init(pthread_barrierattr_t *attr)
+{
+__CPROVER_HIDE:;
+  *(int *)attr = PTHREAD_PROCESS_PRIVATE;
+  return 0;
+}
+
+/* FUNCTION: pthread_barrierattr_setpshared */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+int pthread_barrierattr_setpshared(pthread_barrierattr_t *attr, int pshared)
+{
+__CPROVER_HIDE:;
+  if(pshared != PTHREAD_PROCESS_PRIVATE && pshared != PTHREAD_PROCESS_SHARED)
+    return 22; // EINVAL
+  *(int *)attr = pshared;
+  return 0;
+}
+
+/* FUNCTION: pthread_barrierattr_destroy */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+int pthread_barrierattr_destroy(pthread_barrierattr_t *attr)
+{
+__CPROVER_HIDE:;
+  (void)attr;
   return 0;
 }

@@ -1,0 +1,11 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 3 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Both threads pass the barrier and then write g concurrently: a race the
+barrier does not prevent.
