@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --glucose
+^EXIT=10$
+^SIGNAL=0$
+^Value narrowing: [0-9][0-9]* objects$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The chains of cnt (0..2) and neg (-6..0, signed) are narrowed to a few bits;
+both updates still reach main, so the violation is found. With one bit fewer
+per chain (checked by hand on 2026-11-01) the values 2 and -6 no longer fit
+and the violation is lost.

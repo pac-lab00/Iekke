@@ -437,6 +437,31 @@ void build_goto_trace(
       }
     }
   }
+  // Only the race constraint that failed ties its phase symbols down; those
+  // of other accesses are free and the solver may leave some true. A race is
+  // two accesses of one object from different threads, one of them a write:
+  // drop blamed accesses of objects with no such pair, or the witness takes
+  // a lone access for the race.
+  {
+    std::map<irep_idt, std::vector<const SSA_stept *>> by_object;
+    for(const auto *step : blamed_accesses)
+      by_object[step->ssa_lhs.get_l1_object_identifier()].push_back(step);
+    for(const auto &object : by_object)
+    {
+      bool pair = false;
+      for(const auto *a : object.second)
+        for(const auto *b : object.second)
+          if(
+            a->round_robin_thread != b->round_robin_thread &&
+            (a->is_shared_write() || b->is_shared_write()))
+          {
+            pair = true;
+          }
+      if(!pair)
+        for(const auto *step : object.second)
+          blamed_accesses.erase(step);
+    }
+  }
 
   // First sort the SSA steps by time, in the process dropping steps
   // we definitely don't want to retain in the final trace:

@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 4 --rounds 2 --glucose
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+With two rounds y reaches at most 4, so the same assertion holds: the
+narrowed chains do not let a value appear before its round.

@@ -858,6 +858,9 @@ void lazy_pot::compute_narrowings(const symex_target_equationt &equation)
 
 exprt lazy_pot::narrowed_value(const irep_idt &variable, const exprt &value) const
 {
+  const auto v = value_narrowings.find(variable);
+  if(v != value_narrowings.end())
+    return typecast_exprt{value, v->second};
   const auto it = narrowings.find(variable);
   if(it == narrowings.end())
     return value;
@@ -869,6 +872,9 @@ exprt lazy_pot::narrowed_value(const irep_idt &variable, const exprt &value) con
 
 typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
 {
+  const auto v = value_narrowings.find(variable);
+  if(v != value_narrowings.end())
+    return v->second;
   const auto it = narrowings.find(variable);
   if(it == narrowings.end())
     return type;
@@ -2267,6 +2273,461 @@ void lazy_pot::dead_audit(const symex_target_equationt &equation)
               << h.first << " object(s)\n";
 }
 
+/// Value narrowing: the write chain of a shared bit-vector object carries only
+/// the bits its values can take. The ranges come from an interval analysis of
+/// the unrolled formula that follows the (round, thread, label) order of the
+/// chains; three bounds are intersected:
+///
+/// - Whole run: the join of every value written, per group of mutually
+///   dependent objects. Each write of the unrolled formula fires at most once,
+///   so a chain of values inside a group passes through at most as many writes
+///   as the group has; iterating that often covers it, without widening.
+/// - Round by round: in round r a read of thread t sees a value from a round
+///   before r, from a thread before t in round r, or from t itself. Inside a
+///   round no value flows back from a later thread, so only t's own writes are
+///   iterated. Round r's links hold the values written up to the end of r.
+/// - Counting writes: each thread performs its writes in program order, each
+///   at most once (one on a path not taken is skipped). Over the states "how
+///   many of its writes each thread has passed", the values at a state join
+///   those one step before it, with or without that write; every execution
+///   walks such a path. This bounds counters across all rounds.
+///
+/// A value enters the chain truncated to the round's width and every read is
+/// stated to fit the widest one (create_write_constraints), so the low bits
+/// the read constraints compare fix the whole value. Thread-local code keeps
+/// its full width. LAZYPO_NO_NARROW_VALUES turns this off.
+void lazy_pot::compute_value_narrowings(const symex_target_equationt &equation)
+{
+  value_narrowings.clear();
+  value_round_types.clear();
+  if(getenv("LAZYPO_NO_NARROW_VALUES") != nullptr)
+    return;
+
+  struct intervalt
+  {
+    mp_integer lo, hi;
+    bool bottom = true;   // no value yet
+    bool unknown = false; // not a number (pointer, struct, ...)
+  };
+  const auto type_range = [](const typet &t) -> std::optional<intervalt> {
+    if(t.id() == ID_bool)
+      return intervalt{0, 1, false};
+    if(t.id() == ID_c_bool || t.id() == ID_unsignedbv)
+    {
+      const auto w = to_bitvector_type(t).get_width();
+      return intervalt{0, power(2, w) - 1, false};
+    }
+    if(t.id() == ID_signedbv || t.id() == ID_c_enum)
+    {
+      const auto w = to_bitvector_type(
+        t.id() == ID_c_enum ? to_c_enum_type(t).underlying_type() : t)
+        .get_width();
+      return intervalt{-power(2, w - 1), power(2, w - 1) - 1, false};
+    }
+    return {};
+  };
+  const auto join = [](intervalt &a, const intervalt &b) {
+    if(b.bottom)
+      return false;
+    if(a.bottom)
+    {
+      a = b;
+      return true;
+    }
+    bool changed = false;
+    if(b.lo < a.lo)
+      a.lo = b.lo, changed = true;
+    if(b.hi > a.hi)
+      a.hi = b.hi, changed = true;
+    return changed;
+  };
+  const auto meet = [](intervalt &a, const intervalt &b) {
+    if(a.bottom || b.bottom)
+      return;
+    a.lo = std::max(a.lo, b.lo);
+    a.hi = std::min(a.hi, b.hi);
+  };
+  const auto bits_for = [](const intervalt &v) {
+    std::size_t b = 1;
+    if(v.lo >= 0)
+      while(power(2, b) - 1 < v.hi)
+        ++b;
+    else
+      while(-power(2, b - 1) > v.lo || power(2, b - 1) - 1 < v.hi)
+        ++b;
+    return b;
+  };
+
+  // local SSA definitions, and which shared object each read symbol reads
+  std::unordered_map<irep_idt, const exprt *> def;
+  for(const auto &step : equation.SSA_steps)
+    if(step.is_assignment())
+      def[step.ssa_lhs.get_identifier()] = &step.ssa_rhs;
+  std::unordered_map<irep_idt, irep_idt> read_of;
+  for(const auto &entry : reads)
+    for(const auto &r : entry.second)
+      read_of[r.s_it->ssa_lhs.get_identifier()] = entry.first;
+
+  // The value a read can return is `value` of its object; locals follow
+  // their definitions. Whatever may leave its type's range takes the range.
+  std::map<irep_idt, intervalt> value;
+  std::unordered_map<irep_idt, intervalt> memo;
+  std::function<intervalt(const exprt &, unsigned)> eval;
+  eval = [&](const exprt &e, unsigned depth) -> intervalt {
+    const auto range = type_range(e.type());
+    if(!range)
+      return intervalt{0, 0, false, true};
+    const intervalt top = *range;
+    const auto clamp = [&](const intervalt &v) {
+      if(v.bottom)
+        return v;
+      if(v.unknown || v.lo < top.lo || v.hi > top.hi)
+        return top;
+      return v;
+    };
+    if(depth > 200)
+      return top;
+    if(e.is_constant())
+    {
+      if(e.type().id() == ID_bool)
+        return e.is_true() ? intervalt{1, 1, false} : intervalt{0, 0, false};
+      const auto v = numeric_cast<mp_integer>(to_constant_expr(e));
+      return v ? intervalt{*v, *v, false} : top;
+    }
+    if(e.id() == ID_symbol)
+    {
+      const irep_idt &id = to_symbol_expr(e).get_identifier();
+      const auto r = read_of.find(id);
+      if(r != read_of.end())
+      {
+        if(writes.count(r->second) == 0)
+          return top;
+        const auto v = value.find(r->second);
+        return v == value.end() ? intervalt{} : clamp(v->second);
+      }
+      const auto m = memo.find(id);
+      if(m != memo.end())
+        return m->second;
+      const auto d = def.find(id);
+      const intervalt v = d == def.end() ? top : clamp(eval(*d->second, depth + 1));
+      memo[id] = v;
+      return v;
+    }
+    if(
+      e.id() == ID_equal || e.id() == ID_notequal || e.id() == ID_lt ||
+      e.id() == ID_le || e.id() == ID_gt || e.id() == ID_ge ||
+      e.id() == ID_and || e.id() == ID_or || e.id() == ID_not)
+    {
+      return intervalt{0, 1, false};
+    }
+    if(e.id() == ID_if)
+    {
+      intervalt v = clamp(eval(to_if_expr(e).true_case(), depth + 1));
+      join(v, clamp(eval(to_if_expr(e).false_case(), depth + 1)));
+      return v;
+    }
+    if(e.id() == ID_typecast)
+    {
+      const exprt &op = to_typecast_expr(e).op();
+      if(op.type().id() == ID_bool)
+        return intervalt{0, 1, false};
+      return clamp(eval(op, depth + 1));
+    }
+    if(e.id() == ID_plus || e.id() == ID_minus || e.id() == ID_mult)
+    {
+      intervalt v = clamp(eval(e.operands()[0], depth + 1));
+      for(std::size_t k = 1; k < e.operands().size() && !v.bottom; ++k)
+      {
+        const intervalt b = clamp(eval(e.operands()[k], depth + 1));
+        if(b.bottom)
+          return b;
+        if(e.id() == ID_plus)
+          v = intervalt{v.lo + b.lo, v.hi + b.hi, false};
+        else if(e.id() == ID_minus)
+          v = intervalt{v.lo - b.hi, v.hi - b.lo, false};
+        else
+        {
+          const mp_integer c[] = {
+            v.lo * b.lo, v.lo * b.hi, v.hi * b.lo, v.hi * b.hi};
+          v = intervalt{
+            *std::min_element(c, c + 4), *std::max_element(c, c + 4), false};
+        }
+      }
+      return clamp(v);
+    }
+    if(e.id() == ID_bitand && top.lo >= 0)
+    {
+      // a non-negative operand bounds an unsigned result
+      intervalt best = top;
+      for(const auto &op : e.operands())
+      {
+        const intervalt b = eval(op, depth + 1);
+        if(!b.bottom && !b.unknown && b.lo >= 0 && b.hi < best.hi)
+          best = intervalt{0, b.hi, false};
+      }
+      return best;
+    }
+    return top;
+  };
+  // the value a write puts in the chain
+  const auto written = [&](const shared_event &w) -> std::optional<intervalt> {
+    const auto range = type_range(w.s_it->ssa_lhs.type());
+    if(!range)
+      return {};
+    const auto d = def.find(w.s_it->ssa_lhs.get_identifier());
+    intervalt x = d == def.end() ? *range : eval(*d->second, 0);
+    if(x.unknown)
+      x = *range;
+    return x;
+  };
+
+  // 1. Whole run, per group of mutually dependent objects (Tarjan, the groups
+  // come out dependencies first).
+  std::unordered_map<irep_idt, std::set<irep_idt>> reads_below;
+  std::function<const std::set<irep_idt> &(const irep_idt &)> reads_of_symbol;
+  std::function<void(const exprt &, std::set<irep_idt> &)> collect;
+  collect = [&](const exprt &e, std::set<irep_idt> &into) {
+    if(e.id() == ID_symbol)
+    {
+      const auto &r = reads_of_symbol(to_symbol_expr(e).get_identifier());
+      into.insert(r.begin(), r.end());
+      return;
+    }
+    for(const auto &op : e.operands())
+      collect(op, into);
+  };
+  reads_of_symbol = [&](const irep_idt &id) -> const std::set<irep_idt> & {
+    const auto m = reads_below.find(id);
+    if(m != reads_below.end())
+      return m->second;
+    std::set<irep_idt> found;
+    const auto r = read_of.find(id);
+    if(r != read_of.end())
+      found.insert(r->second);
+    else if(const auto d = def.find(id); d != def.end())
+      collect(*d->second, found);
+    return reads_below[id] = std::move(found);
+  };
+  std::map<irep_idt, std::set<irep_idt>> depends;
+  for(const auto &entry : writes)
+    for(const auto &w : entry.second)
+    {
+      const auto &r = reads_of_symbol(w.s_it->ssa_lhs.get_identifier());
+      depends[entry.first].insert(r.begin(), r.end());
+    }
+  std::map<irep_idt, std::size_t> order, low;
+  std::set<irep_idt> on_stack;
+  std::vector<irep_idt> stack;
+  std::vector<std::vector<irep_idt>> groups;
+  std::function<void(const irep_idt &)> visit;
+  visit = [&](const irep_idt &v) {
+    order[v] = low[v] = order.size();
+    stack.push_back(v);
+    on_stack.insert(v);
+    for(const auto &u : depends[v])
+    {
+      if(writes.count(u) == 0)
+        continue;
+      if(order.count(u) == 0)
+      {
+        visit(u);
+        low[v] = std::min(low[v], low[u]);
+      }
+      else if(on_stack.count(u) != 0)
+        low[v] = std::min(low[v], order[u]);
+    }
+    if(low[v] == order[v])
+    {
+      groups.emplace_back();
+      irep_idt u;
+      do
+      {
+        u = stack.back();
+        stack.pop_back();
+        on_stack.erase(u);
+        groups.back().push_back(u);
+      } while(u != v);
+    }
+  };
+  for(const auto &entry : writes)
+    if(order.count(entry.first) == 0)
+      visit(entry.first);
+  // a group with more writes than this keeps its type ranges
+  const std::size_t group_cap = 512;
+  for(const auto &group : groups)
+  {
+    std::size_t group_writes = 0;
+    for(const auto &v : group)
+      group_writes += writes.at(v).size();
+    if(group_writes > group_cap)
+    {
+      for(const auto &v : group)
+        if(const auto range = type_range(writes.at(v).front().s_it->ssa_lhs.type()))
+          value[v] = *range;
+      continue;
+    }
+    for(std::size_t it = 0; it <= group_writes; ++it)
+    {
+      memo.clear();
+      bool changed = false;
+      for(const auto &v : group)
+        for(const auto &w : writes.at(v))
+          if(const auto x = written(w))
+            changed |= join(value[v], *x);
+      if(!changed)
+        break;
+    }
+  }
+  const std::map<irep_idt, intervalt> whole_run = value;
+
+  // The chain starts from the value of the object's first write, whether or
+  // not that write runs: every reader can see it from the start.
+  std::map<irep_idt, intervalt> start;
+  memo.clear();
+  for(const auto &entry : writes)
+    if(const auto x = written(entry.second.front()))
+      start[entry.first] = x->bottom ? *type_range(entry.second.front().s_it->ssa_lhs.type()) : *x;
+
+  std::map<std::size_t, std::vector<std::pair<irep_idt, const shared_event *>>>
+    by_thread;
+  for(const auto &entry : writes)
+    for(const auto &w : entry.second)
+      by_thread[w.thread].emplace_back(entry.first, &w);
+  for(auto &t : by_thread)
+    std::stable_sort(
+      t.second.begin(), t.second.end(), [](const auto &a, const auto &b) {
+        return a.second->label < b.second->label;
+      });
+
+  // 2. Round by round.
+  std::vector<std::map<irep_idt, intervalt>> at_round_end(rounds + 1);
+  std::map<irep_idt, intervalt> before = start; // up to the end of round r-1
+  const std::size_t own_cap = 64;
+  for(std::size_t r = 1; r <= rounds; ++r)
+  {
+    std::map<irep_idt, intervalt> visible = before;
+    for(const auto &t : by_thread)
+    {
+      for(std::size_t it = 0; it <= std::min(t.second.size(), own_cap); ++it)
+      {
+        memo.clear();
+        value = visible;
+        bool changed = false;
+        for(const auto &vw : t.second)
+          if(auto x = written(*vw.second))
+          {
+            const auto g = whole_run.find(vw.first);
+            if(g != whole_run.end())
+              meet(*x, g->second);
+            changed |= join(visible[vw.first], *x);
+          }
+        if(!changed)
+          break;
+        if(it == own_cap)
+          for(const auto &vw : t.second)
+            if(const auto range = type_range(vw.second->s_it->ssa_lhs.type()))
+              visible[vw.first] = *range;
+      }
+    }
+    before = visible;
+    at_round_end[r] = visible;
+  }
+
+  // 3. Counting writes, when the states are few enough.
+  std::map<irep_idt, intervalt> counted;
+  {
+    const std::size_t state_cap = 2000000;
+    std::vector<const std::vector<std::pair<irep_idt, const shared_event *>> *> ts;
+    std::vector<std::size_t> radix;
+    std::size_t states = 1;
+    const std::size_t objects = std::max<std::size_t>(writes.size(), 1);
+    for(const auto &t : by_thread)
+    {
+      ts.push_back(&t.second);
+      radix.push_back(t.second.size() + 1);
+      states *= t.second.size() + 1;
+      if(states * objects > state_cap)
+        break;
+    }
+    if(states * objects <= state_cap)
+    {
+      std::vector<std::map<irep_idt, intervalt>> at(states);
+      at[0] = start;
+      for(std::size_t idx = 1; idx < states; ++idx)
+      {
+        std::size_t rest = idx, stride = 1;
+        for(std::size_t k = 0; k < ts.size(); ++k)
+        {
+          const std::size_t passed = rest % radix[k];
+          rest /= radix[k];
+          if(passed != 0)
+          {
+            const std::size_t prev = idx - stride;
+            for(const auto &kv : at[prev])
+              join(at[idx][kv.first], kv.second);
+            const auto &vw = (*ts[k])[passed - 1];
+            memo.clear();
+            value = at[prev];
+            if(const auto x = written(*vw.second))
+              join(at[idx][vw.first], *x);
+          }
+          stride *= radix[k];
+        }
+      }
+      counted = std::move(at[states - 1]);
+    }
+  }
+
+  for(const auto &entry : writes)
+  {
+    const typet &t = entry.second.front().s_it->ssa_lhs.type();
+    if(t.id() != ID_signedbv && t.id() != ID_unsignedbv)
+      continue;
+    if(narrowings.count(entry.first) != 0)
+      continue;
+    if(std::any_of(
+         entry.second.begin(), entry.second.end(),
+         [&](const shared_event &w) { return w.s_it->ssa_lhs.type() != t; }))
+    {
+      continue;
+    }
+    const auto g = whole_run.find(entry.first);
+    if(g == whole_run.end() || g->second.bottom || g->second.unknown)
+      continue;
+    intervalt v = g->second;
+    if(const auto c = counted.find(entry.first); c != counted.end())
+      meet(v, c->second);
+    const std::size_t need = bits_for(v);
+    if(need >= to_bitvector_type(t).get_width())
+      continue;
+    // every round has the final signedness, so extending a link from one
+    // round to the next, or to the read's width, keeps its value
+    const bool is_signed = v.lo < 0;
+    const auto narrow = [&](std::size_t w) {
+      return is_signed ? typet(signedbv_typet(w)) : typet(unsignedbv_typet(w));
+    };
+    std::vector<typet> per_round(rounds + 1, narrow(need));
+    std::size_t width = 1;
+    for(std::size_t r = 1; r < rounds; ++r)
+    {
+      intervalt w = v;
+      if(const auto e = at_round_end[r].find(entry.first);
+         e != at_round_end[r].end())
+      {
+        meet(w, e->second);
+      }
+      if(is_signed && w.lo >= 0)
+        w.lo = -1; // count the sign bit
+      width = std::min(std::max(width, bits_for(w)), need);
+      per_round[r] = narrow(width);
+    }
+    value_narrowings.emplace(entry.first, narrow(need));
+    value_round_types.emplace(entry.first, std::move(per_round));
+  }
+  if(!value_narrowings.empty())
+    std::cerr << "Value narrowing: " << value_narrowings.size() << " objects\n";
+}
+
 void lazy_pot::create_write_constraints(
   symex_target_equationt &equation)
 {
@@ -2276,6 +2737,23 @@ void lazy_pot::create_write_constraints(
   // Both this chain and create_read_constraints, which runs straight after,
   // are built from it.
   compute_narrowings(equation);
+  compute_value_narrowings(equation);
+  // Every value written fits its narrow type, so every value read does too:
+  // say so, and the low bits the read constraints compare fix the whole value.
+  for(const auto &vn : value_narrowings)
+  {
+    const auto r_it = reads.find(vn.first);
+    if(r_it == reads.end())
+      continue;
+    for(const auto &read : r_it->second)
+    {
+      const exprt &r = read.s_it->ssa_lhs;
+      equation.constraint(
+        equal_exprt{r, typecast_exprt{typecast_exprt{r, vn.second}, r.type()}},
+        "value narrowing " + id2string(vn.first),
+        read.s_it->source);
+    }
+  }
   index_chain_summary = choose_index_chains();
 
   for(auto global_variable : global_variables)
@@ -2381,12 +2859,16 @@ void lazy_pot::create_write_constraints(
     {
       for(const auto &write : this->writes.at(global_variable))
       {
+        // a narrowed object's links of round r carry that round's bits
+        const auto vr = value_round_types.find(global_variable);
+        const typet link_type =
+          vr == value_round_types.end() ? chain_type : vr->second[round];
         const symbol_exprt lazy_variable_exprt = create_lazy_symbol(
           write.label,
           write.thread,
           round,
           write.s_it->ssa_lhs,
-          chain_type);
+          link_type);
         irep_idt id_name = "id_T" + std::to_string(write.thread) + "_L" +
                              std::to_string(write.label) + "_N" + std::to_string(write.num) +
                              "_R" + std::to_string(round)+ "_V"+id2string(global_variable);
@@ -2404,8 +2886,10 @@ void lazy_pot::create_write_constraints(
           equal_exprt constraint{
             lazy_variable_exprt,
             if_exprt{exec,
-                     narrowed_value(global_variable, write.s_it->ssa_lhs),
-                     typecast_exprt::conditional_cast(previous, chain_type)}};
+                     vr == value_round_types.end()
+                       ? narrowed_value(global_variable, write.s_it->ssa_lhs)
+                       : typecast_exprt{write.s_it->ssa_lhs, link_type},
+                     typecast_exprt::conditional_cast(previous, link_type)}};
 
           equation.constraint(
             constraint,

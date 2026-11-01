@@ -53,6 +53,12 @@ private:
     std::size_t width_bits;
   };
   std::map<irep_idt, narrowingt> narrowings;
+  /// objects whose chain carries only the bits their values take, with the
+  /// widest chain type, and per round (index 1..rounds) the type of that
+  /// round's links; see compute_value_narrowings
+  std::map<irep_idt, typet> value_narrowings;
+  std::map<irep_idt, std::vector<typet>> value_round_types;
+  void compute_value_narrowings(const symex_target_equationt &);
 
   /// state the read-from of objects only one thread touches once, in program
   /// order, instead of once per round; see compute_private_objects

@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --glucose
+^EXIT=10$
+^SIGNAL=0$
+^Value narrowing: [0-9][0-9]* objects$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+x and y grow only when the two threads alternate, once per round: y is at
+most 2 after round 1, 4 after round 2, 6 after round 3, and the links of each
+round are narrowed to that. The violation needs y = 6 in the last round; a
+round width that were too small would lose it.
