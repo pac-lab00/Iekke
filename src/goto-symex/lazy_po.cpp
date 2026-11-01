@@ -14,6 +14,7 @@
 #include <map>
 #include <algorithm>
 #include <set>
+#include <unordered_set>
 #include <cstdlib>
 #include <iostream>
 #include <chrono>
@@ -2484,6 +2485,8 @@ void lazy_pot::compute_value_narrowings(const symex_target_equationt &equation)
   // 1. Whole run, per group of mutually dependent objects (Tarjan, the groups
   // come out dependencies first).
   std::unordered_map<irep_idt, std::set<irep_idt>> reads_below;
+  std::unordered_set<irep_idt> walking;
+  bool cycle = false;
   std::function<const std::set<irep_idt> &(const irep_idt &)> reads_of_symbol;
   std::function<void(const exprt &, std::set<irep_idt> &)> collect;
   collect = [&](const exprt &e, std::set<irep_idt> &into) {
@@ -2499,13 +2502,22 @@ void lazy_pot::compute_value_narrowings(const symex_target_equationt &equation)
   reads_of_symbol = [&](const irep_idt &id) -> const std::set<irep_idt> & {
     const auto m = reads_below.find(id);
     if(m != reads_below.end())
+    {
+      // still being walked: definitions lead back to this symbol, and the
+      // sets found meanwhile are incomplete (see below)
+      if(walking.count(id) != 0)
+        cycle = true;
       return m->second;
+    }
+    reads_below[id];
+    walking.insert(id);
     std::set<irep_idt> found;
     const auto r = read_of.find(id);
     if(r != read_of.end())
       found.insert(r->second);
     else if(const auto d = def.find(id); d != def.end())
       collect(*d->second, found);
+    walking.erase(id);
     return reads_below[id] = std::move(found);
   };
   std::map<irep_idt, std::set<irep_idt>> depends;
@@ -2552,6 +2564,15 @@ void lazy_pot::compute_value_narrowings(const symex_target_equationt &equation)
   for(const auto &entry : writes)
     if(order.count(entry.first) == 0)
       visit(entry.first);
+  // With definitions in a cycle some dependency sets are incomplete, and
+  // groups split on them could be evaluated before what they read: take all
+  // objects as one group instead.
+  if(cycle)
+  {
+    groups.assign(1, {});
+    for(const auto &entry : writes)
+      groups.front().push_back(entry.first);
+  }
   // a group with more writes than this keeps its type ranges
   const std::size_t group_cap = 512;
   for(const auto &group : groups)
