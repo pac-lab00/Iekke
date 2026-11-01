@@ -178,7 +178,13 @@ ARRAY_RF_BYTES = "--array-rf-bytes "
 # clauses, so on the cluster (2026-10-31) the bugs of fib_unsafe-10/11,
 # triangular-longer-2/longest-2 and unwind3-100 were no longer found in the
 # slice and the stop rule reported five wrong TRUEs.
-ENCODING_FLAGS = "--summarise-guards --infer-alloc-types --merge-exclusive-threads "
+# --own-view-reads: a shared read of an object no other thread writes after
+# the first spawn is read from the thread own view, so constants propagate
+# through it. Timed 2026-11-01 (Release build, one run at a time): never slower
+# on 58 runs, same verdicts; adutux 297 -> 100 s, nsc-ircc 140 -> 106 s,
+# array-eq-symm 18.2 -> 0.7 s, unwind3-100 19.8 -> 8.6 s.
+ENCODING_FLAGS = ("--summarise-guards --infer-alloc-types --merge-exclusive-threads "
+                  "--own-view-reads ")
 
 # --thread-symmetry is NOT passed. It was, from 2026-10-21, without a corpus
 # measurement; on unwind3-100 at (256,3) it made the solver 8x slower (42 s ->
