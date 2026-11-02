@@ -37,7 +37,7 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include "bmc_util.h"
 
-#include <solvers/prop/bdd_expr.h>
+#include <goto-symex/guard_bdd.h>
 
 /// CP2PROBE: where symbolic execution leaves values non-constant. A
 /// measurement only, printed on stdout when the environment variable CP2PROBE
@@ -116,43 +116,6 @@ exprt cp2_substitute(
 }
 } // namespace
 
-/// BDD conversion of path guards that converts each goto_symex::\guard#n
-/// definition once, in program order, and reuses it; the plain
-/// bdd_exprt::from_expr would convert a shared definition again at every use.
-class guard_bdd_convertert : public bdd_exprt
-{
-public:
-  std::unordered_map<irep_idt, bddt> guard_bdd;
-
-  bddt convert(const exprt &e)
-  {
-    if(e.is_constant())
-      return e.is_false() ? bdd_mgr.bdd_false() : bdd_mgr.bdd_true();
-    if(e.id() == ID_symbol)
-    {
-      const auto g = guard_bdd.find(to_symbol_expr(e).get_identifier());
-      if(g != guard_bdd.end())
-        return g->second;
-      return from_expr(e);
-    }
-    if(e.id() == ID_not)
-      return convert(to_not_expr(e).op()).bdd_not();
-    if(e.id() == ID_and || e.id() == ID_or)
-    {
-      bddt r = convert(e.operands().front());
-      for(std::size_t i = 1; i < e.operands().size(); ++i)
-        r = e.id() == ID_and ? r.bdd_and(convert(e.operands()[i]))
-                             : r.bdd_or(convert(e.operands()[i]));
-      return r;
-    }
-    if(e.id() == ID_implies)
-      return convert(to_implies_expr(e).lhs())
-        .bdd_not()
-        .bdd_or(convert(to_implies_expr(e).rhs()));
-    return from_expr(e);
-  }
-};
-
 /// Remove the shared read and write events whose path guard is a
 /// propositional contradiction. A guard names its conditions through
 /// goto_symex::\guard#n symbols, so the expression simplifier sees a
@@ -183,15 +146,11 @@ bdd_prune_dead_accesses(symex_target_equationt &equation, messaget &log)
       break;
     }
     // a guard definition precedes its uses, so its BDD is ready when needed
+    const bool defines_guard =
+      it->is_assignment() && bdd.define(it->ssa_lhs, it->ssa_rhs);
     if(
-      it->is_assignment() && it->ssa_lhs.type().id() == ID_bool &&
-      id2string(it->ssa_lhs.get_identifier()).find("guard#") != std::string::npos)
-    {
-      bdd.guard_bdd.emplace(it->ssa_lhs.get_identifier(), bdd.convert(it->ssa_rhs));
-    }
-    else if(
-      (it->is_shared_read() || it->is_shared_write()) && !it->guard.is_true() &&
-      !it->guard.is_false())
+      !defines_guard && (it->is_shared_read() || it->is_shared_write()) &&
+      !it->guard.is_true() && !it->guard.is_false())
     {
       if(bdd.convert(it->guard).is_false())
       {
