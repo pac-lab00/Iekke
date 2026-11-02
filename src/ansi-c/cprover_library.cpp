@@ -11,6 +11,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <sstream>
 
 #include <util/config.h>
+#include <util/exception_utils.h>
 #include <util/symbol_table.h>
 
 #include "ansi_c_language.h"
@@ -125,7 +126,15 @@ void add_library(
 
   ansi_c_languaget ansi_c_language;
   ansi_c_language.set_message_handler(message_handler);
-  ansi_c_language.parse(in, "");
+  // A failure here (e.g. the host lacks a system header the models include,
+  // such as <errno.h> under -m32 without gcc-multilib) drops every model in
+  // the batch -- abort, malloc, pthread_* -- and the analysis would then
+  // continue on bodiless functions, which is unsound. Stop instead.
+  if(ansi_c_language.parse(in, ""))
+  {
+    throw invalid_input_exceptiont(
+      "failed to preprocess or parse the CPROVER library models");
+  }
 
   ansi_c_language.typecheck(symbol_table, "<built-in-library>", true, keep);
 }

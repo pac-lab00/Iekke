@@ -1,0 +1,17 @@
+CORE
+main.c
+-I broken --signed-overflow-check --no-assertions
+^EXIT=6$
+^SIGNAL=0$
+^failed to preprocess or parse the CPROVER library models$
+--
+^VERIFICATION FAILED$
+^VERIFICATION SUCCESSFUL$
+--
+The CPROVER library models are preprocessed together with the host's system
+headers. When one is missing (on ciuccio, <asm/errno.h> under -m32 once
+gcc-multilib was removed) preprocessing fails for the whole batch, abort()
+loses its __CPROVER_assume(0) body, and the analysis went on to report an
+overflow on a path abort() should have cut (weaver/loop-tiling-eq.wvr.c, a
+false no-overflow alarm). broken/errno.h simulates the missing header on any
+host. The library failure must stop the analysis, not change its verdict.
