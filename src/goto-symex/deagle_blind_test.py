@@ -22,7 +22,9 @@
 # Case "flags": no bound passes --thread-symmetry (measured slowdown), and
 # --dynamic-array-bound min(max(unwind, 4), 64) for every property but memory
 # safety, where an array cut to K elements would hide an out-of-bounds access;
-# a bound with 7 or more rounds passes --por, any other --no-por.
+# a bound with 7 or more rounds passes --por, any other --no-por; every call
+# passes --malloc-may-fail --malloc-fail-null (SV-COMP conventions since 2026:
+# allocation may fail).
 # Case "suggest": the per-loop limits from --unwind-suggest reach the tool as
 # --unwindset (a loop without a suggestion at 3), a FAILED from that step is
 # reported, and a SUCCESSFUL from it is not: with every other bound giving no
@@ -244,7 +246,8 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
         # 7 = deagle_blind.POR_MIN_ROUNDS
         por, other = ("--por", "--no-por") if rounds >= 7 else ("--no-por", "--por")
         if (got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a
-                or por not in w or other in w):
+                or por not in w or other in w
+                or "--malloc-may-fail" not in w or "--malloc-fail-null" not in w):
             bad.append(a)
     ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
               for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]

@@ -219,6 +219,10 @@ if data_model not in ("", "--32", "--64"):
 
 flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
 flags += data_model + " "
+# SV-COMP conventions since 2026: malloc, calloc and realloc may return NULL
+# (sv-benchmarks c/CONVENTIONS.md); CBMC assumes they succeed unless told
+# otherwise. pthread/bigshot_s2 (valid-memsafety, relabelled false) needs it.
+flags += "--malloc-may-fail --malloc-fail-null "
 if "unreach-call.prp" in property_path:
     flags += ""
 elif "no-data-race.prp" in property_path:
