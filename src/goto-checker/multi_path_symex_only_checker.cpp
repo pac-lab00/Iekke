@@ -164,13 +164,13 @@ public:
 /// context-switch points of the lazy encoding. The formula itself keeps the
 /// usual guards; the BDDs only decide what to remove.
 /// BDDs can grow large: the walk stops after LAZYPO_BDD_PRUNE_CAP seconds
-/// (default 20) and keeps the remaining events. LAZYPO_NO_BDD_PRUNE turns the
+/// (default 5) and keeps the remaining events. LAZYPO_NO_BDD_PRUNE turns the
 /// removal off.
 static std::size_t
 bdd_prune_dead_accesses(symex_target_equationt &equation, messaget &log)
 {
   const char *cap_env = getenv("LAZYPO_BDD_PRUNE_CAP");
-  const double cap = cap_env && atof(cap_env) > 0 ? atof(cap_env) : 20.0;
+  const double cap = cap_env && atof(cap_env) > 0 ? atof(cap_env) : 5.0;
   const auto t0 = std::chrono::steady_clock::now();
   guard_bdd_convertert bdd;
   std::size_t removed = 0;
