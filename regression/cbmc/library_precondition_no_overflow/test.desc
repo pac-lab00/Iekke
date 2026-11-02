@@ -1,0 +1,11 @@
+CORE
+main.c
+--no-assertions --signed-overflow-check --unsigned-overflow-check
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+double free: FAILURE
+--
+The program frees p twice but has no overflow. Checking overflow alone, the
+library's double-free precondition must not make the answer FAILED.

@@ -1,0 +1,10 @@
+CORE
+main.c
+--pointer-check
+^EXIT=10$
+^SIGNAL=0$
+^\[main.precondition_instance.[0-9][0-9]*\] line 11 double free: FAILURE$
+^VERIFICATION FAILED$
+--
+--
+With --pointer-check memory safety is the property: the double free is found.

@@ -1241,6 +1241,35 @@ bool cbmc_parse_optionst::process_goto_program(
                    << " checks that are not races made true" << messaget::eom;
   }
 
+  // The preconditions of library functions (free, memset, ... instantiated
+  // at each call) are memory-safety checks. Without --pointer-check memory
+  // safety is not the property being checked, yet they stayed in the
+  // program: a double free made a no-overflow answer FAILED for a violation
+  // of another property (adutux, 2026-11-02), and the same could happen to
+  // unreach-call. They are made true, as the block above does for --datarace;
+  // an assertion is never assumed, so no path changes.
+  if(
+    !options.get_bool_option("pointer-check") &&
+    !(options.get_bool_option("datarace") &&
+      !options.get_bool_option("assertions")))
+  {
+    std::size_t made_true = 0;
+    for(auto &function : goto_model.goto_functions.function_map)
+      for(auto &instruction : function.second.body.instructions)
+        if(
+          instruction.is_assert() && !instruction.condition().is_true() &&
+          instruction.source_location().get_property_class() ==
+            ID_precondition_instance)
+        {
+          instruction.condition_nonconst() = true_exprt{};
+          ++made_true;
+        }
+    if(made_true != 0)
+      log.status() << "no --pointer-check: " << made_true
+                   << " library memory-safety preconditions made true"
+                   << messaget::eom;
+  }
+
   // add failed symbols
   // needs to be done before pointer analysis
   add_failed_symbols(goto_model.symbol_table);
