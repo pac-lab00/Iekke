@@ -4783,6 +4783,15 @@ static bool with_index_under_if(
     return with_index_under_if(
       to_byte_extract_expr(e).op(), out, found, object);
   }
+  // A read converted to another type, as `return datas[0]` converts a _Bool
+  // element to the int being returned: `(int)(ptr == &obj ? obj[k] : ...)`.
+  // The conversion does not change which element is read. Not looked
+  // through, the read kept the default -1 while the other thread's write of
+  // obj[k] had offset k, so the two never paired: a race on a heap array of
+  // symbolic size was reported absent (pthread-race-challenges/
+  // per-thread-array-join-counter-race-4, no-data-race, expected false).
+  if(e.id() == ID_typecast)
+    return with_index_under_if(to_typecast_expr(e).op(), out, found, object);
   return true;
 }
 
