@@ -1,0 +1,11 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 3 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Control for store-through-own-struct-pointer-values: when thread 1 stores to
+n[2].b, n[2].b is 1 at the end, so asserting 0 must fail.

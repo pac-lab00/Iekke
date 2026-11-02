@@ -1,0 +1,13 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 3 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Two threads store, under a mutex, to different members of one node through
+pointers loaded from the enclosing struct. Neither store may reset the other
+thread's member to a stale value: the leaves a store does not meet are not
+published, so reading them without an event is safe.

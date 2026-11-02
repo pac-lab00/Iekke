@@ -78,6 +78,26 @@ exprt field_sensitivityt::apply(
     const bool index_load = false;
     const optionalt<mp_integer> element_size;
 #endif
+    // The object operand of a store at an undecided offset,
+    // `byte_update(o, offset, v)`: the lowering frames o's untouched bytes
+    // back over themselves, which the program does not read. Expanded by the
+    // plain walk, every leaf of o was recorded as read: on libvsync/hmcslock
+    // a store to one field of a lock struct was paired, on another field,
+    // with a thread writing that one. Read a leaf only under the condition
+    // that the stored bytes meet it (a leaf they cover in part keeps its
+    // other bytes), as the writes are in field_assignments_rec.
+    const bool update_base =
+      !write &&
+      (expr.id() == ID_byte_update_little_endian ||
+       expr.id() == ID_byte_update_big_endian) &&
+      expr.operands().size() == 3 && is_ssa_expr(expr.op0()) &&
+      is_divisible(to_ssa_expr(expr.op0())) &&
+      (expr.op1().type().id() == ID_signedbv ||
+       expr.op1().type().id() == ID_unsignedbv) &&
+      !simplify_expr(expr.op1(), ns).is_constant();
+    const auto update_size = update_base
+                               ? pointer_offset_size(expr.op2().type(), ns)
+                               : optionalt<mp_integer>{};
     bool is_base = true;
     Forall_operands(it, expr)
     {
@@ -98,6 +118,13 @@ exprt field_sensitivityt::apply(
             expr.op1(), from_integer(*element_size, expr.op1().type())},
           *element_size,
           0);
+      }
+      else if(
+        update_base && is_base && update_size.has_value() && *update_size > 0)
+      {
+        *it = get_fields_in_range(
+          ns, state, to_ssa_expr(*it), expr.op1(), *update_size, 0, false,
+          true);
       }
       else
         *it = apply(ns, state, std::move(*it), write);
@@ -286,6 +313,8 @@ exprt field_sensitivityt::get_fields(
     return ssa_expr;
 }
 
+static bool is_own_old_value(const exprt &e, const irep_idt &object);
+
 void field_sensitivityt::field_assignments(
   const namespacet &ns,
   goto_symex_statet &state,
@@ -312,28 +341,54 @@ void field_sensitivityt::field_assignments(
     // publish only the leaves whose bytes the store meets.
     const exprt saved_offset = store_offset;
     const mp_integer saved_size = store_size;
+    const exprt saved_cond = store_cond;
     const irep_idt saved_object = store_object;
     store_offset = nil_exprt{};
+    store_cond = true_exprt{};
     store_object = lhs.get_l1_object_identifier();
-    if(
-      (rhs.id() == ID_byte_update_little_endian ||
-       rhs.id() == ID_byte_update_big_endian) &&
-      rhs.operands().size() == 3 &&
-      (rhs.op1().type().id() == ID_signedbv ||
-       rhs.op1().type().id() == ID_unsignedbv) &&
-      !simplify_expr(rhs.op1(), ns).is_constant())
+    // A store through a pointer with more than one target arrives as
+    // `c ? byte_update(o, offset, v) : o#old`: o is written only under c.
+    // Not recognised, it published every leaf of o: on libvsync/hmcslock an
+    // atomic store to one hmcs_locks[k] field, through a pointer loaded from
+    // leaf_locks, republished leaf_locks itself, which no thread writes after
+    // the spawn, and a false race was reported on it.
+    exprt update = rhs;
+    exprt update_cond = true_exprt{};
+    if(rhs.id() == ID_if)
     {
-      const auto size = pointer_offset_size(rhs.op2().type(), ns);
+      const if_exprt &ite = to_if_expr(rhs);
+      if(is_own_old_value(ite.false_case(), store_object))
+      {
+        update = ite.true_case();
+        update_cond = ite.cond();
+      }
+      else if(is_own_old_value(ite.true_case(), store_object))
+      {
+        update = ite.false_case();
+        update_cond = not_exprt{ite.cond()};
+      }
+    }
+    if(
+      (update.id() == ID_byte_update_little_endian ||
+       update.id() == ID_byte_update_big_endian) &&
+      update.operands().size() == 3 &&
+      (update.op1().type().id() == ID_signedbv ||
+       update.op1().type().id() == ID_unsignedbv) &&
+      !simplify_expr(update.op1(), ns).is_constant())
+    {
+      const auto size = pointer_offset_size(update.op2().type(), ns);
       if(size.has_value() && *size > 0)
       {
-        store_offset = rhs.op1();
+        store_offset = update.op1();
         store_size = *size;
+        store_cond = update_cond;
       }
     }
     field_assignments_rec(
       ns, state, lhs_fs, rhs, target, allow_pointer_unsoundness);
     store_offset = saved_offset;
     store_size = saved_size;
+    store_cond = saved_cond;
     store_object = saved_object;
     run_apply = run_apply_bak;
   }
@@ -519,6 +574,8 @@ void field_sensitivityt::field_assignments_rec(
           binary_relation_exprt{
             offset, ID_gt, from_integer(lo - store_size, offset.type())}};
     }
+    if(store_offset.is_not_nil() && !store_cond.is_true())
+      meets = and_exprt{store_cond, meets};
     const goto_symex_statet::shared_write_condition_scopet write_cond{
       state, meets};
 
@@ -751,7 +808,8 @@ exprt field_sensitivityt::get_fields_in_range(
   const exprt &offset,
   const mp_integer &size,
   const mp_integer &lo,
-  bool l2) const
+  bool l2,
+  bool members) const
 {
   // Unlike get_fields, which renames each part as a whole once it is built,
   // rename every leaf here, under the conditions of all the parts that hold
@@ -779,7 +837,7 @@ exprt field_sensitivityt::get_fields_in_range(
       state, meets};
     return is_divisible(tmp)
              ? get_fields_in_range(
-                 ns, state, tmp, offset, size, at, rename_leaves)
+                 ns, state, tmp, offset, size, at, rename_leaves, members)
              : rename_leaves ? state.rename(exprt{tmp}, ns).get()
                              : static_cast<exprt>(tmp);
   };
@@ -798,11 +856,12 @@ exprt field_sensitivityt::get_fields_in_range(
       tmp.remove_level_2();
       tmp.set_expression(member_exprt{struct_op, comp.get_name(), comp.type()});
       const auto &at = offsets[comp_index++];
-      // Members are not conditioned: a load of one member of an element
-      // still reads the element, and the untouched members of a store's
-      // base are written back from what was read, which has to be current.
+      // Members are not conditioned (unless \p members): a load of one
+      // member of an element still reads the element, and the untouched
+      // members of a store's base are written back from what was read,
+      // which has to be current.
       fields.push_back(part(std::move(tmp), at.has_value() ? lo + *at : lo,
-                            false));
+                            members && at.has_value()));
     }
     return struct_exprt(std::move(fields), ssa_expr.type());
   }

@@ -1,0 +1,14 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A store through a pointer loaded from the struct it points into becomes a
+byte_update of the whole struct at an undecided offset, under the condition
+that the pointer targets that struct. Only the leaves the stored bytes meet
+may be published as written: leaf[1], which no thread writes after the
+spawn, was reported racing (libvsync/hmcslock, no-data-race).

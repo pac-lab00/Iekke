@@ -179,7 +179,9 @@ private:
   /// the condition that they do, so its read events carry it. Struct members
   /// are not conditioned. Each leaf is renamed on its own, under the
   /// conditions of the elements that hold it, when \p ssa_expr is L2 or
-  /// \p l2 is set.
+  /// \p l2 is set. With \p members, struct members are conditioned too: for
+  /// the base of a byte_update, whose untouched leaves are not published
+  /// (field_assignments_rec), so their values need not be current.
   exprt get_fields_in_range(
     const namespacet &ns,
     goto_symex_statet &state,
@@ -187,7 +189,8 @@ private:
     const exprt &offset,
     const mp_integer &size,
     const mp_integer &lo,
-    bool l2 = false) const;
+    bool l2 = false,
+    bool members = false) const;
 
   /// whether or not to invoke \ref field_sensitivityt::apply
   bool run_apply = true;
@@ -211,6 +214,9 @@ private:
   /// undecided offset: that offset (else nil) and the size of v in bytes.
   exprt store_offset = nil_exprt{};
   mp_integer store_size = 0;
+  /// With \ref store_offset: the condition under which the store happens at
+  /// all, for a `c ? byte_update(...) : o#old` (else true).
+  exprt store_cond = true_exprt{};
 
   /// While \ref field_assignments runs: the object assigned to (its L1
   /// object identifier), so that its own old value can be told apart from a
