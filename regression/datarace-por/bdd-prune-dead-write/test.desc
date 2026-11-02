@@ -1,0 +1,13 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 2
+^EXIT=0$
+^SIGNAL=0$
+^BDD prune: removed 1 shared accesses with a contradictory guard
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+The thread writes g only under c && !c, through two separately named guards,
+so the expression simplifier keeps the write; as BDDs the guard is false and
+the write is removed before the encoding.
