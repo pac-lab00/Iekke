@@ -395,6 +395,13 @@ bvt bv_pointerst::convert_pointer_type(const exprt &expr)
   {
     return SUB::convert_if(to_if_expr(expr));
   }
+  else if(expr.id() == ID_let)
+  {
+    // The byte-update lowering binds an update value once by a let, which can
+    // stand at a pointer-typed member of the struct it rebuilds. Falling
+    // through to conversion_failed gave such a member free bits.
+    return SUB::convert_let(to_let_expr(expr));
+  }
   else if(expr.id()==ID_index)
   {
     return SUB::convert_index(to_index_expr(expr));
