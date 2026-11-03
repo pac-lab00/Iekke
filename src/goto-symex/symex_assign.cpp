@@ -338,6 +338,16 @@ void symex_assignt::assign_non_struct_symbol(
     state.source,
     current_assignment_type);
 
+  if(
+    l2_full_lhs == l2_lhs &&
+    (l2_lhs.type().id() == ID_bool || l2_lhs.type().id() == ID_signedbv ||
+     l2_lhs.type().id() == ID_unsignedbv) &&
+    state.write_is_shared(lhs, ns) !=
+      goto_symex_statet::write_is_shared_resultt::SHARED)
+  {
+    state.note_definition(l2_lhs.get_identifier(), assignment.rhs);
+  }
+
   if(monolithic_store)
   {
     const unsigned section = state.atomic_section_id;

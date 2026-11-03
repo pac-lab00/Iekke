@@ -16,6 +16,9 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <iostream>
 #include <memory>
 
+#include <unordered_map>
+#include <unordered_set>
+
 #include <util/arith_tools.h>
 #include <util/config.h>
 #include <util/exit_codes.h>
@@ -1159,6 +1162,155 @@ static void infer_allocation_types(goto_modelt &goto_model, messaget &log)
                    << messaget::eom;
 }
 
+/// Split on a small choice (on by default; LAZYPO_NO_SPLIT_CHOICES turns it
+/// off). A local integer that receives a nondeterministic value
+/// (`x = __VERIFIER_nondet_*()`) and is then used as the index of an array of
+/// at most 16 elements is split by value. After the choice, the function
+/// branches on `x == 0`, ..., `x == N-1`; each branch sets x to that constant
+/// and runs its own copy of the rest of the function, the original rest
+/// handling every other value. The branches together are exactly the original
+/// behaviours. In each copy the index is a constant, so an object selected
+/// through it is one object instead of N for the points-to analysis
+/// (goblint race_reach_91: every walk step of a thread touched all ten lists).
+/// The original rest stays as the leftover case; the path bounds of symex
+/// (goto_symext::decide_by_path_bounds) remove it when the program's own range
+/// check and the failed cases rule out every other value.
+/// One split per function; skipped when the rest of the function is entered
+/// other than at its start, or jumps back before it, or x's address is taken,
+/// or the copies would exceed max_copied_instructions.
+static std::size_t split_small_choices(goto_modelt &goto_model)
+{
+  const std::size_t max_copied_instructions = 5000;
+  std::size_t splits = 0;
+  for(auto &entry : goto_model.goto_functions.function_map)
+  {
+    goto_programt &body = entry.second.body;
+    if(body.instructions.empty() || !body.instructions.back().is_end_function())
+      continue;
+    const goto_programt::targett end_it = std::prev(body.instructions.end());
+    for(auto it = body.instructions.begin(); it != end_it; ++it)
+    {
+      if(!it->is_assign())
+        continue;
+      const exprt &lhs = it->assign_lhs();
+      const exprt &rhs = it->assign_rhs();
+      if(
+        lhs.id() != ID_symbol || rhs.id() != ID_symbol ||
+        (lhs.type().id() != ID_signedbv && lhs.type().id() != ID_unsignedbv) ||
+        id2string(to_symbol_expr(rhs).get_identifier())
+            .find("return_value___VERIFIER_nondet") == std::string::npos)
+      {
+        continue;
+      }
+      const irep_idt var = to_symbol_expr(lhs).get_identifier();
+      const symbolt *sym = goto_model.symbol_table.lookup(var);
+      if(sym == nullptr || sym->is_static_lifetime)
+        continue;
+      const goto_programt::targett tail_begin = std::next(it);
+      if(tail_begin == end_it)
+        continue;
+
+      std::unordered_set<const goto_programt::instructiont *> in_tail;
+      std::vector<goto_programt::targett> tail;
+      for(auto t = tail_begin; t != end_it; ++t)
+      {
+        in_tail.insert(&*t);
+        tail.push_back(t);
+      }
+      mp_integer n = 0;
+      bool address_taken = false;
+      const auto visit = [&](const exprt &e) {
+        e.visit_pre([&](const exprt &x) {
+          if(
+            x.id() == ID_address_of &&
+            to_address_of_expr(x).object().id() == ID_symbol &&
+            to_symbol_expr(to_address_of_expr(x).object()).get_identifier() ==
+              var)
+          {
+            address_taken = true;
+          }
+          if(x.id() == ID_index)
+          {
+            const index_exprt &ix = to_index_expr(x);
+            if(
+              ix.index().id() == ID_symbol &&
+              to_symbol_expr(ix.index()).get_identifier() == var &&
+              ix.array().type().id() == ID_array)
+            {
+              const auto size =
+                numeric_cast<mp_integer>(to_array_type(ix.array().type()).size());
+              if(size.has_value() && *size >= 2 && *size <= 16)
+                n = std::max(n, *size);
+            }
+          }
+        });
+      };
+      bool bad_jump = false;
+      for(auto t = body.instructions.begin(); t != end_it; ++t)
+      {
+        t->apply(visit);
+        if(!t->is_goto() && !t->is_start_thread())
+          continue;
+        const bool from_tail = in_tail.count(&*t) != 0;
+        for(const auto &target : t->targets)
+        {
+          const bool to_tail = in_tail.count(&*target) != 0;
+          if(from_tail && !to_tail && target != end_it)
+            bad_jump = true; // jumps back before the split
+          if(!from_tail && to_tail && target != tail_begin)
+            bad_jump = true; // enters the rest in its middle
+        }
+      }
+      if(
+        n == 0 || address_taken || bad_jump ||
+        n * tail.size() > max_copied_instructions)
+      {
+        continue;
+      }
+
+      const source_locationt &loc = it->source_location();
+      // the original rest: every value outside 0 .. n-1; then to the end
+      body.insert_before(end_it, goto_programt::make_goto(end_it, loc));
+      std::vector<goto_programt::targett> dispatch;
+      std::vector<goto_programt::targett> case_start;
+      for(mp_integer k = 0; k < n; ++k)
+      {
+        dispatch.push_back(body.insert_before(
+          tail_begin,
+          goto_programt::make_goto(
+            end_it, equal_exprt{lhs, from_integer(k, lhs.type())}, loc)));
+        const goto_programt::targett start = body.insert_before(
+          end_it,
+          goto_programt::make_assignment(lhs, from_integer(k, lhs.type()), loc));
+        case_start.push_back(start);
+        std::unordered_map<const goto_programt::instructiont *, goto_programt::targett>
+          copy_of;
+        std::vector<goto_programt::targett> copies;
+        for(const auto &t : tail)
+        {
+          const goto_programt::targett c = body.insert_before(end_it, *t);
+          copy_of[&*t] = c;
+          copies.push_back(c);
+        }
+        for(auto &c : copies)
+          for(auto &target : c->targets)
+          {
+            const auto m = copy_of.find(&*target);
+            if(m != copy_of.end())
+              target = m->second;
+          }
+        body.insert_before(end_it, goto_programt::make_goto(end_it, loc));
+      }
+      for(std::size_t k = 0; k < dispatch.size(); ++k)
+        dispatch[k]->set_target(case_start[k]);
+      ++splits;
+      break; // one split per function
+    }
+  }
+  goto_model.goto_functions.update();
+  return splits;
+}
+
 bool cbmc_parse_optionst::process_goto_program(
   goto_modelt &goto_model,
   const optionst &options,
@@ -1268,6 +1420,13 @@ bool cbmc_parse_optionst::process_goto_program(
       log.status() << "no --pointer-check: " << made_true
                    << " library memory-safety preconditions made true"
                    << messaget::eom;
+  }
+
+  if(getenv("LAZYPO_NO_SPLIT_CHOICES") == nullptr)
+  {
+    const std::size_t splits = split_small_choices(goto_model);
+    if(splits != 0)
+      log.status() << "split small choices: " << splits << messaget::eom;
   }
 
   // add failed symbols

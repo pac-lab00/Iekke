@@ -703,6 +703,10 @@ void multi_path_symex_only_checkert::generate_equation()
     }
   }
 
+  if(symex.path_bound_decisions != 0)
+    log.status() << "path bounds: " << symex.path_bound_decisions
+                 << " branches decided" << messaget::eom;
+
   // NOT suitable as a default, measured over the whole 3220-pair corpus on
   // 2026-10-08. It removes every false alarm the corpus has -- mcslock,
   // rec_mcslock, cnalock and 28-race_reach_82-list_racefree, 4 -> 0 -- and

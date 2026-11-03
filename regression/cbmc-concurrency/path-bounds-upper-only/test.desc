@@ -1,0 +1,14 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^split small choices: 1$
+^path bounds: [1-9][0-9]* branches decided$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Only an upper bound: in the leftover case j <= 3 and j is none of 0..3, so
+j >= 0 is decided false, so the else branch stays: j == -2 is possible there
+and fails the assertion. Deciding j >= 0 true would lose the bug.
