@@ -1,4 +1,5 @@
 SRC = bmc_util.cpp \
+      cp2_probe.cpp \
       counterexample_beautification.cpp \
       cover_goals_report_util.cpp \
       incremental_goto_checker.cpp \
@@ -10,6 +11,7 @@ SRC = bmc_util.cpp \
       multi_path_symex_only_checker.cpp \
       properties.cpp \
       report_util.cpp \
+      round_incremental_symex_checker.cpp \
       single_loop_incremental_symex_checker.cpp \
       single_path_symex_checker.cpp \
       single_path_symex_only_checker.cpp \

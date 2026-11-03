@@ -1,0 +1,18 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --yaml-witness -
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 16, column: 33}, thread_id: 0}}\]$
+^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 8, column: 38}, thread_id: 1}}\]$
+^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 4}, thread_id: 2}}\]$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Both threads are joined right after they are created, so the front end turns
+each into a plain call in the thread that creates it (goto_convert_functions,
+the create/join collapse), and the trace runs everything as thread 0. The
+program still has three threads, and reach_error() is called by the third: the
+witness has to register both threads at their pthread_create and put the
+target in thread 2, or a validator looks for the call in main.

@@ -48,12 +48,15 @@
 # because 65% of correct SUCCESSFULs on expected-true tasks have incomplete
 # unwinding. Here the bounded safe answer is still reported -- it is simply
 # reported last, after the budget has been spent trying to refute it.
+import datetime
+import hashlib
 import os
 import re
 import signal
 import subprocess
 import sys
 import time
+import uuid
 
 # Line by line, not in blocks. Under BenchExec stdout is a file, and a run
 # killed from outside loses whatever was still in the buffer -- every
@@ -234,6 +237,79 @@ elif "valid-memsafety.prp" in property_path:
 else:
     print("Unknown property: %s" % property_path)
     sys.exit(0)
+
+
+# Witnesses in the YAML format of sv-witnesses: since 2027 a TRUE or FALSE
+# answer for unreach-call and no-overflow without one scores nothing ("witness
+# missing"), and the validators look for witness.yml in the working
+# directory. A TRUE gets a correctness witness without invariants, which the
+# validators confirmed for Theta in 2027 (pthread/bigshot_s and 157 more); a
+# FALSE gets the violation sequence the tool writes from its counterexample
+# (--yaml-witness: thread creations and the violation), wrapped here in the
+# metadata only the wrapper knows. Memory safety scored without witnesses, so
+# none is written there: an unconfirmed one could only lose the points.
+# No-data-race in 2027 scored a TRUE without a witness (Iekke: 688 correct at
+# +2) but a FALSE only with a confirmed one (209 "correct-unconfirmed" at 0;
+# Theta's YAML race witnesses -- the two racing accesses as targets of one
+# segment -- were confirmed): there only the violation witness is written.
+WITNESS = "witness.yml"
+WITNESS_CONTENT = "witness-content.yml"
+WANTS_CORRECTNESS_WITNESS = ("unreach-call.prp" in property_path
+                             or "no-overflow.prp" in property_path)
+WANTS_WITNESS = (WANTS_CORRECTNESS_WITNESS
+                 or "no-data-race.prp" in property_path)
+if WANTS_WITNESS:
+    flags += "--yaml-witness %s " % WITNESS_CONTENT
+
+
+def quoted(s):
+    return "'" + s.replace("'", "''") + "'"
+
+
+def write_witness(entry_type, format_version, content):
+    """Write witness.yml: one entry of entry_type around the given content
+    (YAML list lines, or None for an empty list)."""
+    with open(program_path, "rb") as f:
+        sha256 = hashlib.sha256(f.read()).hexdigest()
+    with open(property_path) as f:
+        specification = " ".join(l.strip() for l in f if l.strip())
+    lines = [
+        "- entry_type: %s" % quoted(entry_type),
+        "  metadata:",
+        "    format_version: %s" % quoted(format_version),
+        "    uuid: %s" % quoted(str(uuid.uuid4())),
+        "    creation_time: %s" % quoted(datetime.datetime.now(
+            datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        "    producer:",
+        "      name: 'Iekke'",
+        "      version: '4.1.0'",
+        "    task:",
+        "      input_files:",
+        "      - %s" % quoted(os.path.basename(program_path)),
+        "      input_file_hashes:",
+        "        %s: %s" % (quoted(program_path), quoted(sha256)),
+        "      specification: %s" % quoted(specification),
+        "      data_model: %s" % quoted("LP64" if data_model == "--64" else "ILP32"),
+        "      language: 'C'",
+    ]
+    if content:
+        lines.append("  content:")
+        lines += ["  " + l for l in content.splitlines()]
+    else:
+        lines.append("  content: []")
+    with open(WITNESS, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_violation_witness():
+    """The violation witness of the last run, if the tool wrote one."""
+    try:
+        with open(WITNESS_CONTENT) as f:
+            content = f.read()
+    except OSError:
+        return
+    if content.strip():
+        write_witness("violation_sequence", "2.2", content)
 
 
 def verdict_of(text):
@@ -433,6 +509,8 @@ for unwind, rounds, extra in bounds():
     # Merged, not concatenated: the verdict is the last line of the run,
     # and stdout + stderr glued end to end puts every warning after it, so
     # the verdict stops being last and every run reads as "no verdict".
+    if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
+        os.remove(WITNESS_CONTENT)
     current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True,
                                errors="replace", start_new_session=True)
@@ -478,6 +556,8 @@ for unwind, rounds, extra in bounds():
                        "FAILED": "violation at this bound"}.get(verdict, "no verdict"))
 
     if verdict == "FAILED":
+        if WANTS_WITNESS:
+            write_violation_witness()
         print(out)
         print("FAILED")
         sys.exit(0)
@@ -505,6 +585,8 @@ for unwind, rounds, extra in bounds():
     # rounds, so it must not end the search.
 
 if bounded_safe is not None:
+    if WANTS_CORRECTNESS_WITNESS:
+        write_witness("invariant_set", "2.1", None)
     print(bounded_safe)
     print("SUCCESSFUL")
     sys.exit(0)

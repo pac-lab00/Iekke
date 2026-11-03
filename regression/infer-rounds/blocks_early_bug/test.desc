@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 6 --infer-rounds
+^EXIT=10$
+^SIGNAL=0$
+^Infer rounds: static round bound 7$
+^Infer rounds: block of 3 round
+^Infer rounds: violation found with 2 round
+^VERIFICATION FAILED$
+--
+^Infer rounds: block of 7 round
+^VERIFICATION SUCCESSFUL$
+--
+Same program as blocks_deep_bug with an assertion main falsifies as soon as
+it runs after t1's first write: 2 rounds. Found in the first block of 3
+rounds, so the formula with B = 7 rounds is never built -- which is the
+point of the first block.

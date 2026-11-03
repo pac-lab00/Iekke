@@ -1,0 +1,18 @@
+CORE
+main.c
+--unwind 6 --infer-rounds
+^EXIT=10$
+^SIGNAL=0$
+^Infer rounds: static round bound 7$
+^Infer rounds: block of 3 round
+^Infer rounds: no violation with 3 round
+^Infer rounds: block of 7 round
+^Infer rounds: violation found with 6 round
+^VERIFICATION FAILED$
+--
+^Infer rounds: block of [124568] round
+^VERIFICATION SUCCESSFUL$
+--
+fib_unsafe with N = 5: the bug needs 6 rounds (5 with --rounds 5 is
+SUCCESSFUL, 6 FAILED). B = 7 > --infer-rounds-direct (6), so the schedule is
+a block of 3 rounds and then B directly -- no block in between.

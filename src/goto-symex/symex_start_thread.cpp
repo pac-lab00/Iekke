@@ -98,6 +98,20 @@ void goto_symext::symex_start_thread(statet &state)
 
   // record this
   target.spawn(creation_guard, state.source, new_thread_nr);
+  {
+    source_locationt call_site = instruction.source_location();
+    for(auto frame = state.call_stack().rbegin();
+        frame != state.call_stack().rend();
+        ++frame)
+    {
+      if(frame->function_identifier == "pthread_create")
+      {
+        call_site = frame->calling_location.pc->source_location();
+        break;
+      }
+    }
+    target.SSA_steps.back().spawn_call_location = call_site;
+  }
 
   if(merged)
   {

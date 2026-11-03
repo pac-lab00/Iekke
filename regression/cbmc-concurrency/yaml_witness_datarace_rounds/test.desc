@@ -1,0 +1,18 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --no-assertions --datarace --yaml-witness -
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 14, column: 35}, thread_id: 0}}\]$
+^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 15}, thread_id: 0}}, {waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 7}, thread_id: 1}}\]$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The YAML violation witness of a data race found by the round-robin encoding:
+the read of x in main (line 15) and the write of x in the created thread
+(line 7), together in one segment, after the creation of that thread. Under
+--rounds the race assertion is made at the first step of the equation, so
+its property id is not "datarace" (here it is `.recursion`): the witness
+writer has to recognise the race by the assertion's comment, or it writes
+no witness at all.

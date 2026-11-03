@@ -1,0 +1,11 @@
+CORE
+main.c
+--rounds 2 --unwind 2
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=2 path=2 max=3 
+--
+at max rounds
+^warning: ignoring
+--
+Below the cap nothing changes: the bound of handoff is 2 < 3.

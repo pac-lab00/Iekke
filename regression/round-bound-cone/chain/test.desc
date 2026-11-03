@@ -1,0 +1,22 @@
+CORE
+main.c
+--unwind 6 --infer-rounds
+^EXIT=10$
+^SIGNAL=0$
+^Round bound (static): count=11 path=6 
+^Round bound (property cone): count=6 path=4 blocks=
+^Infer rounds: static round bound 4$
+^Infer rounds: violation found with 3 round(s)
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The value 8 reaches the assertion only along t1 <-> t2 -> t3 -> main: j is 8
+after four alternations of t1 and t2 (3 rounds, --rounds 2 is SUCCESSFUL),
+t3 copies it to x and main reads x. t4 and t5 ping-pong on a and b, which
+nothing in that chain reads, and push the bound on every block to 6. The cone
+of the assertion follows main's read of x to t3's write, t3's read of j to the
+writes of t2, and from there to t1: it keeps the chain and drops t4 and t5, so
+the bound is 4 >= 3 and --infer-rounds finds the bug. Following only program
+order (no flow edges) the cone would be main alone, the bound 1, and the
+answer a wrong SUCCESSFUL.

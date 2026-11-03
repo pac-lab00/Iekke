@@ -1,0 +1,18 @@
+CORE
+main.c
+--rounds 2 --unwind 3
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=4 path=4 
+--
+^warning: ignoring
+--
+fib_unsafe with N = 2. Backward-edge targets: main's final block (it reads
+what both workers write) and both blocks of t1 (t2 reads i and writes j) --
+count = 1 + 3. The heaviest path is t2.1 -> t1.1 -> t2.2 -> t1.2 -> main,
+three backward edges, and it is a real execution: with the round-robin order
+main, t1, t2 it runs t2.1 in round 1, t1.1 and t2.2 in round 2, t1.2 in round
+3, and main's read can only follow in round 4. So path = 4 = N + 2 rounds to
+explore everything, one more than the N + 1 at which fib_unsafe-N's bug shows
+up (the calibration table): reaching one bug and covering every execution are
+different depths.

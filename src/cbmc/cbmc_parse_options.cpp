@@ -46,6 +46,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <goto-checker/multi_path_symex_checker.h>
 #include <goto-checker/multi_path_symex_only_checker.h>
 #include <goto-checker/properties.h>
+#include <goto-checker/round_incremental_symex_checker.h>
 #include <goto-checker/single_loop_incremental_symex_checker.h>
 #include <goto-checker/single_path_symex_checker.h>
 #include <goto-checker/single_path_symex_only_checker.h>
@@ -224,6 +225,45 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     cmdline.isset("thread-creation-bound")
       ? cmdline.get_value("thread-creation-bound")
       : std::string("2"));
+
+  // --infer-rounds chooses the round count itself (goto-symex/round_bound.h):
+  // it turns the round-robin encoding on even without --rounds, whose value it
+  // then ignores, and it needs partial-order reduction, without which "no
+  // canonical schedule needs another round" is never true.
+  if(cmdline.isset("infer-rounds"))
+  {
+    if(cmdline.isset("no-por"))
+    {
+      log.error() << "--infer-rounds needs partial-order reduction: "
+                     "drop --no-por"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    if(cmdline.isset("datarace"))
+    {
+      log.error() << "--infer-rounds is not validated with --datarace"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    options.set_option("infer-rounds", true);
+    options.set_option(
+      "max-rounds",
+      cmdline.isset("max-rounds") ? cmdline.get_value("max-rounds")
+                                  : std::string("25"));
+    options.set_option(
+      "infer-rounds-first",
+      cmdline.isset("infer-rounds-first")
+        ? cmdline.get_value("infer-rounds-first")
+        : std::string("3"));
+    options.set_option(
+      "infer-rounds-direct",
+      cmdline.isset("infer-rounds-direct")
+        ? cmdline.get_value("infer-rounds-direct")
+        : std::string("6"));
+    if(!cmdline.isset("rounds"))
+      options.set_option("rounds", std::string("1"));
+    options.set_option("por", true);
+  }
 
   // Give an array allocated with a non-constant number of elements n a
   // constant number K, under the condition n <= K, cut like an unwinding
@@ -571,6 +611,13 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     }
   }
 
+  if(cmdline.isset("yaml-witness"))
+  {
+    options.set_option("yaml-witness", cmdline.get_value("yaml-witness"));
+    options.set_option("stop-on-fail", true);
+    options.set_option("trace", true);
+  }
+
   if(cmdline.isset("graphml-witness"))
   {
     options.set_option("graphml-witness", cmdline.get_value("graphml-witness"));
@@ -817,7 +864,14 @@ int cbmc_parse_optionst::doit()
 
   std::unique_ptr<goto_verifiert> verifier = nullptr;
 
-  if(options.is_set("incremental-loop"))
+  if(options.get_bool_option("infer-rounds"))
+  {
+    // One call does the whole round search and stops at the first violation.
+    verifier = util_make_unique<
+      stop_on_fail_verifiert<round_incremental_symex_checkert>>(
+      options, ui_message_handler, goto_model);
+  }
+  else if(options.is_set("incremental-loop"))
   {
     if(options.get_bool_option("stop-on-fail"))
     {

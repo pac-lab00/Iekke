@@ -1,0 +1,11 @@
+CORE
+main.c
+--rounds 2 --unwind 2
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=2 path=2 
+--
+^warning: ignoring
+--
+The worker (thread 1) writes x and main (thread 0) reads it after the spawn:
+one backward edge, so a second round is needed for main to see the write.

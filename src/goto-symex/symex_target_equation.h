@@ -436,6 +436,12 @@ public:
   // __SZH_ADD_BEGIN__
   bool use_cat = false;
   cat_modulet cat;
+  /// --infer-rounds: convert() gives every assertion its handle (cond_handle,
+  /// which the goals are built on) but asserts no "some assertion fails"
+  /// disjunction, so the formula says nothing about the property until a
+  /// checker adds the goal constraint in a context of its own -- the
+  /// completeness question it also asks must be free of the property.
+  bool assertion_handles_only = false;
   bool use_deagle_closure = false;
   bool use_deagle_icd = false;
   bool use_deagle_segment = false;

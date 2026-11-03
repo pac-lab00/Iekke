@@ -4,6 +4,7 @@
 #ifndef CPROVER_GOTO_SYMEX_lazy_po_H
 #define CPROVER_GOTO_SYMEX_lazy_po_H
 
+#include "round_bound.h"
 #include "symex_target_equation.h"
 
 #include <cstdint>
@@ -33,7 +34,31 @@ public:
 
   void operator()(symex_target_equationt &, message_handlert &);
 
+  /// --infer-rounds: also define the empty-round symbols (round_bound.h), so
+  /// that a checker can choose the round count by assumptions.
+  bool empty_round_literals = false;
+
+  /// The static round bound of `equation`, min(path, max_rounds) (0 = no
+  /// cap), computed with this object's settings. It runs the same event
+  /// collection operator() does, which rewrites the equation's active-thread
+  /// statements and annotates its steps: pass a copy. `at_cap` tells whether
+  /// the cap, rather than the bound itself, was the answer.
+  std::size_t static_round_bound(
+    symex_target_equationt &equation,
+    std::size_t max_rounds,
+    bool &at_cap);
+
 private:
+  /// compute_round_bound on the events collect_reads_and_writes gathered
+  round_boundt bound_from_events(std::size_t max_rounds) const;
+  /// the same on the events of the property cone (round_bound.h)
+  round_boundt cone_bound_from_events(std::size_t max_rounds) const;
+  property_conet property_cone_events() const;
+  std::vector<round_bound_eventt> round_bound_events() const;
+  void create_empty_round_literals(symex_target_equationt &equation);
+  /// LAZYPO_FIXPOINT experiment: fill fixpoint_projection() (round_bound.h)
+  void collect_fixpoint_projection();
+
   const namespacet &ns;
   const std::size_t rounds;
   const bool datarace;
@@ -343,6 +368,11 @@ private:
     unsigned trace_order);
 
   void build_atomic_blocks();
+
+  // Recorded by collect_reads_and_writes for compute_round_bound
+  // (round_bound.h); nothing else reads them.
+  spawn_pointst spawn_points;
+  unsigned spawns_seen = 0;
 
   void validate_access_order() const;
 

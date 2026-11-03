@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 3 --infer-rounds
+^EXIT=0$
+^SIGNAL=0$
+^Infer rounds: static round bound 4$
+^Infer rounds: complete at 4 round
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Safe (i and j stay below 100). The static bound is 4 (round-bound/pingpong),
+no round shows a violation, and reaching the static bound is complete.

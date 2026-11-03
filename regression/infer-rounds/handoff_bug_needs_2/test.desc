@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 2 --infer-rounds
+^EXIT=10$
+^SIGNAL=0$
+^Infer rounds: no violation with 1 round
+^Infer rounds: violation found with 2 round
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+With one round main runs before the worker and reads 0; the worker's write is
+a backward edge into main, so the violation needs exactly 2 rounds.

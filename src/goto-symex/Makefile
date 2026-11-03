@@ -6,6 +6,19 @@ SRC = auto_objects.cpp \
       goto_symex.cpp \
       goto_symex_state.cpp \
       lazy_po.cpp \
+      lazy_po_array_rf.cpp \
+      lazy_po_base.cpp \
+      lazy_po_canonical.cpp \
+      lazy_po_collect.cpp \
+      lazy_po_datarace.cpp \
+      lazy_po_index_chain.cpp \
+      lazy_po_narrowing.cpp \
+      lazy_po_private.cpp \
+      lazy_po_rounds.cpp \
+      lazy_po_symbols.cpp \
+      lazy_po_symmetry.cpp \
+      lazy_po_windows.cpp \
+      round_bound.cpp \
       memory_model.cpp \
       memory_model_pso.cpp \
       memory_model_sc.cpp \
@@ -39,6 +52,7 @@ SRC = auto_objects.cpp \
       symex_start_thread.cpp \
       symex_target.cpp \
       symex_target_equation.cpp \
+      symex_target_equation_deagle.cpp \
       symex_throw.cpp \
       thread_exclusivity.cpp \
       symmetric_arrays.cpp \

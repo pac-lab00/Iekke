@@ -1,0 +1,16 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --yaml-witness -
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 14}, thread_id: 0}}\]$
+--
+^VERIFICATION SUCCESSFUL$
+function_enter
+--
+The YAML violation witness (sv-witnesses 2.2) of an unreach-call bug: the
+target is the call of reach_error() on line 14 -- not the assertion inside
+reach_error() on line 3, which is where the failing assertion of the trace
+is. The violation is in main, so no thread needs a name and none is
+registered.

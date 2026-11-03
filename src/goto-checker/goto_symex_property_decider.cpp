@@ -98,6 +98,32 @@ void goto_symex_property_decidert::add_constraint_from_goals(
   solver->decision_procedure().set_to_true(disjunction(disjuncts));
 }
 
+void goto_symex_property_decidert::reset_solver(const namespacet &ns)
+{
+  solver.reset();
+  goal_map.clear();
+  solver_factoryt solvers(
+    options,
+    ns,
+    ui_message_handler,
+    ui_message_handler.get_ui() == ui_message_handlert::uit::XML_UI);
+  solver = solvers.get_solver();
+}
+
+exprt goto_symex_property_decidert::goals_disjunction(
+  std::function<bool(const irep_idt &)> select_property) const
+{
+  exprt::operandst disjuncts;
+  for(const auto &goal_pair : goal_map)
+    if(
+      select_property(goal_pair.first) &&
+      !goal_pair.second.condition.is_false())
+    {
+      disjuncts.push_back(goal_pair.second.condition);
+    }
+  return disjunction(disjuncts);
+}
+
 decision_proceduret::resultt goto_symex_property_decidert::solve()
 {
   return solver->decision_procedure()();

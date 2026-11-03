@@ -1,0 +1,12 @@
+CORE
+main.c
+--rounds 2 --unwind 2
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=1 path=1 
+--
+^warning: ignoring
+--
+main writes x only before spawning the worker, which therefore cannot be
+ordered before that write: the conflict on x is not a backward edge. Without
+the ancestor rule in compute_round_bound this reports count=2.

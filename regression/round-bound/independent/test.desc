@@ -1,0 +1,12 @@
+CORE
+main.c
+--rounds 2 --unwind 2
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=1 path=1 
+--
+^warning: ignoring
+--
+No object is shared between the two threads (the active flag of the worker
+is written by main only up to the spawn, which the worker cannot affect), so
+one round explores everything.

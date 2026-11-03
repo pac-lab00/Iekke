@@ -462,6 +462,66 @@ void build_goto_trace(
           blamed_accesses.erase(step);
     }
   }
+  // Phase symbols of accesses outside the pairing that failed are left free,
+  // so the set above can hold accesses of several objects, and of the
+  // pairing that did not fail. The race is the pairing whose conjunction
+  // holds (lazy_pot::handling_datarace: phases, same_round and no_interf, or
+  // their _swap versions), on an object whose two phases hold for it; of that
+  // object, the first access in each of the two roles. Only those two stay:
+  // on thread-join-counter-outer-race-4 the witness otherwise paired the read
+  // of `data` with a write of `threads_alive` in another thread.
+  {
+    const auto holds = [&](const std::string &name) {
+      return decision_procedure.get(symbol_exprt(name, bool_typet())).is_true();
+    };
+    const bool normal =
+      holds("phases") && holds("same_round") && holds("no_interf");
+    const bool swap = !normal && holds("phases_swap") &&
+                      holds("same_round_swap") && holds("no_interf_swap");
+    if(normal || swap)
+    {
+      const std::string pairing = normal ? "" : "_swap";
+      const std::vector<std::string> first_roles =
+        normal ? std::vector<std::string>{"_phase_1"}
+               : std::vector<std::string>{"_phase_1_swap"};
+      const std::vector<std::string> second_roles =
+        normal ? std::vector<std::string>{"_phase_2_w", "_phase_2_r"}
+               : std::vector<std::string>{"_phase_2_swap_w"};
+      std::map<irep_idt, std::pair<const SSA_stept *, const SSA_stept *>>
+        by_object;
+      const SSA_stept *race_first = nullptr, *race_second = nullptr;
+      for(const auto &step : target.SSA_steps)
+      {
+        if(blamed_accesses.count(&step) == 0)
+          continue;
+        const irep_idt object = step.ssa_lhs.get_l1_object_identifier();
+        const std::string v = id2string(object);
+        if(!holds(v + "_phase_1" + pairing) || !holds(v + "_phase_2" + pairing))
+          continue;
+        const std::string suffix =
+          "_T" + std::to_string(step.round_robin_thread) + "_L" +
+          std::to_string(step.round_robin_label) + "_N" +
+          std::to_string(step.round_robin_num);
+        auto &found = by_object[object];
+        for(const auto &role : first_roles)
+          if(found.first == nullptr && holds(v + role + suffix))
+            found.first = &step;
+        for(const auto &role : second_roles)
+          if(found.second == nullptr && holds(v + role + suffix))
+            found.second = &step;
+        if(
+          found.first != nullptr && found.second != nullptr &&
+          found.first->round_robin_thread != found.second->round_robin_thread)
+        {
+          race_first = found.first;
+          race_second = found.second;
+          break;
+        }
+      }
+      if(race_first != nullptr)
+        blamed_accesses = {race_first, race_second};
+    }
+  }
 
   // First sort the SSA steps by time, in the process dropping steps
   // we definitely don't want to retain in the final trace:
@@ -488,8 +548,9 @@ void build_goto_trace(
     if(!SSA_step.round_robin_exec_symbols.empty() && !has_round_robin_time)
       continue;
 
-    if(it->is_constraint() ||
-       it->is_spawn())
+    // A spawn is a step of the trace: a YAML witness registers the thread
+    // it starts at the point of the schedule where it happens.
+    if(it->is_constraint())
       continue;
     else if(it->is_atomic_begin())
     {
@@ -696,6 +757,12 @@ void build_goto_trace(
       goto_trace_step.io_id = SSA_step.io_id;
       goto_trace_step.formatted = SSA_step.formatted;
       goto_trace_step.called_function = SSA_step.called_function;
+      if(SSA_step.is_spawn())
+      {
+        goto_trace_step.spawned_thread_nr =
+          static_cast<unsigned>(SSA_step.spawned_thread_nr);
+        goto_trace_step.spawn_call_location = SSA_step.spawn_call_location;
+      }
       goto_trace_step.function_arguments = SSA_step.converted_function_arguments;
 
       for(auto &arg : goto_trace_step.function_arguments)

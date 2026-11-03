@@ -72,6 +72,10 @@ void output_error_trace(
   ui_message_handlert &);
 
 void output_graphml(const goto_tracet &, const namespacet &, const optionst &);
+void output_yaml_witness(
+  const goto_tracet &,
+  const namespacet &,
+  const optionst &);
 void output_graphml(
   const symex_target_equationt &,
   const namespacet &,
@@ -100,6 +104,24 @@ void slice(
 void postprocess_equation(
   symex_bmct &symex,
   symex_target_equationt &equation,
+  const optionst &options,
+  const namespacet &ns,
+  ui_message_handlert &ui_message_handler);
+
+/// Apply the round-robin (lazy_po) encoding with `rounds` rounds, and with
+/// the empty-round literals --infer-rounds assumes (goto-symex/round_bound.h).
+void apply_lazy_po(
+  symex_target_equationt &equation,
+  const optionst &options,
+  const namespacet &ns,
+  ui_message_handlert &ui_message_handler,
+  std::size_t rounds,
+  bool empty_round_literals);
+
+/// --infer-rounds: compute the round bound B of `equation` (left untouched)
+/// into infer_rounds_bound() / infer_rounds_bound_is_static().
+void infer_rounds_prepare(
+  const symex_target_equationt &equation,
   const optionst &options,
   const namespacet &ns,
   ui_message_handlert &ui_message_handler);
@@ -208,9 +230,14 @@ void run_property_decider(
   "(max-field-sensitivity-array-size):" \
   "(no-array-field-sensitivity)" \
   "(graphml-witness):" \
+  "(yaml-witness):" \
   "(symex-complexity-limit):" \
   "(symex-complexity-failed-child-loops-limit):" \
   "(incremental-loop):" \
+  "(infer-rounds)" \
+  "(max-rounds):" \
+  "(infer-rounds-first):" \
+  "(infer-rounds-direct):" \
   "(unwind-min):" \
   "(unwind-max):" \
   "(ignore-properties-before-unwind-min)" \
@@ -251,6 +278,19 @@ void run_property_decider(
   "                              k threads. 0 disables (default 2)\n" \
   "                              is given\n"   \
   HELP_UNWINDSET \
+  " --infer-rounds               choose the number of rounds instead of\n" \
+  "                              taking --rounds: build the formula once\n" \
+  "                              with the static round bound, then try\n" \
+  "                              1, 2, ... rounds by assumptions, stopping\n" \
+  "                              at the first violation or when no\n" \
+  "                              canonical schedule needs another round\n" \
+  "                              (needs partial-order reduction)\n" \
+  " --max-rounds N               cap of --infer-rounds (default 25); above\n" \
+  "                              it a SUCCESSFUL is bounded\n" \
+  " --infer-rounds-direct N      --infer-rounds: when the round bound B is at\n" \
+  "                              most N (default 6), build one formula with B\n" \
+  "                              rounds; otherwise first a block of\n" \
+  " --infer-rounds-first N       rounds (default 3), then B\n" \
   " --incremental-loop L         check properties after each unwinding\n" \
   "                              of loop L\n" \
   "                              (use --show-loops to get the loop IDs)\n" \
@@ -280,6 +320,8 @@ void run_property_decider(
   "                              complexity violations before the loop\n" \
   "                              gets blacklisted\n" \
   " --graphml-witness filename   write the witness in GraphML format to filename\n" /* NOLINT(*) */ \
+ " --yaml-witness filename      write the content of a YAML violation witness\n" /* NOLINT(*) */ \
+ "                              (sv-witnesses 2.2) to filename\n" /* NOLINT(*) */ \
   " --symex-cache-dereferences   enable caching of repeated dereferences" \
 // clang-format on
 

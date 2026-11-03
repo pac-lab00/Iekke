@@ -43,6 +43,20 @@ protected:
   /// Generates the equation by running goto-symex
   virtual void generate_equation();
 
+  /// The static analyses of the thread structure that bound or guide symex
+  /// under the round-robin (--rounds) encoding: thread-exclusive variables
+  /// and thread-management loops, with the thread-creation bound they set.
+  void setup_thread_analyses();
+  /// Repeat symex, seeded with the pointers published so far, until no
+  /// published entry a pass consulted grows (CBMC #305).
+  void symex_seeded_passes(bool own_view_reads);
+  /// --refined-pointer-analysis: collection passes to a fixpoint of the
+  /// overall value set, then the pass that builds the equation.
+  void symex_refined_pointer_passes();
+  /// Say on stdout whether a loop bound or the thread-creation bound cut the
+  /// run, i.e. whether a SUCCESSFUL is a proof.
+  void report_truncation() const;
+
   /// Updates the \p properties from the `equation` and
   /// adds their property IDs to \p updated_properties.
   /// Record that a truncated run generated no property at all, so that an

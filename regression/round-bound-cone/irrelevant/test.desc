@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 4 --infer-rounds
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=4 path=3 
+^Round bound (property cone): count=2 path=2 blocks=
+^Infer rounds: static round bound 2$
+^Infer rounds: complete at 2 round(s): the static round bound$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+The assertion reads x only, which t3 writes: the cone is main and t3, and
+t1/t2's ping-pong on i and j is outside it. Bound 3 on every block, 2 on the
+cone (main's read of x after t3's write is one backward edge), and the safe
+program is complete at 2.
