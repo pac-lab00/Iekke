@@ -16,6 +16,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <iostream>
 #include <memory>
 
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1177,10 +1178,54 @@ static void infer_allocation_types(goto_modelt &goto_model, messaget &log)
 /// check and the failed cases rule out every other value.
 /// One split per function; skipped when the rest of the function is entered
 /// other than at its start, or jumps back before it, or x's address is taken,
-/// or the copies would exceed max_copied_instructions.
+/// or the copies would exceed max_copied_instructions, or the rest starts a
+/// thread: each copy would start its own, and the threads, not the pointers,
+/// would multiply (09-regions_13-arraycollapse_nr-deref: main split on j, the
+/// bug found in 5 s before, no answer in 390 s and 9 GB after). Carrying a
+/// choice of the creating thread into the threads is a separate step.
+/// Likewise when the rest allocates: each copy has its own allocation site,
+/// so the heap objects multiply and every later points-to set grows (the
+/// same task with only the thread function split: 5 s -> 33 s).
 static std::size_t split_small_choices(goto_modelt &goto_model)
 {
   const std::size_t max_copied_instructions = 5000;
+  // The functions whose instructions, directly or through a call, satisfy
+  // `direct`: those that start a thread, and those that allocate.
+  const auto closure = [&goto_model](
+                         const std::function<bool(const goto_programt::instructiont &)>
+                           &direct) {
+    std::unordered_set<irep_idt> result;
+    for(bool grew = true; grew;)
+    {
+      grew = false;
+      for(const auto &f : goto_model.goto_functions.function_map)
+      {
+        if(result.count(f.first) != 0)
+          continue;
+        for(const auto &ins : f.second.body.instructions)
+        {
+          if(
+            direct(ins) ||
+            (ins.is_function_call() && ins.call_function().id() == ID_symbol &&
+             result.count(to_symbol_expr(ins.call_function()).get_identifier()) !=
+               0))
+          {
+            result.insert(f.first);
+            grew = true;
+            break;
+          }
+        }
+      }
+    }
+    return result;
+  };
+  const auto is_allocation = [](const goto_programt::instructiont &ins) {
+    return ins.is_assign() && ins.assign_rhs().id() == ID_side_effect &&
+           to_side_effect_expr(ins.assign_rhs()).get_statement() == ID_allocate;
+  };
+  const std::unordered_set<irep_idt> starts_threads = closure(
+    [](const goto_programt::instructiont &ins) { return ins.is_start_thread(); });
+  const std::unordered_set<irep_idt> allocates = closure(is_allocation);
   std::size_t splits = 0;
   for(auto &entry : goto_model.goto_functions.function_map)
   {
@@ -1246,12 +1291,33 @@ static std::size_t split_small_choices(goto_modelt &goto_model)
         });
       };
       bool bad_jump = false;
+      bool starts_thread = false;
+      bool allocates_memory = false;
       for(auto t = body.instructions.begin(); t != end_it; ++t)
       {
         t->apply(visit);
+        if(
+          t->is_function_call() && t->call_function().id() == ID_symbol &&
+          starts_threads.count(
+            to_symbol_expr(t->call_function()).get_identifier()) != 0 &&
+          in_tail.count(&*t) != 0)
+        {
+          starts_thread = true;
+        }
+        if(
+          in_tail.count(&*t) != 0 &&
+          (is_allocation(*t) ||
+           (t->is_function_call() && t->call_function().id() == ID_symbol &&
+            allocates.count(
+              to_symbol_expr(t->call_function()).get_identifier()) != 0)))
+        {
+          allocates_memory = true;
+        }
         if(!t->is_goto() && !t->is_start_thread())
           continue;
         const bool from_tail = in_tail.count(&*t) != 0;
+        if(from_tail && t->is_start_thread())
+          starts_thread = true;
         for(const auto &target : t->targets)
         {
           const bool to_tail = in_tail.count(&*target) != 0;
@@ -1262,7 +1328,8 @@ static std::size_t split_small_choices(goto_modelt &goto_model)
         }
       }
       if(
-        n == 0 || address_taken || bad_jump ||
+        n == 0 || address_taken || bad_jump || starts_thread ||
+        allocates_memory ||
         n * tail.size() > max_copied_instructions)
       {
         continue;
