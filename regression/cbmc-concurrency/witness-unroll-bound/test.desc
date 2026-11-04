@@ -1,0 +1,13 @@
+CORE
+main.c
+--64 --datarace --no-assertions --unwind 3 --rounds 2 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+<data key="unroll-bound">3</data>
+<data key="architecture">64bit</data>
+--
+^warning: ignoring
+<data key="architecture">32bit</data>
+--
+Without unroll-bound Dartagnan validated at one unrolling and answered PASS when
+the path needed more (per-thread-index-bitmask-race-2).
