@@ -1,5 +1,5 @@
-// The witness says how far loops were unrolled (unroll-bound, read by
-// Dartagnan, whose own witnesses carry it) and under which data model the
+// The witness says how many unrollings its path needs (unroll-bound, read
+// by Dartagnan, whose own witnesses carry it) and under which data model the
 // task was checked (architecture: it said 32bit for every task).
 #include <pthread.h>
 int x;

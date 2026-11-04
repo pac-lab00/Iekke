@@ -1,6 +1,6 @@
 CORE
 main.c
---64 --datarace --no-assertions --unwind 3 --rounds 2 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
+--64 --datarace --no-assertions --unwind 5 --rounds 2 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
 ^EXIT=10$
 ^SIGNAL=0$
 <data key="unroll-bound">3</data>
@@ -10,4 +10,6 @@ main.c
 <data key="architecture">32bit</data>
 --
 Without unroll-bound Dartagnan validated at one unrolling and answered PASS when
-the path needed more (per-thread-index-bitmask-race-2).
+the path needed more (per-thread-index-bitmask-race-2). The bound is what the
+path needs (two iterations, so 3), not --unwind: goblint tasks run under
+--unwind 10001 and Dartagnan was told to unroll 10001 times.

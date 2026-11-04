@@ -405,6 +405,28 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
 
   graphml.key_values["sourcecodelang"]="C";
 
+  // unroll-bound: the fewest loop unrollings that contain this path, which
+  // Dartagnan validates under (without it, one unrolling, and a path through
+  // a second iteration is rejected); taken back edges counted per thread, over
+  // the program's own loops only, not those of the library models
+  {
+    std::map<std::pair<unsigned, unsigned>, std::size_t> iterations;
+    std::size_t max_iterations = 0;
+    for(const auto &step : goto_trace.steps)
+    {
+      if(
+        step.type != goto_trace_stept::typet::GOTO || !step.cond_value ||
+        !step.pc->is_backwards_goto() ||
+        has_prefix(
+          id2string(step.pc->source_location().get_file()), "<builtin"))
+        continue;
+      max_iterations = std::max(
+        max_iterations,
+        ++iterations[{step.thread_nr, step.pc->location_number}]);
+    }
+    graphml.key_values["unroll-bound"] = std::to_string(max_iterations + 1);
+  }
+
   const graphmlt::node_indext sink=graphml.add_node();
   graphml[sink].node_name="sink";
   graphml[sink].is_violation=false;
