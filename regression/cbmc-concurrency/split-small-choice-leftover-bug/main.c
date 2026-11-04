@@ -2,7 +2,8 @@
 #include <assert.h>
 int __VERIFIER_nondet_int();
 void assume_abort_if_not(int cond) { if(!cond) { abort(); } }
-int slot[4];
+int cell[4];
+int *slot[4] = {&cell[0], &cell[1], &cell[2], &cell[3]};
 pthread_mutex_t m[4];
 void *t(void *x)
 {
@@ -10,7 +11,7 @@ void *t(void *x)
   assume_abort_if_not(0 <= j);
   while(j < 4) {
     pthread_mutex_lock(&m[j]);
-    slot[j]++;
+    (*slot[j])++;
     pthread_mutex_unlock(&m[j]);
     j++;
   }

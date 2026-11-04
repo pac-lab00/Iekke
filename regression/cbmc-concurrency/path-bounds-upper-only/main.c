@@ -2,13 +2,14 @@
 #include <assert.h>
 int __VERIFIER_nondet_int();
 void assume_abort_if_not(int cond) { if(!cond) { abort(); } }
-int slot[4];
+int cell[4];
+int *slot[4] = {&cell[0], &cell[1], &cell[2], &cell[3]};
 void *t(void *x)
 {
   int j = __VERIFIER_nondet_int();
   assume_abort_if_not(j <= 3);
   if(j >= 0)
-    slot[j] = 1;
+    *slot[j] = 1;
   else
     assert(j != -2);
   return 0;

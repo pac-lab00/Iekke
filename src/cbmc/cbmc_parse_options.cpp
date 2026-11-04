@@ -1165,8 +1165,13 @@ static void infer_allocation_types(goto_modelt &goto_model, messaget &log)
 
 /// Split on a small choice (on by default; LAZYPO_NO_SPLIT_CHOICES turns it
 /// off). A local integer that receives a nondeterministic value
-/// (`x = __VERIFIER_nondet_*()`) and is then used as the index of an array of
-/// at most 16 elements is split by value. After the choice, the function
+/// (`x = __VERIFIER_nondet_*()`) and from whose element, in an array of at most
+/// 16 elements, the rest then reads a pointer (`X[x]` or a member of it, of
+/// pointer type) is split by value. Only such a read can fan out: the pointer
+/// read from "any of the N elements" may point to any of their targets. An
+/// index that only picks an element (`&a[x]`, an int member) selects within
+/// one object, and copying the rest then costs without removing anything
+/// (28-race_reach_75 at u16 r4: 290 s split, 33 s not). After the choice, the function
 /// branches on `x == 0`, ..., `x == N-1`; each branch sets x to that constant
 /// and runs its own copy of the rest of the function, the original rest
 /// handling every other value. The branches together are exactly the original
@@ -1274,19 +1279,25 @@ static std::size_t split_small_choices(goto_modelt &goto_model)
           {
             address_taken = true;
           }
-          if(x.id() == ID_index)
+          // a pointer read from the selected element: X[x], or a member of
+          // it, of pointer type
+          if(x.type().id() != ID_pointer)
+            return;
+          const exprt *base = &x;
+          while(base->id() == ID_member)
+            base = &to_member_expr(*base).compound();
+          if(base->id() != ID_index)
+            return;
+          const index_exprt &ix = to_index_expr(*base);
+          if(
+            ix.index().id() == ID_symbol &&
+            to_symbol_expr(ix.index()).get_identifier() == var &&
+            ix.array().type().id() == ID_array)
           {
-            const index_exprt &ix = to_index_expr(x);
-            if(
-              ix.index().id() == ID_symbol &&
-              to_symbol_expr(ix.index()).get_identifier() == var &&
-              ix.array().type().id() == ID_array)
-            {
-              const auto size =
-                numeric_cast<mp_integer>(to_array_type(ix.array().type()).size());
-              if(size.has_value() && *size >= 2 && *size <= 16)
-                n = std::max(n, *size);
-            }
+            const auto size =
+              numeric_cast<mp_integer>(to_array_type(ix.array().type()).size());
+            if(size.has_value() && *size >= 2 && *size <= 16)
+              n = std::max(n, *size);
           }
         });
       };

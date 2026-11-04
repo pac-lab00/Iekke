@@ -9,7 +9,8 @@ main.c
 --
 ^warning: ignoring
 --
-Each thread picks a slot with a random j >= 0 and walks the slots from j to 3.
+Each thread picks a slot with a random j >= 0 and walks the slots from j to 3,
+incrementing the cell each slot points to (a pointer read from slot[j]).
 The walk is split into one copy per value 0..3 of j; in the leftover case the
 path says j >= 0 and j is none of 0..3, so the loop test j < 4 is decided
 false and the loop is not built.
