@@ -104,8 +104,13 @@ POLL = 0.25
 # no answer to a wrong TRUE -- a quick bounded SUCCESSFUL, its bug needing
 # (3,4) in over 300 s -- and hclhlock, which it had been added for, is answered
 # at (4,3) in time once --thread-symmetry is off.
+#
+# (3,4) comes right after the first bound: safestack_relacy_racy has a race
+# that needs 4 rounds and is found at (3,4) in 213 s on x86; behind (4,3), which
+# answers safe at that point, the stop rule ended the search first and the task
+# was answered with a wrong TRUE (-32). At (2,4) the program gives no verdict.
 SCHEDULE = [
-    (2, 2), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
+    (2, 2), (3, 4), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
     (32, 13), (32, 21), (64, 4), (256, 3), (1024, 3), (4096, 3),
     (16384, 3),
 ]
