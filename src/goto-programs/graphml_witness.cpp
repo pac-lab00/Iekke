@@ -11,6 +11,8 @@ Author: Daniel Kroening
 
 #include "graphml_witness.h"
 
+#include <cstdlib>
+
 #include <util/arith_tools.h>
 #include <util/byte_operators.h>
 #include <util/c_types.h>
@@ -225,11 +227,46 @@ std::string graphml_witnesst::convert_assign_rec(
   return result;
 }
 
+/// Whether the trace violates the data-race property.
+static bool is_datarace_trace(const goto_tracet &goto_trace)
+{
+  for(const auto &step : goto_trace.steps)
+    if(
+      step.type == goto_trace_stept::typet::ASSERT && !step.cond_value &&
+      (id2string(step.property_id).find("datarace") != std::string::npos ||
+       step.comment.find("datarace") != std::string::npos))
+      return true;
+  return false;
+}
+
 static bool filter_out(
   const goto_tracet &goto_trace,
   const goto_tracet::stepst::const_iterator &prev_it,
   goto_tracet::stepst::const_iterator &it)
 {
+  // A data-race witness has only the thread creations and the violation.
+  // Dartagnan turns consecutive edges into ordering constraints between the
+  // events on their lines; at its first loop unrolling the edges of later loop
+  // iterations fall on the same events, the constraints contradict, and it
+  // answers PASS instead of unrolling further (per-thread-index-bitmask-race-2:
+  // rejected with the full witness, confirmed with the thread creations
+  // alone). Over the 222 data-race FALSE answers of the corpus: 166 witnesses
+  // confirmed against 120 with the full witness, none lost (2026-11-04).
+  // LAZYPO_WITNESS_FULL keeps every step.
+  static const bool minimal = getenv("LAZYPO_WITNESS_FULL") == nullptr;
+  if(minimal && is_datarace_trace(goto_trace))
+  {
+    const auto lhs_object =
+      it->is_assignment() ? it->get_lhs_object() : optionalt<symbol_exprt>{};
+    const bool creates =
+      lhs_object.has_value() &&
+      id2string(lhs_object->get_identifier()).find("pthread_create::thread") !=
+        std::string::npos;
+    const bool violation =
+      it->type == goto_trace_stept::typet::ASSERT && !it->cond_value;
+    return !creates && !violation;
+  }
+
   if(
     it->hidden &&
     (!it->pc->is_assign() || it->pc->assign_rhs().id() != ID_side_effect ||
@@ -244,21 +281,30 @@ static bool filter_out(
     !it->is_shared_read() && !it->is_shared_write())
     return true;
 
-  // The arguments of pthread_join are bound at the call site, which a trace
-  // without partial-order reduction may place before the joined thread has
-  // run at all. A validator reads an edge on the line of the call as the call
-  // having happened, and the call cannot return before the joined thread
-  // ends, so the edge made the witness infeasible: pthread/lazy01 at
-  // --no-por was rejected by CPAchecker (confirmed with --por). What the join
-  // does is in the steps after it; its argument binding is not needed.
+  // The arguments of a blocking synchronisation call (pthread_join,
+  // pthread_mutex_lock, a condition or barrier wait, ...) are bound at the
+  // call site, and a context switch may come between that binding and the
+  // call taking effect: the joined thread has not run yet, the mutex is still
+  // free. A validator reads an edge on the line of the call as the call having
+  // happened, so the edge made the witness infeasible: pthread/lazy01 at
+  // --no-por, rejected by CPAchecker (pthread_join); per-thread-index-bitmask-
+  // race-2, rejected by Dartagnan, which found the race without the witness
+  // (main's lock "taken" while thread 1 ran inside the same lock). What the
+  // call does is in the steps after it; its argument binding is not needed.
   if(it->is_assignment())
   {
+    static const char *const blocking[] = {
+      "pthread_join::", "pthread_mutex_lock::", "pthread_mutex_trylock::",
+      "pthread_cond_wait::", "pthread_cond_timedwait::",
+      "pthread_rwlock_rdlock::", "pthread_rwlock_wrlock::",
+      "pthread_spin_lock::", "pthread_barrier_wait::", "sem_wait::"};
     const auto lhs_object = it->get_lhs_object();
-    if(
-      lhs_object.has_value() &&
-      has_prefix(id2string(lhs_object->get_identifier()), "pthread_join::"))
+    if(lhs_object.has_value())
     {
-      return true;
+      const std::string &id = id2string(lhs_object->get_identifier());
+      for(const char *prefix : blocking)
+        if(has_prefix(id, prefix))
+          return true;
     }
   }
 
