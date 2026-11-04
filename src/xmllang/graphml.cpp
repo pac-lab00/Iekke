@@ -590,15 +590,6 @@ bool write_graphml(const graphmlt &src, std::ostream &os, std::string filename, 
     data.data = config.ansi_c.pointer_width == 64 ? "64bit" : "32bit";
   }
 
-  // <data key="unroll-bound">N</data>: the loop bound the violation was found
-  // under
-  if(!options.get_option("unwind").empty())
-  {
-    xmlt &data = graph.new_element("data");
-    data.set_attribute("key", "unroll-bound");
-    data.data = options.get_option("unwind");
-  }
-
   // <data key="creationtime">2016-12-24T13:15:32+02:00</data>
   {
       time_t now = time(0) + 8 * 3600;
