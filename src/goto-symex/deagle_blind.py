@@ -124,9 +124,14 @@ REDUCED_SLICE = 30.0
 # loops unrolls short loops as far as the longest needs, and symex cannot
 # always see where they exit: on reorder_c11_good-20 Deagle's per-loop limits
 # give 4.9M clauses where --unwind 32 gives 36.8M. The suggestion is a
-# heuristic, not a proof -- a body that also changes the counter makes it too
-# small -- so, as for the reduced program, only a FAILED from this step is
-# believed; a SUCCESSFUL is never reported.
+# heuristic -- a body that also changes the counter makes it too small -- so a
+# SUCCESSFUL from this step is a bounded answer, like one from any bound of
+# the schedule, and is kept as one. It is often the only bound that runs a
+# long setup loop to completion: every bound of the schedule cuts it and
+# answers nothing, as on the goblint list programs (09-regions_21: safe at
+# this step in 19 s on x86, then UNKNOWN after 871 s). Replayed over the 3346
+# logs of two cluster runs: no task found FAILED after the stop rule's mark
+# with this step safe or timed out, so holding its answer cuts no bug.
 UNSUGGESTED = 3
 SUGGEST_ROUNDS = 3
 # Bounds with at least this many rounds run with --por, the others without:
@@ -497,7 +502,8 @@ for unwind, rounds, extra in bounds():
                and generated_vccs(out) == 0 and "Not unwinding" in out)
     if vacuous:
         print("  (no verification condition generated, a loop cut: not kept)")
-    if verdict == "SUCCESSFUL" and not extra and not vacuous:
+    if (verdict == "SUCCESSFUL" and not vacuous
+            and (not extra or extra.startswith("--unwindset"))):
         bounded_safe = out
     # No verdict means a refusal or a crash at *this* bound -- most often
     # --object-bits exhaustion, which only the very large unwinds provoke. It

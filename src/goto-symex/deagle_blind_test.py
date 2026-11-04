@@ -27,8 +27,8 @@
 # allocation may fail).
 # Case "suggest": the per-loop limits from --unwind-suggest reach the tool as
 # --unwindset (a loop without a suggestion at 3), a FAILED from that step is
-# reported, and a SUCCESSFUL from it is not: with every other bound giving no
-# verdict the answer must stay UNKNOWN.
+# reported, and so is a SUCCESSFUL from it, as a bounded answer: with every
+# other bound giving no verdict the answer must be SUCCESSFUL.
 # Case "stop": once a SUCCESSFUL is held, the search ends at DEAGLE_STOP
 # seconds, cutting the running bound, and reports it; without one it goes on.
 # Case "official": the output read the way SV-COMP's tool-info module reads
@@ -276,11 +276,11 @@ last = out.strip().splitlines()[-1] if out.strip() else ""
 if not any("--unwindset" in a for a in run.args):
     print("FAIL suggest: the suggested limits never reached the tool")
     ok = False
-elif last != "UNKNOWN":
-    print("FAIL suggest: a SUCCESSFUL from the suggested limits was reported (%r)" % last)
+elif last != "SUCCESSFUL":
+    print("FAIL suggest: a SUCCESSFUL from the suggested limits was not kept (%r)" % last)
     ok = False
 else:
-    print("ok   suggest: its SUCCESSFUL was not reported")
+    print("ok   suggest: its SUCCESSFUL was kept as a bounded answer")
 
 t0 = time.time()
 out, pids, survivors = run("stop", 60, env_extra={"DEAGLE_STOP": "5"})
