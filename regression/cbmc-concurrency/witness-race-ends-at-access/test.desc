@@ -3,15 +3,8 @@ main.c
 --32 --datarace --no-assertions --unwind 2 --rounds 3 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
 ^EXIT=10$
 ^SIGNAL=0$
-<data key="createThread">1</data>
-<data key="createThread">2</data>
+<data key="threadId">1</data>
 <data key="violation">true</data>
 --
 ^warning: ignoring
 <data key="startline">39</data>
-<data key="threadId">1</data>
---
-Since 2026-11-04 a data-race witness has only the thread creations and the
-violation (Dartagnan read the steps of later loop iterations as contradictory
-orderings and rejected; 166 against 120 confirmed over the corpus, none lost).
-So no step of the racing threads appears; LAZYPO_WITNESS_FULL restores them.

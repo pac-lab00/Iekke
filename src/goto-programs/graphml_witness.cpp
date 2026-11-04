@@ -244,16 +244,14 @@ static bool filter_out(
   const goto_tracet::stepst::const_iterator &prev_it,
   goto_tracet::stepst::const_iterator &it)
 {
-  // A data-race witness has only the thread creations and the violation.
-  // Dartagnan turns consecutive edges into ordering constraints between the
-  // events on their lines; at its first loop unrolling the edges of later loop
-  // iterations fall on the same events, the constraints contradict, and it
-  // answers PASS instead of unrolling further (per-thread-index-bitmask-race-2:
-  // rejected with the full witness, confirmed with the thread creations
-  // alone). Over the 222 data-race FALSE answers of the corpus: 166 witnesses
-  // confirmed against 120 with the full witness, none lost (2026-11-04).
-  // LAZYPO_WITNESS_FULL keeps every step.
-  static const bool minimal = getenv("LAZYPO_WITNESS_FULL") == nullptr;
+  // LAZYPO_WITNESS_MINIMAL (option): a data-race witness with only the thread
+  // creations and the violation. Dartagnan turns consecutive edges into
+  // ordering constraints between the events on their lines; at its first loop
+  // unrolling the edges of later loop iterations can fall on the same events
+  // and contradict. Measured over the 222 data-race FALSE answers of the corpus
+  // (2026-11-04): 166 confirmed against 173 with every step (10 only minimal,
+  // 17 only with every step), so every step stays the default.
+  static const bool minimal = getenv("LAZYPO_WITNESS_MINIMAL") != nullptr;
   if(minimal && is_datarace_trace(goto_trace))
   {
     const auto lhs_object =
