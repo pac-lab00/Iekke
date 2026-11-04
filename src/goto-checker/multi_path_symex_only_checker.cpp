@@ -183,6 +183,10 @@ void multi_path_symex_only_checkert::generate_equation()
   if(options.get_bool_option("refined-pointer-analysis") && symex.target.has_threads())
     symex_refined_pointer_passes();
 
+  if(symex.path_bound_decisions != 0)
+    log.status() << "path bounds: " << symex.path_bound_decisions
+                 << " branches decided" << messaget::eom;
+
   report_truncation();
   // __SZH_ADD_END__
 

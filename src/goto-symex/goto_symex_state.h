@@ -14,6 +14,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <analyses/guard.h>
@@ -215,6 +216,40 @@ public:
   write_is_shared(const ssa_exprt &expr, const namespacet &ns) const;
 
   std::stack<bool> record_events;
+
+  /// Right-hand sides of small assignments to symbols of this thread, by L2
+  /// name: what goto_symext::decide_by_path_bounds sees a guard through.
+  /// SSA equalities hold on every path, so one map serves them all.
+  std::unordered_map<irep_idt, exprt> small_definitions;
+
+  /// The assumptions `guard => cond` written to the equation as they are
+  /// (with one thread: then the guard is not strengthened by an assumption,
+  /// and the facts are lost to the path guard when the call returns).
+  std::vector<std::pair<exprt, exprt>> guarded_assumptions;
+
+  /// Keep `lhs == rhs` in small_definitions if rhs is small, or, for a guard
+  /// symbol (\p any_size), whatever its size: a guard is shared, not copied.
+  void
+  note_definition(const irep_idt &lhs, const exprt &rhs, bool any_size = false)
+  {
+    if(any_size)
+    {
+      small_definitions[lhs] = rhs;
+      return;
+    }
+    std::size_t budget = 32;
+    std::vector<const exprt *> todo{&rhs};
+    while(!todo.empty())
+    {
+      const exprt *e = todo.back();
+      todo.pop_back();
+      if(budget-- == 0)
+        return;
+      for(const auto &op : e->operands())
+        todo.push_back(&op);
+    }
+    small_definitions[lhs] = rhs;
+  }
 
   /// Extra condition conjoined onto the guard of the shared_write events
   /// emitted by \ref l2_thread_write_encoding (and only onto those: the SSA

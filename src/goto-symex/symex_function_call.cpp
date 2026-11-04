@@ -481,6 +481,7 @@ void goto_symext::symex_end_of_function(statet &state)
         exit_guard,
         state.source,
         symex_targett::assignment_typet::GUARD);
+      state.note_definition(lhs.get_identifier(), exit_guard, true);
       state.guard = guard_at_start;
       state.guard.add(lhs);
     }

@@ -9,6 +9,7 @@ Author: Daniel Kroening, kroening@kroening.com
 /// \file
 /// Symbolic Execution
 
+#include <util/arith_tools.h>
 #include <util/exception_utils.h>
 #include <util/expr_util.h>
 #include <util/invariant.h>
@@ -27,6 +28,10 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "path_storage.h"
 
 #include <algorithm>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 void goto_symext::apply_goto_condition(
   goto_symex_statet &current_state,
@@ -228,6 +233,275 @@ renamedt<exprt, L2> try_evaluate_pointer_comparisons(
   return condition;
 }
 
+// A goto condition `s op c` -- s an integer symbol of this thread, c a
+// constant -- that the facts on the path decide is replaced by true or false.
+// The facts are the conjuncts of the path guard, seen through the small
+// definitions of the temporaries they mention (`cond#1 != 0` with
+// `cond#1 == (int)(0 <= j#2)` gives `0 <= j#2`), and the assumptions whose
+// guard the path guard contains (with one thread an assumption is not added
+// to the guard, so a range check in a called function, assume_abort_if_not,
+// is seen only this way). From the bounds and excluded
+// values of s they give, the condition holds on every remaining value of s or
+// on none. This is exact: the path guard implies the replaced condition. It is
+// what removes the leftover branch of a split on a small choice
+// (split_small_choices in cbmc_parse_options.cpp): there the guard says
+// `0 <= j`, `j != 0`, ..., `j != 9`, so `j < 10` is false.
+// On by default; LAZYPO_NO_PATH_BOUNDS turns it off.
+namespace
+{
+/// The conjuncts of \p e (e itself if it is not a conjunction).
+exprt::operandst make_conjunction_operands(const exprt &e)
+{
+  if(e.id() == ID_and)
+    return e.operands();
+  return {e};
+}
+
+struct boundst
+{
+  optionalt<mp_integer> lo, hi;
+  std::set<mp_integer> excluded;
+};
+
+/// `e` as `s op c` with s a symbol of \p defs, normalised so that s is on the
+/// left; \p positive false negates it.
+bool as_relation(
+  const exprt &e,
+  bool positive,
+  const std::unordered_map<irep_idt, exprt> &defs,
+  irep_idt &s,
+  irep_idt &op,
+  mp_integer &c)
+{
+  static const std::map<irep_idt, irep_idt> swapped{
+    {ID_lt, ID_gt}, {ID_gt, ID_lt}, {ID_le, ID_ge}, {ID_ge, ID_le},
+    {ID_equal, ID_equal}, {ID_notequal, ID_notequal}};
+  static const std::map<irep_idt, irep_idt> negated{
+    {ID_lt, ID_ge}, {ID_ge, ID_lt}, {ID_le, ID_gt}, {ID_gt, ID_le},
+    {ID_equal, ID_notequal}, {ID_notequal, ID_equal}};
+  if(e.operands().size() != 2 || swapped.find(e.id()) == swapped.end())
+    return false;
+  const exprt *sym = &to_binary_expr(e).op0();
+  const exprt *cst = &to_binary_expr(e).op1();
+  op = e.id();
+  if(sym->id() != ID_symbol)
+  {
+    std::swap(sym, cst);
+    op = swapped.at(op);
+  }
+  if(
+    sym->id() != ID_symbol || !cst->is_constant() ||
+    (sym->type().id() != ID_signedbv && sym->type().id() != ID_unsignedbv) ||
+    defs.find(to_symbol_expr(*sym).get_identifier()) == defs.end())
+    return false;
+  const auto value = numeric_cast<mp_integer>(*cst);
+  if(!value)
+    return false;
+  s = to_symbol_expr(*sym).get_identifier();
+  c = *value;
+  if(!positive)
+    op = negated.at(op);
+  return true;
+}
+
+/// The boolean the integer \p e stands for in `e != 0`, if its definition
+/// is a cast of one or a choice of 1 and 0 by one; \p negated is set when
+/// the choice is 0 and 1 (`b ? 0 : 1` stands for not b).
+const exprt *as_boolean(
+  const exprt &e,
+  const std::unordered_map<irep_idt, exprt> &defs,
+  bool &negated)
+{
+  negated = false;
+  if(e.id() != ID_symbol)
+    return nullptr;
+  const auto it = defs.find(to_symbol_expr(e).get_identifier());
+  if(it == defs.end())
+    return nullptr;
+  const exprt &d = it->second;
+  if(d.id() == ID_typecast && to_typecast_expr(d).op().type().id() == ID_bool)
+    return &to_typecast_expr(d).op();
+  if(d.id() != ID_if)
+    return nullptr;
+  const if_exprt &choice = to_if_expr(d);
+  if(choice.true_case().is_one() && choice.false_case().is_zero())
+    return &choice.cond();
+  if(choice.true_case().is_zero() && choice.false_case().is_one())
+  {
+    negated = true;
+    return &choice.cond();
+  }
+  return nullptr;
+}
+
+void collect_bounds(
+  const exprt &e,
+  bool positive,
+  const std::unordered_map<irep_idt, exprt> &defs,
+  const irep_idt &s,
+  boundst &b,
+  std::unordered_set<irep_idt> &expanded,
+  unsigned depth)
+{
+  if(depth > 64)
+    return;
+  if(e.id() == ID_not)
+    return collect_bounds(
+      to_not_expr(e).op(), !positive, defs, s, b, expanded, depth + 1);
+  if((e.id() == ID_and && positive) || (e.id() == ID_or && !positive))
+  {
+    for(const auto &op : e.operands())
+      collect_bounds(op, positive, defs, s, b, expanded, depth + 1);
+    return;
+  }
+  if(e.id() == ID_symbol && e.type().id() == ID_bool)
+  {
+    const auto it = defs.find(to_symbol_expr(e).get_identifier());
+    if(it != defs.end() && expanded.insert(it->first).second)
+      collect_bounds(it->second, positive, defs, s, b, expanded, depth + 1);
+    return;
+  }
+  if(
+    (e.id() == ID_notequal || e.id() == ID_equal) &&
+    to_binary_expr(e).op1().is_zero())
+  {
+    bool negated;
+    if(const exprt *cond = as_boolean(to_binary_expr(e).op0(), defs, negated))
+      return collect_bounds(
+        *cond,
+        (positive == (e.id() == ID_notequal)) != negated,
+        defs,
+        s,
+        b,
+        expanded,
+        depth + 1);
+  }
+  irep_idt fs, op;
+  mp_integer c;
+  if(!as_relation(e, positive, defs, fs, op, c) || fs != s)
+    return;
+  auto raise = [&b](const mp_integer &v) {
+    if(!b.lo || *b.lo < v)
+      b.lo = v;
+  };
+  auto lower = [&b](const mp_integer &v) {
+    if(!b.hi || *b.hi > v)
+      b.hi = v;
+  };
+  if(op == ID_ge)
+    raise(c);
+  else if(op == ID_gt)
+    raise(c + 1);
+  else if(op == ID_le)
+    lower(c);
+  else if(op == ID_lt)
+    lower(c - 1);
+  else if(op == ID_equal)
+  {
+    raise(c);
+    lower(c);
+  }
+  else
+    b.excluded.insert(c);
+}
+} // namespace
+
+optionalt<bool> goto_symext::decide_by_path_bounds(
+  const exprt &cond,
+  const statet &state) const
+{
+  const auto &defs = state.small_definitions;
+  irep_idt s, op;
+  mp_integer c;
+  bool positive = true;
+  const exprt *rel = &cond;
+  while(rel->id() == ID_not)
+  {
+    rel = &to_not_expr(*rel).op();
+    positive = !positive;
+  }
+  if(!as_relation(*rel, positive, defs, s, op, c))
+    return {};
+  boundst b;
+  std::unordered_set<irep_idt> expanded;
+  const exprt guard = state.guard.as_expr();
+  collect_bounds(guard, true, defs, s, b, expanded, 0);
+  // An assumption `g => cond` gives cond where the path guard has every
+  // conjunct of g, and, for `g && l => false`, not l where it has all but l.
+  const exprt::operandst path_conjuncts = make_conjunction_operands(guard);
+  const std::unordered_set<exprt, irep_hash> on_path(
+    path_conjuncts.begin(), path_conjuncts.end());
+  for(const auto &assumption : state.guarded_assumptions)
+  {
+    const exprt::operandst premise =
+      make_conjunction_operands(assumption.first);
+    const exprt *missing = nullptr;
+    std::size_t n_missing = 0;
+    for(const auto &g : premise)
+    {
+      if(!g.is_true() && on_path.count(g) == 0)
+      {
+        ++n_missing;
+        missing = &g;
+        if(n_missing > 1)
+          break;
+      }
+    }
+    if(n_missing == 0)
+      collect_bounds(assumption.second, true, defs, s, b, expanded, 0);
+    else if(n_missing == 1 && assumption.second.is_false())
+    {
+      const exprt negated = boolean_negate(*missing);
+      collect_bounds(negated, true, defs, s, b, expanded, 0);
+    }
+  }
+  while(b.lo && b.excluded.count(*b.lo))
+    b.lo = *b.lo + 1;
+  while(b.hi && b.excluded.count(*b.hi))
+    b.hi = *b.hi - 1;
+  if(b.lo && b.hi && *b.lo > *b.hi)
+    return {}; // the path is dead; leave it to the solver
+  // s ranges over [lo, hi] minus excluded; lo/hi absent = unbounded
+  auto below = [&b](const mp_integer &v) { return b.hi && *b.hi < v; };
+  auto above = [&b](const mp_integer &v) { return b.lo && *b.lo > v; };
+  if(op == ID_lt)
+  {
+    if(below(c))
+      return true;
+    if(above(c - 1))
+      return false;
+  }
+  else if(op == ID_le)
+  {
+    if(below(c + 1))
+      return true;
+    if(above(c))
+      return false;
+  }
+  else if(op == ID_gt)
+  {
+    if(above(c))
+      return true;
+    if(below(c + 1))
+      return false;
+  }
+  else if(op == ID_ge)
+  {
+    if(above(c - 1))
+      return true;
+    if(below(c))
+      return false;
+  }
+  else
+  {
+    const bool never_c = below(c) || above(c) || b.excluded.count(c);
+    const bool is_c = b.lo && b.hi && *b.lo == c && *b.hi == c;
+    if(never_c || is_c)
+      return (op == ID_equal) == is_c;
+  }
+  return {};
+}
+
 void goto_symext::symex_goto(statet &state)
 {
   PRECONDITION(state.reachable);
@@ -242,6 +516,19 @@ void goto_symext::symex_goto(statet &state)
   if(symex_config.simplify_opt)
     renamed_guard.simplify(ns);
   new_guard = renamed_guard.get();
+
+  static const bool path_bounds = getenv("LAZYPO_NO_PATH_BOUNDS") == nullptr;
+  if(path_bounds && !new_guard.is_constant())
+  {
+    const auto decided = decide_by_path_bounds(new_guard, state);
+    if(decided)
+    {
+      renamed_guard = state.rename(
+        *decided ? exprt{true_exprt{}} : exprt{false_exprt{}}, ns);
+      new_guard = renamed_guard.get();
+      ++path_bound_decisions;
+    }
+  }
 
   if(new_guard.is_false())
   {
@@ -514,6 +801,7 @@ void goto_symext::symex_goto(statet &state)
         new_rhs,
         original_source,
         symex_targett::assignment_typet::GUARD);
+      state.note_definition(new_lhs.get_identifier(), new_rhs, true);
 
       guard_expr = state.rename(boolean_negate(guard_symbol_expr), ns).get();
     }

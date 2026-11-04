@@ -4,12 +4,12 @@ int g;
 void *t(void *a)
 {
   int c = nondet_int();
-  if(c)
+  if(c & 1)
   {
     int d = nondet_int();
     if(d)
       d = 0;
-    if(!c)
+    if(!(c & 1))
       g = 1;
   }
   return 0;

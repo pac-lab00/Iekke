@@ -8,6 +8,7 @@ main.c
 --
 ^warning: ignoring
 --
-The thread writes g only under c && !c, through two separately named guards,
-so the expression simplifier keeps the write; as BDDs the guard is false and
-the write is removed before the encoding.
+The thread writes g only under b && !b, b = (c & 1), through two separately
+named guards, so the expression simplifier keeps the write; as BDDs the guard
+is false and the write is removed before the encoding. (With plain c the path
+bounds in symex already decide !c false and the write never reaches the BDDs.)

@@ -444,6 +444,17 @@ protected:
   /// Symbolically execute a GOTO instruction
   /// \param state: Symbolic execution state for current instruction
   virtual void symex_goto(statet &state);
+
+  /// The value of goto condition \p cond on this path, if the bounds the path
+  /// guard puts on its symbol decide it (symex_goto.cpp).
+  optionalt<bool>
+  decide_by_path_bounds(const exprt &cond, const statet &state) const;
+
+public:
+  /// Branches decided by decide_by_path_bounds in the last symex pass.
+  std::size_t path_bound_decisions = 0;
+
+protected:
   /// Symbolically execute a GOTO instruction in the context of unreachable code
   /// \param state: Symbolic execution state for current instruction
   void symex_unreachable_goto(statet &state);

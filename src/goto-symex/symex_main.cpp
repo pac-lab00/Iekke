@@ -248,6 +248,7 @@ void goto_symext::symex_assume_l2(statet &state, const exprt &cond)
   {
     exprt tmp = state.guard.guard_expr(rewritten_cond);
     target.assumption(state.guard.as_expr(), tmp, state.source);
+    state.guarded_assumptions.emplace_back(state.guard.as_expr(), rewritten_cond);
   }
   // symex_target_equationt::convert_assertions would fail to
   // consider assumptions of threads that have a thread-id above that
@@ -499,6 +500,7 @@ void goto_symext::symex_from_entry_point_of(
   const get_goto_functiont &get_goto_function,
   symbol_tablet &new_symbol_table)
 {
+  path_bound_decisions = 0;
   auto state = initialize_entry_point_state(get_goto_function);
 
   // See goto_symext::seed_value_set_from_overall.  Only ever set under
