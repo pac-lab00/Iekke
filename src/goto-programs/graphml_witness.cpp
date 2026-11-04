@@ -664,7 +664,12 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
             // __SZH_EDIT: witnesslint did not know the function names, so the
             // scope keys and with them the \result assumptions are left out
             // (adding them back confirmed no more witnesses, 2026-11-01).
-            if(!has_prefix(assign_data, "\\result ="))
+            // A brace list ({ 15, '%', 's', ... }, a string passed by value)
+            // is not a C expression: CPAchecker rejects the whole witness on
+            // it ("Cannot parse witness", w83977af_ir and nsc-ircc).
+            if(
+              !has_prefix(assign_data, "\\result =") &&
+              assign_data.find('{') == std::string::npos)
             {
               xmlt &val = edge.new_element("data");
               val.set_attribute("key", "assumption");
