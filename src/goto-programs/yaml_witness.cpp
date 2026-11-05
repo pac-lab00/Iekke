@@ -32,6 +32,7 @@ Module: Violation Witnesses in the YAML Format
 
 #include "goto_trace.h"
 
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <ostream>
@@ -128,6 +129,43 @@ call_closing_parenthesis(const source_locationt &location, const std::string &ca
   return {0, 0};
 }
 
+/// The only call of \p callee in the file of \p location, outside its
+/// definition: (line, column), both 1-based, the column that of the name.
+/// (0, 0) when there is none or more than one.
+static std::pair<std::size_t, std::size_t>
+only_call_site(const source_locationt &location, const std::string &callee)
+{
+  const auto path = location.full_path();
+  std::ifstream in(path.has_value() ? *path : id2string(location.get_file()));
+  std::pair<std::size_t, std::size_t> found{0, 0};
+  std::string line;
+  for(std::size_t line_nr = 1; std::getline(in, line); ++line_nr)
+  {
+    for(auto at = line.find(callee); at != std::string::npos;
+        at = line.find(callee, at + 1))
+    {
+      const bool word_start =
+        at == 0 || !(std::isalnum(line[at - 1]) || line[at - 1] == '_');
+      std::size_t open = at + callee.size();
+      while(open < line.size() && (line[open] == ' ' || line[open] == '\t'))
+        ++open;
+      if(!word_start || open == line.size() || line[open] != '(')
+        continue;
+      // a definition or declaration: a type before the name
+      const auto before = line.find_last_not_of(" \t", at == 0 ? 0 : at - 1);
+      if(
+        at != 0 && before != std::string::npos &&
+        (std::isalnum(line[before]) || line[before] == '_' ||
+         line[before] == '*'))
+        continue;
+      if(found.first != 0)
+        return {0, 0};
+      found = {line_nr, at + 1};
+    }
+  }
+  return found;
+}
+
 /// One waypoint in flow style, so that a segment is one line of the witness
 static std::string waypoint_yaml(const waypointt &waypoint)
 {
@@ -165,6 +203,9 @@ bool yaml_violation_content(
 
   // the steps the witness points to as the violation
   std::vector<goto_tracet::stepst::const_iterator> target_steps;
+  // where the target goes when the trace does not show the call of
+  // reach_error (line, column); (0, 0) otherwise
+  std::pair<std::size_t, std::size_t> reach_error_call{0, 0};
   if(data_race)
   {
     // the two racing accesses: shared accesses reach the trace only as the
@@ -185,22 +226,41 @@ bool yaml_violation_content(
   }
   else
   {
-    // unreach-call fails inside reach_error; the violation is its call
-    auto at = failed;
-    if(failed->function_id == "reach_error")
+    // unreach-call fails inside reach_error, or in a function it calls --
+    // assert(0) in a .c task fails in the library's __assert_fail -- and the
+    // violation is the call of reach_error. The target was the assertion
+    // there (line of reach_error's body), which ESBMC rejects: it confirmed
+    // unreach-reachable-capacity-input-scanf with the target on the call.
+    // The calls open in the failing thread, innermost last:
+    std::vector<goto_tracet::stepst::const_iterator> open_calls;
+    for(auto it = goto_trace.steps.begin(); it != failed; ++it)
     {
-      for(auto it = goto_trace.steps.begin(); it != failed; ++it)
+      if(it->thread_nr != failed->thread_nr)
+        continue;
+      if(it->type == goto_trace_stept::typet::FUNCTION_CALL)
+        open_calls.push_back(it);
+      else if(
+        it->type == goto_trace_stept::typet::FUNCTION_RETURN &&
+        !open_calls.empty())
+        open_calls.pop_back();
+    }
+    auto at = failed;
+    for(const auto &call : open_calls)
+    {
+      if(call->called_function == "reach_error")
       {
-        if(
-          it->type == goto_trace_stept::typet::FUNCTION_CALL &&
-          it->called_function == "reach_error" &&
-          it->thread_nr == failed->thread_nr)
-        {
-          at = it;
-        }
+        at = call;
+        break;
       }
     }
     target_steps = {at};
+    // Under --rounds the trace can lack the calls that led to the failure
+    // (unreach-reachable-capacity-input-scanf: the barrier wait, then the
+    // failed assertion in reach_error): the call is then the only one in the
+    // source, if there is only one.
+    if(at == failed && failed->function_id == "reach_error")
+      reach_error_call =
+        only_call_site(failed->pc->source_location(), "reach_error");
   }
 
   // witness thread ids of the trace threads, assigned at their creation
@@ -246,7 +306,9 @@ bool yaml_violation_content(
       const auto id = id_of(it->thread_nr);
       if(!usable(location) || !id.has_value())
         return false;
-      targets.push_back({"target", location, 0, 0, *id});
+      targets.push_back(
+        {"target", location, reach_error_call.second, reach_error_call.first,
+         *id});
     }
 
     if(it->type == goto_trace_stept::typet::SPAWN)

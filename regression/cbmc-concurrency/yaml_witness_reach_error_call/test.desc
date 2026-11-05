@@ -1,0 +1,13 @@
+CORE
+main.c
+--64 --unwind 2 --rounds 2 --no-por --allow-pointer-unsoundness --yaml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+type: .target., action: .follow., location: {file_name: .main.c., line: 16, column: 50}
+--
+^warning: ignoring
+line: 15\}
+--
+The assertion fails in the body of reach_error, and the trace under --rounds
+lacks the calls that led there; the target must still be the call of
+reach_error, the only one in the file.
