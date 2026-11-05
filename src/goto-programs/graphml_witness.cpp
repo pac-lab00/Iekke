@@ -12,6 +12,8 @@ Author: Daniel Kroening
 #include "graphml_witness.h"
 
 #include <cstdlib>
+#include <map>
+#include <set>
 
 #include <util/arith_tools.h>
 #include <util/byte_operators.h>
@@ -239,11 +241,34 @@ static bool is_datarace_trace(const goto_tracet &goto_trace)
   return false;
 }
 
+static bool is_create_binding(const goto_trace_stept &step)
+{
+  const auto lhs_object =
+    step.is_assignment() ? step.get_lhs_object() : optionalt<symbol_exprt>{};
+  return lhs_object.has_value() &&
+         has_prefix(id2string(lhs_object->get_identifier()), "pthread_create::");
+}
+
+static bool is_create(const goto_trace_stept &step)
+{
+  const auto lhs_object =
+    step.is_assignment() ? step.get_lhs_object() : optionalt<symbol_exprt>{};
+  return lhs_object.has_value() &&
+         id2string(lhs_object->get_identifier()).find(
+           "pthread_create::thread") != std::string::npos;
+}
+
 static bool filter_out(
   const goto_tracet &goto_trace,
   const goto_tracet::stepst::const_iterator &prev_it,
-  goto_tracet::stepst::const_iterator &it)
+  goto_tracet::stepst::const_iterator &it,
+  const std::set<std::size_t> &unused_creations)
 {
+  // creations of threads that never run, after the creator's last step that
+  // matters (see unused_creations in operator())
+  if(unused_creations.count(it->step_nr))
+    return true;
+
   // LAZYPO_WITNESS_MINIMAL (option): a data-race witness with only the thread
   // creations and the violation. Dartagnan turns consecutive edges into
   // ordering constraints between the events on their lines; at its first loop
@@ -309,9 +334,13 @@ static bool filter_out(
   // we filter out steps with the same source location
   // TODO: if these are assignments we should accumulate them into
   //       a single edge
+  // Thread creations are exempt: a loop creating threads repeats the same
+  // line, and merging them left one createThread edge while the threads it
+  // started all ran (41_FreeBSD_abd_kbd_sliced: thread 2 ran, never created).
   if(
     prev_it != goto_trace.steps.end() &&
-    prev_it->pc->source_location() == it->pc->source_location())
+    prev_it->pc->source_location() == it->pc->source_location() &&
+    !is_create(*it))
     return true;
 
   if(it->is_goto() && it->pc->condition().is_true())
@@ -405,17 +434,53 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
 
   graphml.key_values["sourcecodelang"]="C";
 
+  // Creations of threads that never run: the trace goes on creating threads
+  // up to the loop bound, and the threads past the last one that runs do
+  // nothing in it. Their creation (with its argument bindings) is left out of
+  // the witness, and a thread's path ends at its last step that matters.
+  // Threads are numbered in creation order (thread_id below).
+  std::set<std::size_t> unused_creations;
+  {
+    unsigned created = 0;
+    bool unused = false;
+    for(const auto &step : goto_trace.steps)
+    {
+      if(!is_create_binding(step))
+        continue;
+      if(is_create(step))
+        unused = ++created > max_thread_idx;
+      if(unused)
+        unused_creations.insert(step.step_nr);
+    }
+  }
+
   // unroll-bound: the fewest loop unrollings that contain this path, which
   // Dartagnan validates under (without it, one unrolling, and a path through
   // a second iteration is rejected); taken back edges counted per thread, over
-  // the program's own loops only, not those of the library models
+  // the program's own loops only, not those of the library models, and only
+  // up to the thread's last step that matters: 41_FreeBSD_abd_kbd_sliced is
+  // confirmed in 4 s at 2 and times out at 3, where main's loop went round
+  // once more to create a thread that never runs
   {
+    std::map<unsigned, std::size_t> last_step;
+    for(const auto &step : goto_trace.steps)
+    {
+      const source_locationt &l = step.pc->source_location();
+      if(
+        (step.is_assignment() || step.is_assert() || step.is_shared_read() ||
+         step.is_shared_write()) &&
+        !step.hidden && !unused_creations.count(step.step_nr) &&
+        !l.get_line().empty() &&
+        !has_prefix(id2string(l.get_file()), "<builtin"))
+        last_step[step.thread_nr] = step.step_nr;
+    }
     std::map<std::pair<unsigned, unsigned>, std::size_t> iterations;
     std::size_t max_iterations = 0;
     for(const auto &step : goto_trace.steps)
     {
       if(
         step.type != goto_trace_stept::typet::GOTO || !step.cond_value ||
+        step.step_nr > last_step[step.thread_nr] ||
         !step.pc->is_backwards_goto() ||
         has_prefix(
           id2string(step.pc->source_location().get_file()), "<builtin"))
@@ -486,7 +551,7 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
       it!=goto_trace.steps.end();
       it++) // we cannot replace this by a ranged for
   {
-    if(filter_out(goto_trace, prev_it, it))
+    if(filter_out(goto_trace, prev_it, it, unused_creations))
     {
       step_to_node[it->step_nr]=sink;
 
@@ -599,7 +664,8 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     auto next = std::next(it);
     for(; next != goto_trace.steps.end() &&
           (step_to_node[next->step_nr] == sink ||
-           pointee_address_equalt{}(it->pc, next->pc)); // NOLINT
+           (pointee_address_equalt{}(it->pc, next->pc) &&
+            !is_create(*next))); // NOLINT
         ++next)
     {
       // advance
