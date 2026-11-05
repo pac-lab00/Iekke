@@ -79,56 +79,6 @@ static std::string base_name(const std::string &path)
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-/// Where the `)` that closes the call of \p callee on the line of
-/// \p location is, which is where a `function_enter` waypoint points:
-/// (line, column), both 1-based; a call can go on over the next lines. (0, 0)
-/// when the call is not found.
-static std::pair<std::size_t, std::size_t>
-call_closing_parenthesis(const source_locationt &location, const std::string &callee)
-{
-  const auto path = location.full_path();
-  std::ifstream in(path.has_value() ? *path : id2string(location.get_file()));
-  const auto line_nr = std::stoul(id2string(location.get_line()));
-  std::string line;
-  for(std::size_t i = 0; i < line_nr; ++i)
-  {
-    if(!std::getline(in, line))
-      return {0, 0};
-  }
-  for(auto at = line.find(callee); at != std::string::npos;
-      at = line.find(callee, at + 1))
-  {
-    std::size_t open = at + callee.size();
-    while(open < line.size() && (line[open] == ' ' || line[open] == '\t'))
-      ++open;
-    if(open == line.size() || line[open] != '(')
-      continue;
-    int depth = 0;
-    std::size_t current = line_nr;
-    for(std::size_t i = open;; ++i)
-    {
-      if(i == line.size())
-      {
-        // the arguments go on: a few lines at most
-        if(current - line_nr == 20 || !std::getline(in, line))
-          return {0, 0};
-        ++current;
-        i = 0;
-        if(line.empty())
-        {
-          i = static_cast<std::size_t>(-1);
-          continue;
-        }
-      }
-      if(line[i] == '(')
-        ++depth;
-      else if(line[i] == ')' && --depth == 0)
-        return {current, i + 1};
-    }
-  }
-  return {0, 0};
-}
-
 /// The only call of \p callee in the file of \p location, outside its
 /// definition: (line, column), both 1-based, the column that of the name.
 /// (0, 0) when there is none or more than one.
@@ -291,14 +241,17 @@ bool yaml_violation_content(
   const auto register_thread = [&](
                                  const source_locationt &location,
                                  std::size_t creator) {
-    // The line of the closing parenthesis, without its column, which the
-    // format leaves optional: CPAchecker (the 2027 validator build) matches no
-    // edge to a function_enter on pthread_create that carries a column -- any
-    // column -- and refused every such witness ("No CFAEdge could be matched
-    // for the function enter waypoint"); without it, it reads the witness.
-    const auto closing = call_closing_parenthesis(location, "pthread_create");
-    registrations.push_back(
-      {"function_enter", location, 0, closing.first, creator});
+    // The line where the call begins, without a column. The format points a
+    // function_enter at the parenthesis that closes the call, and its line was
+    // written; but the validators match a thread creation by the line of the
+    // call: on pthread/reorder_2-race, where the call of pthread_create goes
+    // on over two lines, Dartagnan (the 2027 build) found no creation on the
+    // second and answered PASS three times out of three, and confirmed the
+    // same witness with the first line twice out of two; CPAchecker matched
+    // reorder_2 only on the first line too. With any column CPAchecker matches
+    // no edge at all ("No CFAEdge could be matched for the function enter
+    // waypoint"); the column is optional.
+    registrations.push_back({"function_enter", location, 0, 0, creator});
     return registrations.size();
   };
   for(auto it = goto_trace.steps.begin(); it != goto_trace.steps.end(); ++it)
