@@ -591,6 +591,19 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
       // false-alarm fix this guard exists for is untouched).
       if(renamed_index.is_constant())
       {
+        // Only the element the index decides is read. Renamed whole, every
+        // element emitted a read event with the plain path guard: under
+        // --own-view-reads a thread's own `tid` is constant-propagated, and
+        // `in[tid]` in one thread was reported racing with another thread's
+        // write of in[0] when tid was 1 (pthread-divine/barrier_2t, the race
+        // its witness named; a safe two-line reproducer was answered FALSE).
+        const auto k = numeric_cast<mp_integer>(renamed_index);
+        const auto &elements = to_array_expr(index_expr.array()).operands();
+        if(k.has_value() && *k >= 0 && *k < elements.size())
+        {
+          exprt element = elements[numeric_cast_v<std::size_t>(*k)];
+          return rename<level>(std::move(element), ns);
+        }
         for(auto &op : to_array_expr(index_expr.array()).operands())
           op = rename<level>(std::move(op), ns).get();
       }
