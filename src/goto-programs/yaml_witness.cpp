@@ -291,9 +291,14 @@ bool yaml_violation_content(
   const auto register_thread = [&](
                                  const source_locationt &location,
                                  std::size_t creator) {
+    // The line of the closing parenthesis, without its column, which the
+    // format leaves optional: CPAchecker (the 2027 validator build) matches no
+    // edge to a function_enter on pthread_create that carries a column -- any
+    // column -- and refused every such witness ("No CFAEdge could be matched
+    // for the function enter waypoint"); without it, it reads the witness.
     const auto closing = call_closing_parenthesis(location, "pthread_create");
     registrations.push_back(
-      {"function_enter", location, closing.second, closing.first, creator});
+      {"function_enter", location, 0, closing.first, creator});
     return registrations.size();
   };
   for(auto it = goto_trace.steps.begin(); it != goto_trace.steps.end(); ++it)

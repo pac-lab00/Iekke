@@ -4,11 +4,12 @@ main.c
 ^EXIT=10$
 ^SIGNAL=0$
 ^VERIFICATION FAILED$
-^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 10, column: 37}, thread_id: 0}}\]$
+^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 10}, thread_id: 0}}\]$
 ^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 5}, thread_id: 1}}\]$
 --
 ^VERIFICATION SUCCESSFUL$
 --
 The call of pthread_create goes on over two lines. A function_enter waypoint
 points at the parenthesis that closes the call (sv-witnesses, Type), which is
-on the second line: line 10, column 37, not the line where the call begins.
+on the second line: line 10, not the line where the call begins (no column:
+CPAchecker matches no function_enter on pthread_create that has one).

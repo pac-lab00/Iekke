@@ -4,7 +4,7 @@ main.c
 ^EXIT=10$
 ^SIGNAL=0$
 ^VERIFICATION FAILED$
-^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 14, column: 35}, thread_id: 0}}\]$
+^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 14}, thread_id: 0}}\]$
 ^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 15}, thread_id: 0}}, {waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 7}, thread_id: 1}}\]$
 --
 ^VERIFICATION SUCCESSFUL$
