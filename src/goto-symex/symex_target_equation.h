@@ -29,6 +29,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 class decision_proceduret;
 class namespacet;
+class symbolt;
 
 // __SZH_ADD_BEGIN__
 struct oc_edget
@@ -390,6 +391,8 @@ public:
   std::set<std::string> atomic_dynamic_objects;
   void dynamic_object_atomicity(const namespacet& ns);
   bool symbol_is_atomic(const namespacet& ns, irep_idt symbol_name);
+  std::map<irep_idt, bool> union_atomicity;
+  bool union_accessed_atomically(const namespacet &ns, const symbolt &symbol);
 
   void remove_dummy_accesses();
 

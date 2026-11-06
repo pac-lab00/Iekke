@@ -607,6 +607,7 @@ void symex_target_equationt::build_with_map(std::map<std::string, exprt>& with_m
 #include <algorithm>
 #include <util/format_type.h>
 #include <util/pointer_expr.h>
+#include <linking/static_lifetime_init.h>
 
 bool type_is_atomic(const typet& type)
 {
@@ -673,6 +674,95 @@ static bool part_is_atomic(
   return false;
 }
 
+/// Does `expr` name the object `id` only as the operand of a member access
+/// selecting an _Atomic member (or its byte_extract rewriting)? Sets `found` when it names `id` at all. A
+/// dereference may reach any object, `id` included, through any member, so
+/// it fails the test.
+static bool names_only_atomic_members(
+  const namespacet &ns,
+  const exprt &expr,
+  const irep_idt &id,
+  bool &found)
+{
+  if(expr.id() == ID_dereference)
+    return false;
+  if(expr.id() == ID_member)
+  {
+    const member_exprt &member = to_member_expr(expr);
+    if(
+      member.compound().id() == ID_symbol &&
+      to_symbol_expr(member.compound()).get_identifier() == id)
+    {
+      found = true;
+      const typet &compound_type = ns.follow(member.compound().type());
+      if(compound_type.id() != ID_union)
+        return false;
+      const auto &component = to_union_type(compound_type).get_component(
+        member.get_component_name());
+      return component.is_not_nil() && type_is_atomic(component.type());
+    }
+  }
+  // goto conversion has already rewritten u.f into byte_extract(u, 0) with
+  // the type of the member (rewrite_union), qualifiers included
+  if(
+    (expr.id() == ID_byte_extract_little_endian ||
+     expr.id() == ID_byte_extract_big_endian) &&
+    to_byte_extract_expr(expr).op().id() == ID_symbol &&
+    to_symbol_expr(to_byte_extract_expr(expr).op()).get_identifier() == id)
+  {
+    found = true;
+    return type_is_atomic(expr.type()) &&
+           names_only_atomic_members(
+             ns, to_byte_extract_expr(expr).offset(), id, found);
+  }
+  if(expr.id() == ID_symbol && to_symbol_expr(expr).get_identifier() == id)
+  {
+    found = true;
+    return false;
+  }
+  for(const auto &operand : expr.operands())
+    if(!names_only_atomic_members(ns, operand, id, found))
+      return false;
+  return true;
+}
+
+/// A union is one object to the race encoding: writing a member writes the
+/// whole union, so `u.f = 1` with `_Atomic int f` looked like a plain write
+/// (pthread-atomic-qualifier/atomic-qual-union-member was answered FALSE).
+/// The union is atomic when every instruction that accesses it, static
+/// initialisation aside (it precedes every thread), names it only through
+/// _Atomic members.
+bool symex_target_equationt::union_accessed_atomically(
+  const namespacet &ns,
+  const symbolt &symbol)
+{
+  const auto cached = union_atomicity.find(symbol.name);
+  if(cached != union_atomicity.end())
+    return cached->second;
+  bool atomic = false;
+  for(const auto &step : SSA_steps)
+  {
+    if(!step.is_shared_read() && !step.is_shared_write())
+      continue;
+    if(step.ssa_lhs.get_l1_object_identifier() != symbol.name)
+      continue;
+    if(step.source.function_id == INITIALIZE_FUNCTION)
+      continue;
+    bool found = false;
+    const auto &instruction = *step.source.pc;
+    atomic =
+      names_only_atomic_members(ns, instruction.code(), symbol.name, found) &&
+      (!instruction.has_condition() ||
+       names_only_atomic_members(
+         ns, instruction.condition(), symbol.name, found)) &&
+      found;
+    if(!atomic)
+      break;
+  }
+  union_atomicity[symbol.name] = atomic;
+  return atomic;
+}
+
 bool symex_target_equationt::symbol_is_atomic(const namespacet& ns, irep_idt symbol_name) {
   const std::string name = id2string(symbol_name);
   const std::size_t part = std::min(name.find("[["), name.find(".."));
@@ -688,6 +778,8 @@ bool symex_target_equationt::symbol_is_atomic(const namespacet& ns, irep_idt sym
     return false;
   if(type_is_atomic(symbol_ptr->type))
     return true;
+  if(part == std::string::npos && ns.follow(symbol_ptr->type).id() == ID_union)
+    return union_accessed_atomically(ns, *symbol_ptr);
   return part != std::string::npos &&
          part_is_atomic(ns, symbol_ptr->type, name, part);
 }
