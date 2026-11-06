@@ -32,6 +32,8 @@ Module: Violation Witnesses in the YAML Format
 
 #include "goto_trace.h"
 
+#include <algorithm>
+
 #include <cctype>
 #include <fstream>
 #include <map>
@@ -301,6 +303,20 @@ bool yaml_violation_content(
   }
   if(targets.size() != target_steps.size())
     return false;
+  // A race leaves its two accesses unordered, and so does the model: which
+  // comes first in the trace depends on the solver (adding the pthread_join
+  // result to the pthread model swapped the pair of yaml_witness_datarace_
+  // rounds). ESBMC confirmed that witness with the lower thread first and
+  // rejected it the other way round; list them that way, so that the
+  // witness does not change with the solver's choice.
+  if(data_race)
+  {
+    std::stable_sort(
+      targets.begin(), targets.end(),
+      [](const waypointt &a, const waypointt &b) {
+        return a.thread_id < b.thread_id;
+      });
+  }
 
   // Only the threads of the violation and the threads that created them are
   // registered. The time a spawn gets in the trace is not precise (it has no
