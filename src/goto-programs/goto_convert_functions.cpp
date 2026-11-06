@@ -437,6 +437,23 @@ void goto_convert_functionst::simplify_pthread_create_join(codet& code)
     }
     exprt final_function = args[2].op0();
 
+    // Only a join that discards the thread's result (a null value_ptr): the
+    // plain call drops the result and leaves *value_ptr as it was (the
+    // pthread-join-result tasks).
+    {
+      exprt value_ptr = next_args[1];
+      while(value_ptr.id() == ID_typecast)
+        value_ptr = to_typecast_expr(value_ptr).op();
+      if(
+        !value_ptr.is_constant() ||
+        (!value_ptr.is_zero() &&
+         to_constant_expr(value_ptr).get_value() != ID_NULL))
+      {
+        it++;
+        continue;
+      }
+    }
+
     if(uses_thread_local_storage(symbol_table))
     {
       it++;

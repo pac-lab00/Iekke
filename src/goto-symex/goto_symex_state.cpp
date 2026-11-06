@@ -992,6 +992,15 @@ void goto_symex_statet::seed_published_targets_in(
   }
 }
 
+/// A pointer, or an array of them: the value set keeps one entry for all the
+/// elements of an array, under the array's own name.
+static bool pointer_or_pointer_array(const typet &type)
+{
+  if(type.id() == ID_array)
+    return pointer_or_pointer_array(to_array_type(type).element_type());
+  return type.id() == ID_pointer;
+}
+
 void goto_symex_statet::seed_published_targets(
   const ssa_exprt &expr,
   const irep_idt &l1_identifier,
@@ -1000,8 +1009,12 @@ void goto_symex_statet::seed_published_targets(
   // Only a pointer can be published, and only a previous pass can know what
   // was published: value sets are built in symex order, so a read carries
   // only the targets that existed when it was symexed (CBMC issue #305).
+  // Arrays too: an array split by field sensitivity is read element by
+  // element, but one of unbounded size is read whole -- the results that
+  // pthread_join takes from __CPROVER_thread_return_values, written by a
+  // thread symexed after the join (pthread-join-result/shared-buffer).
   (void)ns;
-  if(published_value_set == nullptr || expr.type().id() != ID_pointer)
+  if(published_value_set == nullptr || !pointer_or_pointer_array(expr.type()))
     return;
 
   if(consulted_published != nullptr)

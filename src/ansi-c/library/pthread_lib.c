@@ -527,6 +527,7 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 #endif
 
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
 extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
@@ -538,7 +539,8 @@ void __CPROVER_run_thread_key_dtors(void);
 void pthread_exit(void *value_ptr)
 {
   __CPROVER_HIDE:;
-  if(value_ptr!=0) (void)*(char*)value_ptr;
+  // the value pthread_join hands back; pthread_exit does not dereference it
+  __CPROVER_thread_return_values[__CPROVER_thread_id] = value_ptr;
   // the destructors of the thread-specific values; defined with
   // pthread_key_create, so a program that creates no key calls a function
   // with no body, which does nothing
@@ -563,6 +565,7 @@ void pthread_exit(void *value_ptr)
 #endif
 
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 extern unsigned long __CPROVER_next_thread_id;
 
@@ -578,8 +581,11 @@ __CPROVER_HIDE:;
 
   if((unsigned long)thread>__CPROVER_next_thread_id) return ESRCH;
   if((unsigned long)thread==__CPROVER_thread_id) return EDEADLK;
-  if(value_ptr!=0) (void)**(char**)value_ptr;
   __CPROVER_assume(__CPROVER_threads_exited[(unsigned long)thread]);
+  // the value the thread returned or passed to pthread_exit; *value_ptr is
+  // written, never read (it was dereferenced as a pointer, and never set)
+  if(value_ptr!=0)
+    *value_ptr = __CPROVER_thread_return_values[(unsigned long)thread];
 
   return 0;
 }
@@ -600,6 +606,7 @@ __CPROVER_HIDE:;
 
 #ifdef __APPLE__
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 extern unsigned long __CPROVER_next_thread_id;
 
@@ -615,8 +622,11 @@ __CPROVER_HIDE:;
 
   if((unsigned long)thread>__CPROVER_next_thread_id) return ESRCH;
   if((unsigned long)thread==__CPROVER_thread_id) return EDEADLK;
-  if(value_ptr!=0) (void)**(char**)value_ptr;
   __CPROVER_assume(__CPROVER_threads_exited[(unsigned long)thread]);
+  // the value the thread returned or passed to pthread_exit; *value_ptr is
+  // written, never read (it was dereferenced as a pointer, and never set)
+  if(value_ptr!=0)
+    *value_ptr = __CPROVER_thread_return_values[(unsigned long)thread];
 
   return 0;
 }
@@ -787,6 +797,7 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *lock)
 /* FUNCTION: __spawned_thread */
 
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
 extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
@@ -809,7 +820,7 @@ __CPROVER_HIDE:;
   __CPROVER_clear_must(0, "mutex-locked");
   __CPROVER_clear_may(0, "mutex-locked");
 #endif
-  start_routine(arg);
+  __CPROVER_thread_return_values[this_thread_id] = start_routine(arg);
   __CPROVER_fence(
     "WWfence",
     "RRfence",

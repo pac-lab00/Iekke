@@ -74,6 +74,9 @@ void cpp_internal_additions(std::ostream &out)
       << CPROVER_PREFIX "threads_exited[__CPROVER::constant_infinity_uint];"
       << '\n';
   out << "unsigned long " CPROVER_PREFIX "next_thread_id = 0;" << '\n';
+  out << "void* "
+      << CPROVER_PREFIX "thread_return_values[__CPROVER::constant_infinity_uint];"
+      << '\n';
   // TODO: thread_local is still broken
   out << "void* "
       << CPROVER_PREFIX "thread_keys[__CPROVER::constant_infinity_uint];"
