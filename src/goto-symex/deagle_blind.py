@@ -244,7 +244,7 @@ elif "no-data-race.prp" in property_path:
 elif "no-overflow.prp" in property_path:
     flags += "--no-assertions --signed-overflow-check --unsigned-overflow-check "
 elif "valid-memsafety.prp" in property_path:
-    flags += "--no-assertions --pointer-check --alloc-check --memory-leak-check"
+    flags += "--no-assertions --pointer-check --bounds-check --alloc-check --memory-leak-check"
 else:
     print("Unknown property: %s" % property_path)
     sys.exit(0)
@@ -540,6 +540,23 @@ def shorter_witness(cmd, rounds):
         os.replace(WITNESS_CONTENT + ".long", WITNESS_CONTENT)
 
 
+# SV-COMP counts an array access out of bounds as valid-deref. The tool-info
+# module it runs (benchexec/tools/iekke.py) recognises valid-deref only by
+# "pointer_dereference." or "alloc.assertion." on a FAILURE line, and CBMC
+# names its --bounds-check properties "array_bounds.": alone, such a failure
+# is read as false(unreach-call), a wrong answer for a memory-safety task
+# (pthread-array-bounds/global-histogram, valid-deref).
+def deref_reading(out):
+    failed = [l for l in out.splitlines()
+              if l.startswith("[") and l.rstrip().endswith(": FAILURE")]
+    others = ("pointer_dereference.", "alloc.assertion.", "memory-leak.")
+    if (any(".array_bounds." in l for l in failed)
+            and not any(k in l for l in failed for k in others)):
+        return ("valid-deref: an array access out of bounds, "
+                "a pointer_dereference. FAILURE for SV-COMP")
+    return None
+
+
 for unwind, rounds, extra in bounds():
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE:
@@ -613,6 +630,8 @@ for unwind, rounds, extra in bounds():
                 shorter_witness(cmd, rounds)
             write_violation_witness()
         print(out)
+        if "valid-memsafety.prp" in property_path and deref_reading(out):
+            print(deref_reading(out))
         print("FAILED")
         sys.exit(0)
     # For unreach-call a SUCCESSFUL from a bound that generated no verification

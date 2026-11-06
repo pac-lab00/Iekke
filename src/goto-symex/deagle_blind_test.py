@@ -35,6 +35,11 @@
 # it (TRUE if "SUCCESSFUL" is on any line, else FALSE if "FAILED" is) must
 # give the wrapper's answer: a bug found after a safe bound is FALSE, and an
 # answer of UNKNOWN is not TRUE.
+# Case "bounds": memory safety runs with --bounds-check, and a FAILURE of an
+# array bound alone is read by the tool-info module as false(valid-deref).
+# Before the fix no bound was checked (pthread-array-bounds/global-histogram
+# answered TRUE), and the module would have read the failure as
+# false(unreach-call).
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -103,6 +108,11 @@ if mode == "hog":
 solver = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
 with open(os.path.join(here, "pids"), "a") as f:
     f.write("%d\n%d\n" % (os.getpid(), solver.pid))
+if mode == "bounds_fail":
+    solver.kill(); solver.wait()
+    print("[main.array_bounds.2] line 5 array 'a' upper bound in a[i]: FAILURE")
+    print("VERIFICATION FAILED")
+    sys.exit(10)
 if mode == "fail":
     solver.kill(); solver.wait()
     print("VERIFICATION FAILED")
@@ -245,6 +255,8 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
         rounds = int(w[w.index("--rounds") + 1])
         # 7 = deagle_blind.POR_MIN_ROUNDS
         por, other = ("--por", "--no-por") if rounds >= 7 else ("--no-por", "--por")
+        if prop == "valid-memsafety.prp" and "--bounds-check" not in w:
+            bad.append(a)
         if (got != want or "--thread-symmetry" in a or "--array-rf-bytes" not in a
                 or por not in w or other in w
                 or "--malloc-may-fail" not in w or "--malloc-fail-null" not in w):
@@ -315,6 +327,24 @@ for mode, want in (("late_bug", "false"), ("safe_then_nothing", "unknown")):
         ok = False
     else:
         print("ok   official %s: read as %r" % (mode, got))
+
+def official_property(out):
+    """the per-line loop of determine_result for a FALSE answer"""
+    status = "false(unreach-call)"
+    for l in out.splitlines():
+        if ("alloc.assertion." in l or "pointer_dereference." in l) and "FAILURE" in l:
+            status = "false(valid-deref)"
+        if "memory-leak." in l and "FAILURE" in l:
+            status = "false(valid-memtrack)"
+    return status
+
+out, pids, survivors = run("bounds_fail", 30, prop="valid-memsafety.prp")
+got = official(out, 0), official_property(out)
+if got != ("false", "false(valid-deref)"):
+    print("FAIL bounds: SV-COMP would read %r" % (got,))
+    ok = False
+else:
+    print("ok   bounds: an array bound failure is read as false(valid-deref)")
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:
