@@ -1,15 +1,26 @@
-Copyright (c) 2021-2026, Fei He, Zhihang Sun, and Hongyu Fan, 
+Iekke
+=====
+
+(C) 2025-2027, di Cristofaro Andrea Pino, Di Biase Paolo, Bernd Fischer,
+Salvatore La Torre, Peter Schrammel, Gennaro Parlato
+University of Molise, GSSI, Stellenbosch University, University of Salerno,
+Diffblue Ltd, University of Molise
+
+Iekke is built on top of Deagle, which is built on top of CBMC, and it
+contains the SAT solvers MiniSat and Glucose. Except where otherwise noted,
+Iekke is distributed under the BSD 4-Clause License of Deagle reproduced in
+Section 1. The code derived from CBMC is also subject to the license in
+Section 2, MiniSat to the license in Section 3, and Glucose to the license in
+Section 4.
+
+
+1. Deagle (and Iekke)
+---------------------
+
+Copyright (c) 2021-2026, Fei He, Zhihang Sun, and Hongyu Fan,
 		School of Software, Tsinghua University
 
-(C) 2025-2026, Di Biase Paolo, Bernd Fischer, Salvatore La Torre, Peter Schrammel, Gennaro Parlato
-GSSI, Stellenbosch University, University of Salerno, Diffblue Ltd, University of Molise
-
 All rights reserved.
-
-Except where otherwise noted, Deagle is distributed under the BSD 4-Clause License.
-
-This project includes code derived from CBMC and MiniSat. Their complete
-license terms are reproduced below.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -24,7 +35,7 @@ documentation and/or other materials provided with the distribution.
 3. All advertising materials mentioning features or use of this software
 must display the following acknowledgement:
 
-  This product includes software developed by Fei He, Zhihang Sun, and Hongyu Fan, 
+  This product includes software developed by Fei He, Zhihang Sun, and Hongyu Fan,
 School of Software, Tsinghua University.
 
 4. Neither the name of Tsinghua University nor the names of its
@@ -42,6 +53,10 @@ INTERRUPTION, HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT, INCLUDING NEGLIGENCE OR OTHERWISE
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
+
+
+2. CBMC
+-------
 
 (C) 2001-2016, Daniel Kroening, Edmund Clarke,
 Computer Science Department, University of Oxford
@@ -81,7 +96,11 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
-     
+
+
+3. MiniSat
+----------
+
 MiniSat -- Copyright (c) 2003-2006, Niklas Een, Niklas Sorensson
            Copyright (c) 2007-2010  Niklas Sorensson
 
@@ -103,3 +122,32 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+4. Glucose
+----------
+
+Iekke contains a modified version of Glucose 4.1, obtained from
+https://github.com/audemard/glucose (based on MiniSat, see Section 3).
+
+MIT License
+
+Copyright (c) 2023 Gilles Audemard
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
