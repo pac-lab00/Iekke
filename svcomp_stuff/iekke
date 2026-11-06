@@ -1,14 +1,17 @@
 #! /usr/bin/python3
 
+import datetime
+import hashlib
 import sys
 import os
 import re
 import time
+import uuid
 
 limit_solverbound = 300
 
 def ensure_successful_unwind():
-    with open("deagle_tmp_output", "r") as output:
+    with open("iekke_tmp_output", "r") as output:
         lines = output.readlines()
         for line in lines:
             if "Unwinding successfully" in line:
@@ -21,7 +24,7 @@ def check_result_normality(lines):
 
 def get_result(remove = True):
     result = "SUCCESS"
-    with open("deagle_tmp_output", "r") as output:
+    with open("iekke_tmp_output", "r") as output:
         lines = output.readlines()
         if not check_result_normality(lines):
             return "ERROR"
@@ -35,18 +38,18 @@ def get_result(remove = True):
             print(line,end="")
     print("Property: %s" % result)
     if(remove):
-        os.system("rm deagle_tmp_output")
+        os.system("rm iekke_tmp_output")
     return result
 
 def get_loop_info(program_path, flags):
-    cmd = "./deagle_exe %s %s --unwind-suggest > deagle_tmp_unwind_suggest 2>&1" % (program_path, flags)
+    cmd = "./iekke_exe %s %s --unwind-suggest > iekke_tmp_unwind_suggest 2>&1" % (program_path, flags)
     print(cmd)
     os.system(cmd)
 
     loops_name = []
     loops_limit = []
     is_onlystatic = True
-    with open("deagle_tmp_unwind_suggest", "r") as output:
+    with open("iekke_tmp_unwind_suggest", "r") as output:
         lines = output.readlines()
         for i in range(len(lines)):
             obj = re.match(r"Loop (.+):", lines[i])
@@ -73,7 +76,7 @@ def get_loop_info(program_path, flags):
                 is_onlystatic = False
             
     print(loops_name, loops_limit)
-    os.system("rm deagle_tmp_unwind_suggest")
+    os.system("rm iekke_tmp_unwind_suggest")
     return loops_name, loops_limit, is_onlystatic
 
 def generate_unwindset(loops_name, loops_limit):
@@ -83,20 +86,21 @@ def generate_unwindset(loops_name, loops_limit):
     return unwindset
 
 if len(sys.argv) < 2 or sys.argv[1] == "-v" or sys.argv[1] == "--version":
-    print("1.0")
+    print("4.1.0")
     sys.exit(0)
 
 if sys.argv[1] == "--witness":
-    print("Deagle is not a validator!")
+    print("iekke is not a validator!")
     sys.exit(0)
 
 if len(sys.argv) < 3:
-    print("Usage: ./deagle property_path program_path")
+    print("Usage: ./iekke property_path program_path")
     sys.exit(0)
 
 property_path = sys.argv[1]
 program_path = sys.argv[2]
-flags = "--refined-pointer-analysis --graphml-witness error-witness.graphml "
+data_model = sys.argv[3] if len(sys.argv) > 3 else "--32"
+flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
 
 if "unreach-call.prp" in property_path:
     flags += ""
@@ -110,28 +114,90 @@ else:
     print("Unknown property: %s" % property_path)
     sys.exit(0)
 
+WITNESS = "witness.yml"
+WITNESS_CONTENT = "witness-content.yml"
+VERSION = "4.1.0"
+WANTS_CORRECTNESS_WITNESS = ("unreach-call.prp" in property_path
+                             or "no-overflow.prp" in property_path)
+WANTS_WITNESS = (WANTS_CORRECTNESS_WITNESS
+                 or "no-data-race.prp" in property_path)
+if WANTS_WITNESS:
+    flags += " --yaml-witness %s " % WITNESS_CONTENT
+
+
+def quoted(s):
+    return "'" + s.replace("'", "''") + "'"
+
+
+def write_witness(entry_type, format_version, content):
+    with open(program_path, "rb") as f:
+        sha256 = hashlib.sha256(f.read()).hexdigest()
+    with open(property_path) as f:
+        specification = " ".join(l.strip() for l in f if l.strip())
+    lines = [
+        "- entry_type: %s" % quoted(entry_type),
+        "  metadata:",
+        "    format_version: %s" % quoted(format_version),
+        "    uuid: %s" % quoted(str(uuid.uuid4())),
+        "    creation_time: %s" % quoted(datetime.datetime.now(
+            datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        "    producer:",
+        "      name: 'Iekke'",
+        "      version: %s" % quoted(VERSION),
+        "    task:",
+        "      input_files:",
+        "      - %s" % quoted(os.path.basename(program_path)),
+        "      input_file_hashes:",
+        "        %s: %s" % (quoted(program_path), quoted(sha256)),
+        "      specification: %s" % quoted(specification),
+        "      data_model: %s" % quoted("LP64" if data_model == "--64" else "ILP32"),
+        "      language: 'C'",
+    ]
+    if content:
+        lines.append("  content:")
+        lines += ["  " + l for l in content.splitlines()]
+    else:
+        lines.append("  content: []")
+    with open(WITNESS, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_violation_witness():
+    try:
+        with open(WITNESS_CONTENT) as f:
+            content = f.read()
+    except OSError:
+        return
+    if content.strip():
+        write_witness("violation_sequence", "2.2", content)
+
+
+def run(cmd):
+    if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
+        os.remove(WITNESS_CONTENT)
+    print(cmd)
+    os.system(cmd)
+
+
 loops_name, loops_limit, is_onlystatic = get_loop_info(program_path, flags)
 
 if not loops_name:
-    # No loops, run deagle_exe without any loop specification!
+    # No loops, run iekke_exe without any loop specification!
     print("No loops!")
-    cmd = "./deagle_exe %s %s > deagle_tmp_output 2>&1" % (program_path, flags)
-    print(cmd)
-    os.system(cmd)
+    cmd = "./iekke_exe %s %s --rounds 3 --minisat > iekke_tmp_output 2>&1" % (program_path, flags)
+    run(cmd)
     result = get_result()
 elif is_onlystatic:
     # All loops are static
     print("All loops can be statically determined!")
     unwindset = generate_unwindset(loops_name, loops_limit)
-    cmd = "./deagle_exe %s %s --unwindset %s > deagle_tmp_output 2>&1" % (program_path, flags, unwindset)
-    print(cmd)
-    os.system(cmd)
+    cmd = "./iekke_exe %s %s --unwindset %s --rounds 3 --minisat > iekke_tmp_output 2>&1" % (program_path, flags, unwindset)
+    run(cmd)
     result = get_result()
 else:
     # Try whether this verification task is solvable without giving unwind limit
-    try_cmd = "timeout 5 ./deagle_exe %s %s > deagle_tmp_output 2>&1" % (program_path, flags)
-    print(try_cmd)
-    os.system(try_cmd)
+    try_cmd = "timeout 5 ./iekke_exe %s %s --rounds 3 --minisat > iekke_tmp_output 2>&1" % (program_path, flags)
+    run(try_cmd)
     try_result = get_result(False)
     if try_result == "SUCCESS" or try_result == "FAILURE":
         # Solvable in 5 seconds
@@ -140,9 +206,8 @@ else:
     elif ensure_successful_unwind():
         # Not solved, but fully unwinded in 5 seconds
         print("Not solved within the single try, but at least unwinding is successful!")
-        cmd = "./deagle_exe %s %s > deagle_tmp_output 2>&1" % (program_path, flags)
-        print(cmd)
-        os.system(cmd)
+        cmd = "./iekke_exe %s %s --rounds 3 --minisat > iekke_tmp_output 2>&1" % (program_path, flags)
+        run(cmd)
         result = get_result()
         
     else:
@@ -152,17 +217,20 @@ else:
         undetermine_limit = 3
         loops_limit_it = [loop_limit if loop_limit else undetermine_limit for loop_limit in loops_limit]
         unwindset = generate_unwindset(loops_name, loops_limit_it)
-        cmd = "./deagle_exe %s %s --unwindset %s > deagle_tmp_output 2>&1" % (program_path, flags, unwindset)
+        cmd = "./iekke_exe %s %s --unwindset %s --rounds 3 --minisat > iekke_tmp_output 2>&1" % (program_path, flags, unwindset)
         
         print("\nUnwindset: %s" % unwindset)
-        print(cmd)
-        os.system(cmd)
+        run(cmd)
         result = get_result()
 
 if result == "SUCCESS":
+    if WANTS_CORRECTNESS_WITNESS:
+        write_witness("invariant_set", "2.1", None)
     print("SUCCESSFUL")
     sys.exit(0)
 elif result == "FAILURE":
+    if WANTS_WITNESS:
+        write_violation_witness()
     print("FAILED")
     sys.exit(0)
 else:
