@@ -614,9 +614,11 @@ bool type_is_atomic(const typet& type)
   std::string symbol_atomic = type.get("#atomic").c_str();
   if(symbol_typedef.find("atomic_") != std::string::npos || symbol_atomic == "1")
     return true;
-  if(type.id() == ID_pointer) // todo: to be added later
-    if(type_is_atomic(to_pointer_type(type).base_type()))
-      return true;
+  // A pointer to _Atomic is an ordinary object: `_Atomic int *p` written by
+  // two threads races (pthread-atomic-qualifier/atomic-qual-ptr-to-atomic-
+  // write was answered TRUE). An access through it reads or writes the
+  // pointee, whose own type is _Atomic; an _Atomic pointer, _Atomic(int *),
+  // carries the qualifier on the pointer type itself, tested above.
   // an array whose elements are _Atomic, accessed whole (at an index the
   // encoding does not resolve to one element)
   if(type.id() == ID_array)
