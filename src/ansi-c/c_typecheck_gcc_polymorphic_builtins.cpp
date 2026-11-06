@@ -12,6 +12,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "c_typecheck_base.h"
 
 #include <util/arith_tools.h>
+#include <util/bitvector_types.h>
 #include <util/c_types.h>
 #include <util/cprover_prefix.h>
 #include <util/pointer_expr.h>
@@ -650,6 +651,32 @@ static symbolt memorder_symbol(
 }
 // __SZH_ADD_END__
 
+/// lhs OP rhs as the atomic built-ins compute it: signed addition and
+/// subtraction wrap around (C11 7.17.7.5, and GCC's documentation of the
+/// __atomic and __sync built-ins), so they are done in the unsigned type of
+/// the same width and converted back. As a plain signed addition the
+/// overflow check flagged them (pthread-overflow/lost-increment-guard-
+/// fetch-add and four more tasks, expected no overflow).
+static exprt atomic_arithmetic(
+  const exprt &lhs,
+  const irep_idt &op_id,
+  const exprt &rhs,
+  const typet &type)
+{
+  if((op_id == ID_plus || op_id == ID_minus) && type.id() == ID_signedbv)
+  {
+    const unsignedbv_typet unsigned_type{to_signedbv_type(type).get_width()};
+    return typecast_exprt{
+      binary_exprt{
+        typecast_exprt::conditional_cast(lhs, unsigned_type),
+        op_id,
+        typecast_exprt::conditional_cast(rhs, unsigned_type),
+        unsigned_type},
+      type};
+  }
+  return binary_exprt{lhs, op_id, rhs, type};
+}
+
 static void instantiate_atomic_fetch_op(
   const irep_idt &identifier,
   const irep_idt &identifier_with_type,
@@ -699,8 +726,8 @@ static void instantiate_atomic_fetch_op(
                                      : identifier == ID___atomic_fetch_nand
                                          ? ID_bitnand
                                          : ID_nil;
-  binary_exprt op_expr{result, op_id, parameter_exprs[1], type};
-  block.add(code_frontend_assignt{deref_ptr, std::move(op_expr)});
+  block.add(code_frontend_assignt{
+    deref_ptr, atomic_arithmetic(result, op_id, parameter_exprs[1], type)});
 
   // block.add(code_expressiont{side_effect_expr_function_callt{
   //   symbol_exprt::typeless("__atomic_thread_fence"),
@@ -759,8 +786,8 @@ static void instantiate_atomic_op_fetch(
                                      : identifier == ID___atomic_nand_fetch
                                          ? ID_bitnand
                                          : ID_nil;
-  binary_exprt op_expr{deref_ptr, op_id, parameter_exprs[1], type};
-  block.add(code_frontend_assignt{result, std::move(op_expr)});
+  block.add(code_frontend_assignt{
+    result, atomic_arithmetic(deref_ptr, op_id, parameter_exprs[1], type)});
 
   block.add(code_frontend_assignt{deref_ptr, result});
 
