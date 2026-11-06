@@ -326,4 +326,51 @@ elif "try unwind=" not in out:
 else:
     print("ok   buffer: the killed wrapper's log still shows its bound")
 
+# Case "shorter": a data race found at more than 2 rounds is looked for again
+# at 2 rounds for a short while, and the witness of that run is kept when it
+# finds one (a shorter path, which a validator follows in its 90 s: Dartagnan
+# confirmed pthread-divine/one_time_barrier_3t only with the race found at 2
+# rounds); for unreach-call the witness found first is kept (the shorter one
+# lost goblint 28-race_reach_77-tricky_address4_racing).
+SHORTER_TOOL = r"""#!/usr/bin/env python3
+import os, sys
+a = sys.argv
+if "--unwind-suggest" in a:
+    sys.exit(0)
+rounds = int(a[a.index("--rounds") + 1])
+wit = a[a.index("--yaml-witness") + 1] if "--yaml-witness" in a else None
+if rounds == 4:
+    open("long_done", "w").close()
+    if wit:
+        open(wit, "w").write("- segment: [long]\n")
+    print("VERIFICATION FAILED")
+elif rounds == 2 and os.path.exists("long_done"):
+    if wit:
+        open(wit, "w").write("- segment: [short]\n")
+    print("VERIFICATION FAILED")
+else:
+    print("VERIFICATION INCONCLUSIVE")
+"""
+for prop, want in (("no-data-race", "short"), ("unreach-call", "long")):
+    d = tempfile.mkdtemp(prefix="deagle_blind_test_")
+    with open(os.path.join(d, "iekke_exe"), "w") as f:
+        f.write(SHORTER_TOOL)
+    os.chmod(os.path.join(d, "iekke_exe"), 0o755)
+    with open(os.path.join(d, "prog.c"), "w") as f:
+        f.write("int main(void) { return 0; }\n")
+    with open(os.path.join(d, prop + ".prp"), "w") as f:
+        f.write("CHECK( init(main()), LTL(G ! x) )\n")
+    p = subprocess.run([sys.executable, WRAPPER, prop + ".prp", "prog.c"], cwd=d,
+                       env=dict(os.environ, DEAGLE_BUDGET="60"), capture_output=True, text=True)
+    try:
+        witness = open(os.path.join(d, "witness.yml")).read()
+    except OSError:
+        witness = ""
+    if p.stdout.rstrip().splitlines()[-1:] != ["FAILED"] or "[%s]" % want not in witness:
+        print("FAIL shorter %s: last line %r, witness content %r, want [%s]"
+              % (prop, p.stdout.rstrip().splitlines()[-1:], witness[-60:], want))
+        ok = False
+    else:
+        print("ok   shorter %s: FAILED with the %s witness" % (prop, want))
+
 sys.exit(0 if ok else 1)

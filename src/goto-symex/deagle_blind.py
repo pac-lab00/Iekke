@@ -53,6 +53,7 @@ import hashlib
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -498,6 +499,47 @@ def bounds():
         yield (u, r, "")
 
 
+# A violation found with more rounds than needed gives a longer witness, and a
+# validator has 90 s to follow it: on pthread-divine/one_time_barrier_3t the
+# race found at 3 rounds (lines 743/759, after a second pass through the
+# barrier) was never confirmed by Dartagnan, the one found at 2 rounds (lines
+# 715/717, at the first entry) twice out of two. A violation at fewer rounds is
+# one at more rounds too, so the answer does not change: the run is repeated at
+# SHORT_ROUNDS for a short while, and its witness kept if it finds one. Only
+# for data races: over the 620 correct FALSE answers (2027 validators, each
+# change repeated three times) it gained two races (one_time_barrier_3t,
+# reorder_5-race) and lost one reachability task, whose shorter witness
+# UAutomizer rejects (goblint 28-race_reach_77-tricky_address4_racing).
+SHORT_ROUNDS = 2
+SHORT_SLICE = 30
+
+
+def shorter_witness(cmd, rounds):
+    """Replace the witness of a violation found at `rounds` by one found at
+    SHORT_ROUNDS with the same flags, when that run finds one in time."""
+    left = BUDGET - (time.time() - started)
+    if left <= MIN_SLICE or not os.path.exists(WITNESS_CONTENT):
+        return
+    shutil.copyfile(WITNESS_CONTENT, WITNESS_CONTENT + ".long")
+    os.remove(WITNESS_CONTENT)
+    short = (cmd.replace("--rounds %d " % rounds, "--rounds %d " % SHORT_ROUNDS)
+                .replace(" --por ", " --no-por "))
+    proc = subprocess.Popen(short, shell=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            errors="replace", start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=min(SHORT_SLICE, left - MIN_SLICE))
+    except subprocess.TimeoutExpired:
+        kill_bound(proc)
+        proc.communicate()
+        out = ""
+    if verdict_of(out) == "FAILED" and os.path.exists(WITNESS_CONTENT):
+        print("  shorter witness: violation at rounds=%d" % SHORT_ROUNDS)
+        os.remove(WITNESS_CONTENT + ".long")
+    else:
+        os.replace(WITNESS_CONTENT + ".long", WITNESS_CONTENT)
+
+
 for unwind, rounds, extra in bounds():
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE:
@@ -567,6 +609,8 @@ for unwind, rounds, extra in bounds():
 
     if verdict == "FAILED":
         if WANTS_WITNESS:
+            if rounds > SHORT_ROUNDS and "no-data-race.prp" in property_path:
+                shorter_witness(cmd, rounds)
             write_violation_witness()
         print(out)
         print("FAILED")
