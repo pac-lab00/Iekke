@@ -86,7 +86,7 @@ def generate_unwindset(loops_name, loops_limit):
     return unwindset
 
 if len(sys.argv) < 2 or sys.argv[1] == "-v" or sys.argv[1] == "--version":
-    print("4.1.0")
+    print("2.0")
     sys.exit(0)
 
 if sys.argv[1] == "--witness":
@@ -116,7 +116,7 @@ else:
 
 WITNESS = "witness.yml"
 WITNESS_CONTENT = "witness-content.yml"
-VERSION = "4.1.0"
+VERSION = "2.0"
 WANTS_CORRECTNESS_WITNESS = ("unreach-call.prp" in property_path
                              or "no-overflow.prp" in property_path)
 WANTS_WITNESS = (WANTS_CORRECTNESS_WITNESS
