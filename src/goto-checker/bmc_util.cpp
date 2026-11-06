@@ -17,7 +17,11 @@ Author: Daniel Kroening, Peter Schrammel
 #include <util/std_expr.h>
 #include <util/ui_message.h>
 
+#include <fstream>
+#include <sstream>
+
 #include <goto-programs/graphml_witness.h>
+#include <goto-programs/yaml_witness.h>
 #include <goto-programs/json_goto_trace.h>
 #include <goto-programs/xml_goto_trace.h>
 
@@ -114,6 +118,27 @@ void output_error_trace(
   }
   break;
   }
+}
+
+/// The `content` of a YAML violation witness (goto-programs/yaml_witness.h);
+/// the caller writes the entry and its metadata around it. Nothing is written
+/// when the trace gives no violation a witness can point to.
+void output_yaml_witness(
+  const goto_tracet &goto_trace,
+  const namespacet &ns,
+  const optionst &options)
+{
+  const std::string yaml = options.get_option("yaml-witness");
+  if(yaml.empty())
+    return;
+
+  std::ostringstream content;
+  if(!yaml_violation_content(goto_trace, ns, content))
+    return;
+  if(yaml == "-")
+    std::cout << content.str();
+  else
+    std::ofstream(yaml) << content.str();
 }
 
 /// outputs an error witness in graphml format

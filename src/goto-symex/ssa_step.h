@@ -190,6 +190,13 @@ public:
   unsigned round_robin_thread = 0;
   unsigned round_robin_trace_order = 0;
 
+  /// for SPAWN: the thread it starts. Several spawns start the same thread
+  /// under --merge-exclusive-threads, so it is not the spawn's rank.
+  std::size_t spawned_thread_nr = 0;
+  /// for SPAWN: where the program creates the thread -- the call of
+  /// pthread_create, not the spawn inside its library model
+  source_locationt spawn_call_location;
+
   // for slicing
   bool ignore = false;
 

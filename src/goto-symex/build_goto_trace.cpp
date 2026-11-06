@@ -463,8 +463,9 @@ void build_goto_trace(
     if(!SSA_step.round_robin_exec_symbols.empty() && !has_round_robin_time)
       continue;
 
-    if(it->is_constraint() ||
-       it->is_spawn())
+    // A spawn is a step of the trace: a YAML witness registers the thread
+    // it starts at the point of the schedule where it happens.
+    if(it->is_constraint())
       continue;
     else if(it->is_atomic_begin())
     {
@@ -671,6 +672,12 @@ void build_goto_trace(
       goto_trace_step.io_id = SSA_step.io_id;
       goto_trace_step.formatted = SSA_step.formatted;
       goto_trace_step.called_function = SSA_step.called_function;
+      if(SSA_step.is_spawn())
+      {
+        goto_trace_step.spawned_thread_nr =
+          static_cast<unsigned>(SSA_step.spawned_thread_nr);
+        goto_trace_step.spawn_call_location = SSA_step.spawn_call_location;
+      }
       goto_trace_step.function_arguments = SSA_step.converted_function_arguments;
 
       for(auto &arg : goto_trace_step.function_arguments)

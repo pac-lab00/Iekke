@@ -31,8 +31,24 @@ void goto_symext::symex_start_thread(statet &state)
 
   // record this
   target.spawn(state.guard.as_expr(), state.source);
+  target.SSA_steps.back().spawned_thread_nr = state.threads.size();
 
   const goto_programt::instructiont &instruction=*state.source.pc;
+
+  {
+    source_locationt call_site = instruction.source_location();
+    for(auto frame = state.call_stack().rbegin();
+        frame != state.call_stack().rend();
+        ++frame)
+    {
+      if(frame->function_identifier == "pthread_create")
+      {
+        call_site = frame->calling_location.pc->source_location();
+        break;
+      }
+    }
+    target.SSA_steps.back().spawn_call_location = call_site;
+  }
 
   INVARIANT(instruction.targets.size() == 1, "start_thread expects one target");
 

@@ -61,6 +61,10 @@ void output_error_trace(
   ui_message_handlert &);
 
 void output_graphml(const goto_tracet &, const namespacet &, const optionst &);
+void output_yaml_witness(
+  const goto_tracet &,
+  const namespacet &,
+  const optionst &);
 void output_graphml(
   const symex_target_equationt &,
   const namespacet &,
@@ -194,6 +198,7 @@ void run_property_decider(
   "(max-field-sensitivity-array-size):" \
   "(no-array-field-sensitivity)" \
   "(graphml-witness):" \
+  "(yaml-witness):" \
   "(symex-complexity-limit):" \
   "(symex-complexity-failed-child-loops-limit):" \
   "(incremental-loop):" \
@@ -257,6 +262,8 @@ void run_property_decider(
   "                              complexity violations before the loop\n" \
   "                              gets blacklisted\n" \
   " --graphml-witness filename   write the witness in GraphML format to filename\n" /* NOLINT(*) */ \
+ " --yaml-witness filename      write the content of a YAML violation witness\n" /* NOLINT(*) */ \
+ "                              (sv-witnesses 2.2) to filename\n" /* NOLINT(*) */ \
   " --symex-cache-dereferences   enable caching of repeated dereferences" \
 // clang-format on
 

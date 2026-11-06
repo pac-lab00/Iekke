@@ -340,9 +340,15 @@ void goto_convert_functionst::simplify_pthread_create_join(codet& code)
     exprt::operandst final_args{args[3]};
     typet final_side_effect_type = to_side_effect_expr_function_call(expression).type();
     source_locationt final_loc = expression.source_location();
+    // The call is a thread of the program all the same: a witness has to
+    // name it as one, created here (goto-programs/yaml_witness.cpp).
+    final_loc.set("#collapsed_pthread_create", true);
+    // the call instruction takes its location from the function expression
+    final_function.add_source_location() = final_loc;
     side_effect_expr_function_callt final_side_effect(
       final_function, final_args, final_side_effect_type, final_loc);
     code_expressiont final_expression(final_side_effect);
+    final_expression.add_source_location() = final_loc;
     it = statements.erase(it);
     it = statements.erase(it);
     it = statements.insert(it, final_expression);

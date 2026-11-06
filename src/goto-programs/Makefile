@@ -25,6 +25,7 @@ SRC = allocate_objects.cpp \
       goto_program.cpp \
       goto_trace.cpp \
       graphml_witness.cpp \
+      yaml_witness.cpp \
       initialize_goto_model.cpp \
       instrument_preconditions.cpp \
       interpreter.cpp \
