@@ -153,7 +153,7 @@ void parse_options_baset::log_version_and_architecture(
   const std::string &front_end)
 {
   // __SZH_ADD_BEGIN__
-  log.status() << "Deagle" << " version " << "4.1.0" << " "
+  log.status() << "Iëkke version 2.0 (based on Deagle 4.1.0) "
                << sizeof(void *) * CHAR_BIT << "-bit "
                << config.this_architecture() << " "
                << config.this_operating_system() << messaget::eom;
