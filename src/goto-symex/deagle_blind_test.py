@@ -40,6 +40,11 @@
 # Before the fix no bound was checked (pthread-array-bounds/global-histogram
 # answered TRUE), and the module would have read the failure as
 # false(unreach-call).
+# Case "guard": with DEAGLE_GUARD set, a SUCCESSFUL from the bounds is checked
+# by running the program natively with the sanitizer of the property: a
+# signed overflow after 10^8 loop steps, out of reach of the bounds, turns
+# the answer into FAILED, with a line the tool-info module reads as
+# false(no-overflow) ("overflow." and "FAILURE").
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -345,6 +350,38 @@ if got != ("false", "false(valid-deref)"):
     ok = False
 else:
     print("ok   bounds: an array bound failure is read as false(valid-deref)")
+
+GUARD_PROG = """extern int __VERIFIER_nondet_int(void);
+extern void abort(void);
+int main(void)
+{
+  int n = __VERIFIER_nondet_int(), s = 0;
+  if(n < 0) abort();
+  for(int i = 0; i < 100000000; i++)
+    s = s + n;
+  return s;
+}
+"""
+d = tempfile.mkdtemp(prefix="deagle_blind_test_")
+with open(os.path.join(d, "iekke_exe"), "w") as f:
+    f.write(FAKE_TOOL)
+os.chmod(os.path.join(d, "iekke_exe"), 0o755)
+with open(os.path.join(d, "mode"), "w") as f:
+    f.write("safe")
+with open(os.path.join(d, "prog.c"), "w") as f:
+    f.write(GUARD_PROG)
+p = subprocess.run([sys.executable, WRAPPER, "no-overflow.prp", "prog.c", "--32"], cwd=d,
+                   env=dict(os.environ, DEAGLE_BUDGET="200", DEAGLE_STOP="5",
+                            DEAGLE_GUARD="60"),
+                   capture_output=True, text=True)
+lines = p.stdout.strip().splitlines()
+read_as_overflow = any("overflow." in l and "FAILURE" in l for l in lines)
+if not lines or lines[-1] != "FAILED" or "concrete run:" not in p.stdout or not read_as_overflow:
+    print("FAIL guard: last line %r, concrete run %s, read as overflow %s"
+          % (lines[-1] if lines else "", "concrete run:" in p.stdout, read_as_overflow))
+    ok = False
+else:
+    print("ok   guard: a deep overflow found by a native run turns SUCCESSFUL into FAILED")
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:

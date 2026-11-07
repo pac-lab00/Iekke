@@ -55,6 +55,7 @@ import re
 import signal
 import shutil
 import subprocess
+import tempfile
 import sys
 import time
 import uuid
@@ -662,6 +663,221 @@ for unwind, rounds, extra in bounds():
     # says nothing about a bound that is smaller on that axis and deeper on
     # rounds, so it must not end the search.
 
+
+# The concrete guard. A SUCCESSFUL from bounded model checking is only as deep
+# as the bound, and a bug deeper than the bound makes it a wrong TRUE (-32):
+# pthread-overflow/deep-* need 14 to 36 context switches, and
+# weaver-mutants/popl20-nonblocking-cntr-v2 overflows after 2^31 iterations,
+# which a native run reaches in seconds. Before a SUCCESSFUL is reported, the
+# program is compiled with the sanitizer of the property and run, with
+# extreme and random values for __VERIFIER_nondet_* and random delays at
+# thread creation and around locks. A run that shows the violation is a
+# concrete execution of the bug, so the answer is FAILED instead.
+GUARD_HARNESS = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
+#include <time.h>
+static unsigned long long g_state = 88172645463325252ULL;
+static int g_seed = -1;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned long long g_rand(void)
+{ g_state ^= g_state << 13; g_state ^= g_state >> 7; g_state ^= g_state << 17; return g_state; }
+static int g_kind(void)
+{
+  if(g_seed < 0) { const char *s = getenv("GUARD_SEED"); g_seed = s ? atoi(s) : 0;
+                   g_state += (unsigned long long)g_seed * 0x9E3779B97F4A7C15ULL; }
+  if(g_seed <= 3) return g_seed;
+  unsigned long long r = g_rand() % 10;
+  return r < 2 ? 0 : r < 3 ? 1 : r < 4 ? 2 : r < 5 ? 3 : r < 7 ? 4 : 5;
+}
+#define NONDET(name, T, MAX, MIN) T name(void) { \
+  int k; T v; real_lock(&g_lock); k = g_kind(); \
+  v = k == 0 ? (T)(MAX) : k == 1 ? (T)(MIN) : k == 2 ? (T)0 : k == 3 ? (T)-1 \
+    : k == 5 ? (T)(1 + g_rand() % 16) : (T)g_rand(); \
+  real_unlock(&g_lock); return v; }
+#undef pthread_mutex_lock
+#undef pthread_mutex_unlock
+#undef pthread_create
+#undef pthread_cond_wait
+#undef pthread_join
+static int real_lock(pthread_mutex_t *m) { return pthread_mutex_lock(m); }
+static int real_unlock(pthread_mutex_t *m) { return pthread_mutex_unlock(m); }
+NONDET(__VERIFIER_nondet_int, int, INT32_MAX, INT32_MIN)
+NONDET(__VERIFIER_nondet_uint, unsigned int, UINT32_MAX, 0)
+NONDET(__VERIFIER_nondet_unsigned, unsigned int, UINT32_MAX, 0)
+NONDET(__VERIFIER_nondet_long, long, LONG_MAX, LONG_MIN)
+NONDET(__VERIFIER_nondet_ulong, unsigned long, ULONG_MAX, 0)
+NONDET(__VERIFIER_nondet_short, short, INT16_MAX, INT16_MIN)
+NONDET(__VERIFIER_nondet_ushort, unsigned short, UINT16_MAX, 0)
+NONDET(__VERIFIER_nondet_char, char, 127, -128)
+NONDET(__VERIFIER_nondet_uchar, unsigned char, 255, 0)
+NONDET(__VERIFIER_nondet_bool, _Bool, 1, 0)
+NONDET(__VERIFIER_nondet_longlong, long long, INT64_MAX, INT64_MIN)
+NONDET(__VERIFIER_nondet_ulonglong, unsigned long long, UINT64_MAX, 0)
+NONDET(__VERIFIER_nondet_size_t, size_t, SIZE_MAX, 0)
+static pthread_mutex_t g_atomic = PTHREAD_MUTEX_INITIALIZER;
+void __VERIFIER_atomic_begin(void) { pthread_mutex_lock(&g_atomic); }
+void __VERIFIER_atomic_end(void) { pthread_mutex_unlock(&g_atomic); }
+void __guard_abort(void) { _exit(0); }
+void __assert_fail(const char *a, const char *f, unsigned l, const char *fn)
+{ fprintf(stderr, "GUARD_REACH %s:%u\n", f, l); _exit(99); }
+static __thread unsigned long long t_state;
+static int quiet = -1, turns = -1;
+static void noise(void)
+{
+  if(quiet < 0) quiet = getenv("GUARD_QUIET") != 0;
+  if(turns < 0) turns = getenv("GUARD_TURNS") != 0;
+  if(quiet) return;
+  /* on one core, giving the processor up at every synchronisation makes
+     the threads take turns, step by step */
+  if(turns) { sched_yield(); return; }
+  if(!t_state) t_state = (unsigned long long)pthread_self() ^ (unsigned long long)getpid() * 0x9E3779B97F4A7C15ULL ^ (unsigned long long)clock();
+  t_state ^= t_state << 13; t_state ^= t_state >> 7; t_state ^= t_state << 17;
+  unsigned r = t_state % 8;
+  if(r == 0) usleep(t_state % 2000); else if(r < 3) sched_yield();
+}
+int __guard_lock(pthread_mutex_t *m) { noise(); return pthread_mutex_lock(m); }
+int __guard_unlock(pthread_mutex_t *m) { int r = pthread_mutex_unlock(m); noise(); return r; }
+int __guard_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { noise(); return pthread_cond_wait(c, m); }
+int __guard_join(pthread_t t, void **r) { noise(); return pthread_join(t, r); }
+struct guard_start { void *(*f)(void *); void *a; };
+static void *trampoline(void *p)
+{ struct guard_start s = *(struct guard_start *)p; free(p); noise(); return s.f(s.a); }
+int __guard_create(pthread_t *t, const pthread_attr_t *at, void *(*f)(void *), void *a)
+{
+  struct guard_start *s = malloc(sizeof *s); int r;
+  if(!s) return 11;
+  s->f = f; s->a = a; r = pthread_create(t, at, trampoline, s); noise(); return r;
+}
+"""
+
+# Only the evidence that is the property itself: reach_error() reached, a
+# signed arithmetic overflow, an out-of-bounds or freed access. Not data
+# races: ThreadSanitizer reported races on 40 of 264 no-data-race tasks
+# expected TRUE (the pthread-atomic-qualifier _Atomic accesses, CAS loops).
+GUARD_EVIDENCE = {
+    "unreach-call.prp": r"GUARD_REACH",
+    "no-overflow.prp": r"runtime error: signed integer overflow",
+    "valid-memsafety.prp": r"ERROR: AddressSanitizer: (heap-buffer-overflow|stack-buffer-overflow|global-buffer-overflow|heap-use-after-free|stack-use-after-return|stack-use-after-scope|dynamic-stack-buffer-overflow)",
+}
+# Measured 2026-11-07, 20 s per task, on the 1378 unreach-call, no-overflow
+# and valid-memsafety answers SUCCESSFUL with expected TRUE: one FAILED,
+# goblint-regression/28-race_reach_07-cond_racing2, whose "if (i+1)" with
+# i = INT_MAX does overflow (label question); on the expected FALSE ones it
+# found deep-asymmetric, deep-fib-mutex, deep-fib-nondet-start,
+# deep-scaled-feedback, sssc12_variant-v1 (and popl20-nonblocking-cntr-v2
+# with more time). DEAGLE_GUARD=0 turns it off.
+GUARD_BUDGET = float(os.environ.get("DEAGLE_GUARD", "300"))
+
+
+def one_core():
+    # On one core each thread runs whole time slices without contending for
+    # its locks: popl20-nonblocking-cntr-v2 overflowed after 106 s on one
+    # core and not in 150 s on several. SV-COMP gives a run one core anyway.
+    try:
+        os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
+    except (AttributeError, OSError):
+        pass
+
+
+def concrete_violation(budget):
+    """The first line of evidence of a violation in a concrete run, or None."""
+    kind = [k for k in GUARD_EVIDENCE if k in property_path]
+    if not kind or budget < 10 or not shutil.which("gcc"):
+        return None
+    kind = kind[0]
+    lp64 = data_model == "--64"
+    mflag = "-m64" if lp64 else "-m32"
+    san = {"unreach-call.prp": [],
+           "no-overflow.prp": ["-fsanitize=signed-integer-overflow",
+                               "-fno-sanitize-recover=all"],
+           "valid-memsafety.prp": ["-fsanitize=address"],
+           "no-data-race.prp": ["-fsanitize=thread"]}[kind]
+    env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0",
+               TSAN_OPTIONS="halt_on_error=1 exitcode=66")
+    run_prefix = []
+    if kind == "no-data-race.prp":
+        # ThreadSanitizer needs 64 bits; whether a race exists does not
+        # depend on the data model. It cannot start under the address
+        # randomisation of recent kernels.
+        mflag = "-m64"
+        if shutil.which("setarch"):
+            run_prefix = ["setarch", os.uname().machine, "-R"]
+    d = tempfile.mkdtemp(prefix="guard_", dir=".")
+    try:
+        with open(os.path.join(d, "harness.c"), "w") as f:
+            f.write(GUARD_HARNESS)
+        exe = os.path.join(d, "a.out")
+        harness_o = os.path.join(d, "harness.o")
+        # The harness on its own, without the renaming of the calls of the
+        # task: renamed in its own pthread.h too, its calls of the real
+        # functions had no declaration, an error for the GCC 15 of the
+        # SV-COMP 2027 image (only a warning for older ones).
+        steps = [["gcc", mflag, "-w", "-O0", "-g", "-c"] + san +
+                 ["-o", harness_o, os.path.join(d, "harness.c")],
+                 ["gcc", mflag, "-w", "-O0", "-g", "-fno-builtin",
+                  "-Dabort=__guard_abort",
+                  "-Dpthread_mutex_lock=__guard_lock",
+                  "-Dpthread_mutex_unlock=__guard_unlock",
+                  "-Dpthread_create=__guard_create",
+                  "-Dpthread_cond_wait=__guard_cond_wait",
+                  "-Dpthread_join=__guard_join"] + san +
+                 ["-o", exe, program_path, harness_o, "-lpthread"]]
+        for cc in steps:
+            try:
+                if subprocess.run(cc, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=min(60, budget)).returncode != 0:
+                    return None
+            except subprocess.TimeoutExpired:
+                return None
+        end = time.time() + budget
+        seed = 0
+        while time.time() < end - 1:
+            # Runs without the delays: a bug after 2^31 iterations of a
+            # locked loop is out of reach with a delay at every lock. The
+            # first run (largest values, no delays) may take 60% of the budget.
+            # A third kind of run takes turns at every lock: the deep-fib
+            # tasks overflow only when two threads alternate step by step.
+            env["GUARD_SEED"] = str(seed // 3)
+            env.pop("GUARD_QUIET", None)
+            env.pop("GUARD_TURNS", None)
+            if seed % 3 == 0:
+                env["GUARD_QUIET"] = "1"
+            elif seed % 3 == 1:
+                env["GUARD_TURNS"] = "1"
+            cap = budget * 0.6 if seed == 0 else 10
+            seed += 1
+            try:
+                r = subprocess.run(run_prefix + [exe], env=env, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, text=True, errors="replace",
+                                   timeout=max(1, min(cap, end - time.time())),
+                                   start_new_session=True, preexec_fn=one_core)
+            except subprocess.TimeoutExpired:
+                continue
+            m = re.search(GUARD_EVIDENCE[kind] + ".*", r.stderr)
+            if m and (kind != "unreach-call.prp" or r.returncode == 99):
+                return m.group(0)[:200]
+        return None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+if bounded_safe is not None:
+    left = BUDGET - (time.time() - started)
+    evidence = concrete_violation(min(GUARD_BUDGET, left - 30))
+    if evidence:
+        print("concrete run: %s" % evidence)
+        # the lines the tool-info module of BenchExec reads the property from
+        if "valid-memsafety.prp" in property_path:
+            print("valid-deref: a concrete run, a pointer_dereference. FAILURE")
+        if "no-overflow.prp" in property_path:
+            print("no-overflow: a concrete run, an arithmetic overflow. FAILURE")
+        print("FAILED")
+        sys.exit(0)
 if bounded_safe is not None:
     if WANTS_CORRECTNESS_WITNESS:
         write_witness("invariant_set", "2.1", None)
