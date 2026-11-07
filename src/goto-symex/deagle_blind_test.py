@@ -40,7 +40,8 @@
 # Before the fix no bound was checked (pthread-array-bounds/global-histogram
 # answered TRUE), and the module would have read the failure as
 # false(unreach-call).
-# Case "guard": with DEAGLE_GUARD set, a SUCCESSFUL from the bounds is checked
+# Case "guard": with DEAGLE_GUARD set (and with no answer at all, before
+# the UNKNOWN), a SUCCESSFUL from the bounds is checked
 # by running the program natively with the sanitizer of the property: a
 # signed overflow after 10^8 loop steps, out of reach of the bounds, turns
 # the answer into FAILED, with a line the tool-info module reads as
@@ -67,6 +68,8 @@ calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
 if mode == "safe":
     print("VERIFICATION SUCCESSFUL")
+    sys.exit(0)
+if mode == "nothing":
     sys.exit(0)
 if mode == "late_bug":
     # no verdict for the reduced program, safe at the first bound, the bug at the second
@@ -382,6 +385,21 @@ if not lines or lines[-1] != "FAILED" or "concrete run:" not in p.stdout or not 
     ok = False
 else:
     print("ok   guard: a deep overflow found by a native run turns SUCCESSFUL into FAILED")
+
+# the same program, and no answer from any bound: the guard runs before the
+# UNKNOWN too, in the time kept for it
+with open(os.path.join(d, "mode"), "w") as f:
+    f.write("nothing")
+os.remove(os.path.join(d, "args")) if os.path.exists(os.path.join(d, "args")) else None
+p = subprocess.run([sys.executable, WRAPPER, "no-overflow.prp", "prog.c", "--32"], cwd=d,
+                   env=dict(os.environ, DEAGLE_BUDGET="200", DEAGLE_GUARD="60"),
+                   capture_output=True, text=True)
+lines = p.stdout.strip().splitlines()
+if not lines or lines[-1] != "FAILED" or "concrete run:" not in p.stdout:
+    print("FAIL guard unknown: last line %r" % (lines[-1] if lines else ""))
+    ok = False
+else:
+    print("ok   guard unknown: the native run also replaces an UNKNOWN")
 
 out, pids, survivors = run("hang", 60, kill_after=2)
 if not pids:
