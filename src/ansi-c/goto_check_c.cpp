@@ -2288,9 +2288,20 @@ void goto_check_ct::goto_check(
       if(enable_pointer_check || enable_pointer_primitive_check)
       {
         const symbol_exprt &variable = i.dead_symbol();
+        // The locals of main's outermost block, and its parameters, die when
+        // main returns, and that ends the program (C11 5.1.2.2.3): no thread
+        // runs on to dereference them. The model lets threads run after main
+        // has returned, so marking them dead would report the dereferences
+        // of threads that in C never happen.
+        const std::string &name = id2string(variable.get_identifier());
+        const bool main_outermost =
+          function_identifier == "main" && name.rfind("main::", 0) == 0 &&
+          (name.find("::", 6) == std::string::npos ||
+           (name.rfind("main::1::", 0) == 0 &&
+            name.find("::", 9) == std::string::npos));
 
         // is it dirty?
-        if(local_bitvector_analysis->dirty(variable))
+        if(!main_outermost && local_bitvector_analysis->dirty(variable))
         {
           // need to mark the dead variable as dead
           exprt lhs = ns.lookup(CPROVER_PREFIX "dead_object").symbol_expr();
@@ -2455,23 +2466,26 @@ goto_check_ct::get_pointer_points_to_valid_memory_conditions(
       not_exprt{is_invalid_pointer_exprt{address}}, "pointer invalid"});
   }
 
-  // if(unknown || flags.is_dynamic_heap())
-  // {
-  //   conditions.push_back(conditiont(
-  //     or_exprt(
-  //       in_bounds_of_some_explicit_allocation,
-  //       not_exprt(deallocated(address, ns))),
-  //     "deallocated dynamic object"));
-  // }
+  // Commented out with the Deagle 2.2 update (ef8e5da4, no reason given),
+  // which left a use after free and a dereference of a dead local unchecked
+  // (pthread-join-result/dangling-local, valid-deref, answered TRUE).
+  if(unknown || flags.is_dynamic_heap())
+  {
+    conditions.push_back(conditiont(
+      or_exprt(
+        in_bounds_of_some_explicit_allocation,
+        not_exprt(deallocated(address, ns))),
+      "deallocated dynamic object"));
+  }
 
-  // if(unknown || flags.is_dynamic_local())
-  // {
-  //   conditions.push_back(conditiont(
-  //     or_exprt(
-  //       in_bounds_of_some_explicit_allocation,
-  //       not_exprt(dead_object(address, ns))),
-  //     "dead object"));
-  // }
+  if(unknown || flags.is_dynamic_local())
+  {
+    conditions.push_back(conditiont(
+      or_exprt(
+        in_bounds_of_some_explicit_allocation,
+        not_exprt(dead_object(address, ns))),
+      "dead object"));
+  }
 
   if(flags.is_dynamic_heap())
   {
