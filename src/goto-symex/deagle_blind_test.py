@@ -340,11 +340,24 @@ def official_property(out):
     """the per-line loop of determine_result for a FALSE answer"""
     status = "false(unreach-call)"
     for l in out.splitlines():
+        if "nodatarace.assertion." in l and "FAILURE" in l:
+            status = "false(no-data-race)"
         if ("alloc.assertion." in l or "pointer_dereference." in l) and "FAILURE" in l:
             status = "false(valid-deref)"
         if "memory-leak." in l and "FAILURE" in l:
             status = "false(valid-memtrack)"
     return status
+
+# Case "race": a FAILED for no-data-race is read as false(no-data-race), not
+# false(unreach-call) (none of 231 such answers was validated in the 2027
+# pre-run).
+out, pids, survivors = run("fail", 30)
+got = official(out, 0), official_property(out)
+if got != ("false", "false(no-data-race)"):
+    print("FAIL race: SV-COMP would read %r" % (got,))
+    ok = False
+else:
+    print("ok   race: a data race is read as false(no-data-race)")
 
 out, pids, survivors = run("bounds_fail", 30, prop="valid-memsafety.prp")
 got = official(out, 0), official_property(out)

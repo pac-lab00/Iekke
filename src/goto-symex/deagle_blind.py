@@ -898,6 +898,13 @@ for unwind, rounds, extra in bounds():
         print(out)
         if "valid-memsafety.prp" in property_path and deref_reading(out):
             print(deref_reading(out))
+        # The tool-info module recognises a data race only by
+        # "nodatarace.assertion." on a FAILURE line; the tool prints
+        # "datarace: FAILURE", read as false(unreach-call). In the SV-COMP 2027
+        # pre-run none of 231 such answers was validated, while answers read
+        # as false(no-data-race) were.
+        if "no-data-race.prp" in property_path:
+            print("no-data-race: a data race, a nodatarace.assertion. FAILURE")
         print("FAILED")
         sys.exit(0)
     # For unreach-call a SUCCESSFUL from a bound that generated no verification
