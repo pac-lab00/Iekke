@@ -27,7 +27,9 @@ Module: Violation Witnesses in the YAML Format
 
 #include "yaml_witness.h"
 
+#include <util/arith_tools.h>
 #include <util/optional.h>
+#include <util/std_code.h>
 #include <util/source_location.h>
 
 #include "goto_trace.h"
@@ -53,6 +55,8 @@ struct waypointt
   /// the line, when it is not the location's (a call over several lines)
   std::size_t line;
   std::size_t thread_id;
+  /// a function_return constraint, "\\result == 5"; empty for none
+  std::string constraint;
 };
 } // namespace
 
@@ -118,6 +122,19 @@ only_call_site(const source_locationt &location, const std::string &callee)
   return found;
 }
 
+/// A call of a __VERIFIER_nondet_* function, which has no body: goto
+/// conversion has made it an assignment of a nondet side effect that keeps
+/// the function's name.
+static bool is_nondet_call_result(const goto_programt::instructiont &instruction)
+{
+  if(!instruction.is_assign())
+    return false;
+  const exprt &rhs = instruction.assign_rhs();
+  return rhs.id() == ID_side_effect &&
+         to_side_effect_expr(rhs).get_statement() == ID_nondet &&
+         id2string(rhs.get(ID_C_identifier)).rfind("__VERIFIER_nondet_", 0) == 0;
+}
+
 /// One waypoint in flow style, so that a segment is one line of the witness
 static std::string waypoint_yaml(const waypointt &waypoint)
 {
@@ -129,13 +146,18 @@ static std::string waypoint_yaml(const waypointt &waypoint)
                                            : id2string(waypoint.location.get_line()));
   if(waypoint.column != 0)
     result += ", column: " + std::to_string(waypoint.column);
-  return result + "}, thread_id: " + std::to_string(waypoint.thread_id) + "}}";
+  result += "}";
+  if(!waypoint.constraint.empty())
+    result += ", constraint: {value: " + quoted(waypoint.constraint) +
+              ", format: 'ext_c_expression'}";
+  return result + ", thread_id: " + std::to_string(waypoint.thread_id) + "}}";
 }
 
 bool yaml_violation_content(
   const goto_tracet &goto_trace,
   const namespacet &,
-  std::ostream &out)
+  std::ostream &out,
+  bool with_values)
 {
   // the failing assertion: the trace ends with it
   auto failed = goto_trace.steps.end();
@@ -239,7 +261,17 @@ bool yaml_violation_content(
   // Registrations in trace order; the creator of registration k (1-based) is
   // creator[k-1], a registration number itself (0 = main).
   std::vector<waypointt> registrations;
+  std::vector<std::size_t> registration_step;
   std::vector<waypointt> targets;
+  // With with_values, the values the program read from __VERIFIER_nondet_*,
+  // as function_return waypoints, each with its position in the trace.
+  // Without them a validator that executes the program
+  // (ConcurrentWitness2Test) runs it on inputs of its own, all 0:
+  // pthread-overflow/barrier-reuse-no-reset was confirmed only with them.
+  // UAutomizer, though, rejected five goblint race_reach witnesses with them
+  // that it confirmed without (unreach-call, same build).
+  std::vector<std::pair<std::size_t, waypointt>> values;
+  std::size_t step_nr = 0;
   const auto register_thread = [&](
                                  const source_locationt &location,
                                  std::size_t creator) {
@@ -254,10 +286,36 @@ bool yaml_violation_content(
     // no edge at all ("No CFAEdge could be matched for the function enter
     // waypoint"); the column is optional.
     registrations.push_back({"function_enter", location, 0, 0, creator});
+    registration_step.push_back(step_nr);
     return registrations.size();
   };
-  for(auto it = goto_trace.steps.begin(); it != goto_trace.steps.end(); ++it)
+  for(auto it = goto_trace.steps.begin(); it != goto_trace.steps.end();
+      ++it, ++step_nr)
   {
+    if(
+      with_values && it->type == goto_trace_stept::typet::ASSIGNMENT &&
+      is_nondet_call_result(*it->pc) &&
+      it->full_lhs_value.is_constant() &&
+      (it->full_lhs_value.type().id() == ID_signedbv ||
+       it->full_lhs_value.type().id() == ID_unsignedbv ||
+       it->full_lhs_value.type().id() == ID_c_bool ||
+       it->full_lhs_value.type().id() == ID_bool))
+    {
+      const source_locationt &location = it->pc->source_location();
+      const auto id = id_of(it->thread_nr);
+      const auto value =
+        it->full_lhs_value.type().id() == ID_bool
+          ? mp_integer{it->full_lhs_value.is_true() ? 1 : 0}
+          : numeric_cast<mp_integer>(it->full_lhs_value);
+      if(usable(location) && id.has_value() && value.has_value())
+      {
+        values.emplace_back(
+          step_nr,
+          waypointt{
+            "function_return", location, 0, 0, *id,
+            "\\result == " + integer2string(*value)});
+      }
+    }
     for(const auto &target : target_steps)
     {
       if(target != it)
@@ -352,12 +410,38 @@ bool yaml_violation_content(
     }
   }
 
+  // The values in trace order, each in its own segment, among the thread
+  // creations; a value of a thread is written once that thread is named, and
+  // never for a thread the witness leaves unnamed.
+  std::vector<bool> named(registrations.size() + 1, false);
+  named[0] = true;
+  std::size_t next_value = 0;
+  std::vector<bool> written(values.size(), false);
+  const auto write_values = [&](std::size_t before_step) {
+    for(std::size_t v = next_value; v < values.size(); ++v)
+    {
+      if(values[v].first >= before_step)
+        break;
+      const std::size_t k = values[v].second.thread_id;
+      if(written[v] || !named[k] || (k != 0 && renumbered[k] == 0))
+        continue;
+      waypointt waypoint = values[v].second;
+      waypoint.thread_id = renumbered[k];
+      out << "- segment: [" << waypoint_yaml(waypoint) << "]\n";
+      written[v] = true;
+    }
+    while(next_value < values.size() && written[next_value])
+      ++next_value;
+  };
   for(const std::size_t k : order)
   {
+    write_values(registration_step[k - 1]);
+    named[k] = true;
     waypointt waypoint = registrations[k - 1];
     waypoint.thread_id = renumbered[waypoint.thread_id];
     out << "- segment: [" << waypoint_yaml(waypoint) << "]\n";
   }
+  write_values(step_nr);
   out << "- segment: [";
   for(std::size_t i = 0; i < targets.size(); ++i)
   {

@@ -143,7 +143,8 @@ void output_yaml_witness(
     return;
 
   std::ostringstream content;
-  if(!yaml_violation_content(goto_trace, ns, content))
+  if(!yaml_violation_content(
+       goto_trace, ns, content, options.get_bool_option("yaml-witness-values")))
     return;
   if(yaml == "-")
     std::cout << content.str();

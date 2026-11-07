@@ -231,6 +231,7 @@ void run_property_decider(
   "(no-array-field-sensitivity)" \
   "(graphml-witness):" \
   "(yaml-witness):" \
+  "(yaml-witness-values)" \
   "(symex-complexity-limit):" \
   "(symex-complexity-failed-child-loops-limit):" \
   "(incremental-loop):" \
@@ -322,6 +323,9 @@ void run_property_decider(
   " --graphml-witness filename   write the witness in GraphML format to filename\n" /* NOLINT(*) */ \
  " --yaml-witness filename      write the content of a YAML violation witness\n" /* NOLINT(*) */ \
  "                              (sv-witnesses 2.2) to filename\n" /* NOLINT(*) */ \
+  " --yaml-witness-values       with --yaml-witness, the values read from\n" /* NOLINT(*) */ \
+  "                              __VERIFIER_nondet_* functions as\n" /* NOLINT(*) */ \
+  "                              function_return waypoints\n" /* NOLINT(*) */ \
   " --symex-cache-dereferences   enable caching of repeated dereferences" \
 // clang-format on
 

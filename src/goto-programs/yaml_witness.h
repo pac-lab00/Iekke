@@ -22,9 +22,12 @@ class namespacet;
 /// \return false, writing nothing, when the trace has no violation a witness
 ///   can point to (it ends in a built-in location, or a thread that executes a
 ///   waypoint was never registered by a thread creation in the witness)
+/// \param with_values: also write the values the program read from
+///   __VERIFIER_nondet_* functions, as function_return waypoints
 bool yaml_violation_content(
   const goto_tracet &goto_trace,
   const namespacet &ns,
-  std::ostream &out);
+  std::ostream &out,
+  bool with_values = false);
 
 #endif // CPROVER_GOTO_PROGRAMS_YAML_WITNESS_H

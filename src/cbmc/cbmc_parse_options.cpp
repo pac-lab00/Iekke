@@ -618,6 +618,8 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("yaml-witness"))
   {
     options.set_option("yaml-witness", cmdline.get_value("yaml-witness"));
+    options.set_option(
+      "yaml-witness-values", cmdline.isset("yaml-witness-values"));
     options.set_option("stop-on-fail", true);
     options.set_option("trace", true);
   }

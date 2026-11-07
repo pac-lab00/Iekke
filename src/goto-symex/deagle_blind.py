@@ -243,6 +243,10 @@ elif "no-data-race.prp" in property_path:
     flags += "--no-assertions --datarace "
 elif "no-overflow.prp" in property_path:
     flags += "--no-assertions --signed-overflow-check --unsigned-overflow-check "
+    # the values read from __VERIFIER_nondet_* in the violation witness: one
+    # more confirmed overflow witness (ConcurrentWitness2Test), none lost;
+    # for unreach-call UAutomizer rejected 5 it confirmed without them
+    flags += "--yaml-witness-values "
 elif "valid-memsafety.prp" in property_path:
     flags += "--no-assertions --pointer-check --bounds-check --alloc-check --memory-leak-check"
 else:
