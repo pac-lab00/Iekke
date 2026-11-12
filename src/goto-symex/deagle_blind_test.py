@@ -46,6 +46,12 @@
 # signed overflow after 10^8 loop steps, out of reach of the bounds, turns
 # the answer into FAILED, with a line the tool-info module reads as
 # false(no-overflow) ("overflow." and "FAILURE").
+# Case "proof": a TRUE needs a proof run (SV-COMP 2027 chairs: no TRUE from
+# a bound that just found no error). A SUCCESSFUL of the bug search is never
+# reported; a proof run's SUCCESSFUL is, unless a loop was cut (unwinding
+# assertion failed: next unwind), the points-to sets of shared pointers did
+# not converge, or the round count hit its cap; a violation in a proof run is
+# not reported; a data-race task never gets a proof run.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -66,6 +72,30 @@ with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
+if "--unwinding-assertions" in sys.argv:              # a proof run
+    unwind = int(sys.argv[sys.argv.index("--unwind") + 1])
+    cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
+    if mode == "proof_ok":
+        print("VERIFICATION SUCCESSFUL")
+    elif mode == "proof_deep":                         # loops need unwind 8
+        print(cut if unwind < 8 else "", "VERIFICATION " + ("FAILED" if unwind < 8 else "SUCCESSFUL"), sep="\n")
+    elif mode == "proof_ptr":
+        print("pointer handling for concurrency is unsound\nVERIFICATION SUCCESSFUL")
+    elif mode == "proof_ptr_conv":
+        print("pointer handling for concurrency is unsound\n"
+              "points-to sets of shared pointers converged after 2 seeded symex pass(es)\n"
+              "VERIFICATION SUCCESSFUL")
+    elif mode == "proof_cap":
+        print(("Infer rounds: static round bound 64 (the --max-rounds cap)\n" if "--infer-rounds" in sys.argv else "")
+              + "VERIFICATION SUCCESSFUL")
+    elif mode == "proof_bug":
+        print("[main.assertion.1] line 7 assertion: FAILURE\nVERIFICATION FAILED")
+    else:
+        print(cut + "\nVERIFICATION FAILED")
+    sys.exit(0)
+if mode.startswith("proof"):                           # the bug search finds nothing
+    print("VERIFICATION SUCCESSFUL")
+    sys.exit(0)
 if mode == "safe":
     print("VERIFICATION SUCCESSFUL")
     sys.exit(0)
@@ -240,19 +270,19 @@ last = out.strip().splitlines()[-1] if out.strip() else ""
 if len(run.args) < 2:
     print("FAIL memory: the growing bound never ran")
     ok = False
-elif run.peak >= 600 or last != "SUCCESSFUL" or survivors:
+elif run.peak >= 600 or last != "UNKNOWN" or survivors:
     print("FAIL memory: bound reached %d MB of a 600 MB limit, last line %r, "
           "survivors %s" % (run.peak, last, survivors))
     ok = False
 else:
-    print("ok   memory: bound stopped at %d MB of 600, SUCCESSFUL kept"
+    print("ok   memory: bound stopped at %d MB of 600, nothing left running"
           % run.peak)
 
 for prop in ("no-data-race.prp", "valid-memsafety.prp"):
     out, pids, survivors = run("safe", 10, prop=prop)
     bad = []
     for a in run.args:
-        if "--unwind-suggest" in a:
+        if "--unwind-suggest" in a or "--unwinding-assertions" in a:
             continue
         w = a.split()
         unwind = int(w[w.index("--unwind") + 1])
@@ -270,7 +300,8 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
                 or "--malloc-may-fail" not in w or "--malloc-fail-null" not in w):
             bad.append(a)
     ladder = [(int(a.split()[a.split().index("--unwind") + 1]), int(a.split()[a.split().index("--rounds") + 1]))
-              for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a]
+              for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a and "--symmetric-instance" not in a
+              and "--unwinding-assertions" not in a]
     if ladder[:5] != [(2, 2), (3, 4), (4, 3), (8, 3), (8, 4)]:
         bad.append("ladder starts %s" % ladder[:5])
     if len(run.args) < 10:
@@ -296,21 +327,21 @@ last = out.strip().splitlines()[-1] if out.strip() else ""
 if not any("--unwindset" in a for a in run.args):
     print("FAIL suggest: the suggested limits never reached the tool")
     ok = False
-elif last != "SUCCESSFUL":
-    print("FAIL suggest: a SUCCESSFUL from the suggested limits was not kept (%r)" % last)
+elif last != "UNKNOWN":
+    print("FAIL suggest: a bounded SUCCESSFUL from the suggested limits was reported (%r)" % last)
     ok = False
 else:
-    print("ok   suggest: its SUCCESSFUL was kept as a bounded answer")
+    print("ok   suggest: its bounded SUCCESSFUL is not an answer")
 
 t0 = time.time()
 out, pids, survivors = run("stop", 60, env_extra={"DEAGLE_STOP": "5"})
 took = time.time() - t0
 last = out.strip().splitlines()[-1] if out.strip() else ""
-if last != "SUCCESSFUL" or took > 20 or survivors or "stop rule" not in out:
+if last != "UNKNOWN" or took > 20 or survivors or "stop rule" not in out:
     print("FAIL stop: last line %r after %.0fs, survivors %s" % (last, took, survivors))
     ok = False
 else:
-    print("ok   stop: SUCCESSFUL reported after %.0fs of a 60s budget, nothing left running" % took)
+    print("ok   stop: search ended after %.0fs of a 60s budget, nothing left running" % took)
 
 def official(out, rc):
     """benchexec/tools/iekke.py determine_result, as SV-COMP runs it"""
@@ -470,5 +501,35 @@ for prop, want in (("no-data-race", "short"), ("unreach-call", "long")):
         ok = False
     else:
         print("ok   shorter %s: FAILED with the %s witness" % (prop, want))
+
+for mode, prop, env, want in (
+        ("proof_ok", "unreach-call.prp", {}, "true"),
+        ("proof_deep", "unreach-call.prp", {}, "true"),
+        ("proof_ok", "no-data-race.prp", {}, "unknown"),
+        ("safe", "unreach-call.prp", {}, "unknown"),
+        ("proof_ptr", "unreach-call.prp", {}, "unknown"),
+        ("proof_ptr_conv", "unreach-call.prp", {}, "true"),
+        ("proof_cap", "unreach-call.prp", {"DEAGLE_PROOF": "rounds"}, "unknown"),
+        ("proof_cap", "unreach-call.prp", {"DEAGLE_PROOF": "rounds,cbmc"}, "true"),
+        ("proof_bug", "unreach-call.prp", {}, "unknown"),
+        ("proof_ok", "valid-memsafety.prp", {}, "true")):
+    out, pids, survivors = run(mode, 30, prop=prop,
+                               env_extra=dict(env, DEAGLE_STOP="2", DEAGLE_GUARD="0"))
+    proofs = [a for a in run.args if "--unwinding-assertions" in a]
+    got = official(out, 0 if out.strip().endswith("SUCCESSFUL") else 1)
+    unwinds = [int(a.split()[a.split().index("--unwind") + 1]) for a in proofs]
+    bad = got != want
+    if prop == "no-data-race.prp" and proofs:
+        bad = True
+    if mode == "proof_deep" and unwinds[:3] != [2, 4, 8]:
+        bad = True
+    if any("--allow-pointer-unsoundness" not in a.split() for a in proofs):
+        bad = True   # also catches two options run together (memory safety's last one)
+    if bad:
+        print("FAIL proof %s %s %s: read as %r, want %r, proof unwinds %s"
+              % (mode, prop, env, got, want, unwinds))
+        ok = False
+    else:
+        print("ok   proof %s %s %s: %s" % (mode, prop, env, got))
 
 sys.exit(0 if ok else 1)

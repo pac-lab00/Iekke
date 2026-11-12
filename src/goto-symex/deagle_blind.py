@@ -250,7 +250,7 @@ elif "no-overflow.prp" in property_path:
     # for unreach-call UAutomizer rejected 5 it confirmed without them
     flags += "--yaml-witness-values "
 elif "valid-memsafety.prp" in property_path:
-    flags += "--no-assertions --pointer-check --bounds-check --alloc-check --memory-leak-check"
+    flags += "--no-assertions --pointer-check --bounds-check --alloc-check --memory-leak-check "
 else:
     print("Unknown property: %s" % property_path)
     sys.exit(0)
@@ -823,11 +823,102 @@ GUARD_RESERVE = (min(120, 0.15 * BUDGET)
                  if GUARD_BUDGET > 0 and any(k in property_path for k in GUARD_EVIDENCE)
                  else 0)
 
+# A TRUE needs a sound argument, not just a bound that found no error (chairs
+# of SV-COMP 2027, November 2026). The bounds above explore a bounded number
+# of rounds and cut loops, so their SUCCESSFUL only steers the stop rule and
+# is never reported. A TRUE comes from a proof run instead: every interleaving
+# (no --rounds: the encoding of all schedules), every loop checked to be fully
+# unrolled (--unwinding-assertions), no option that cuts executions
+# (--dynamic-array-bound, --symmetric-instance), and no unsound pointer
+# handling. Stock CBMC refuses every write of a shared pointer (#305: a
+# dereference may miss a target published late). Iekke repeats symex, each
+# pass seeded with the points-to sets collected so far, until no consulted
+# set grows, and says whether it converged; only a converged run, or one with
+# no shared pointer write, counts as a proof. Not for data races: without rounds the race check
+# ignores locks and reports races that do not exist, so a data-race task
+# never gets a TRUE.
+PROVABLE = not "no-data-race.prp" in property_path
+PROOF_UNWINDS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
+               + "--allow-pointer-unsoundness --summarise-guards --infer-alloc-types --unwinding-assertions ")
+# The round-robin encoding with partial-order reduction proves too once the
+# number of rounds covers every schedule: --infer-rounds computes, for the
+# unwound program, a round count R such that every execution has an
+# equivalent one within R rounds (round_bound.cpp), unless it hits the
+# --max-rounds cap. DEAGLE_PROOF picks the encodings tried, in order.
+ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
+PROOF_MODES = os.environ.get("DEAGLE_PROOF", "cbmc").split(",")
+
+
+def prove(mode):
+    """Proof runs at growing unwinds; returns only when no proof was found."""
+    global current
+    extra = ROUNDS_PROOF_FLAGS if mode == "rounds" else ""
+    for unwind in PROOF_UNWINDS:
+        left = BUDGET - (time.time() - started) - GUARD_RESERVE
+        if left <= MIN_SLICE:
+            return
+        cmd = "./iekke_exe %s %s%s--unwind %d --verbosity 8 --glucose" % (
+            program_path, PROOF_FLAGS, extra, unwind)
+        print("proof try %s unwind=%d, all interleavings (%.0fs left)"
+              % (mode, unwind, left))
+        if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
+            os.remove(WITNESS_CONTENT)
+        current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True,
+                                   errors="replace", start_new_session=True)
+        try:
+            out, _ = current.communicate(timeout=max(0.01, min(SLICE, left)))
+        except subprocess.TimeoutExpired:
+            kill_bound(current)
+            current.communicate()
+            current = None
+            print("  -> timeout")
+            return
+        current = None
+        verdict = verdict_of(out)
+        failed = [l for l in out.splitlines()
+                  if l.startswith("[") and l.rstrip().endswith(": FAILURE")]
+        if verdict == "SUCCESSFUL" and mode == "rounds" and (
+                "Infer rounds: static round bound" not in out
+                or "the --max-rounds cap" in out):
+            print("  -> rounds capped: not every schedule covered, no proof")
+            return
+        if verdict == "SUCCESSFUL" and (
+                "pointer handling for concurrency is unsound" in out
+                and "points-to sets of shared pointers converged" not in out):
+            print("  -> points-to sets did not converge: no proof")
+            return
+        if verdict == "SUCCESSFUL":
+            print("  -> proved: every loop fully unrolled, every interleaving")
+            if WANTS_CORRECTNESS_WITNESS:
+                try:
+                    write_witness("invariant_set", "2.1", None)
+                except OSError as err:     # the answer stands without it
+                    print("no correctness witness: %s" % err)
+            print(out)
+            print("SUCCESSFUL")
+            sys.exit(0)
+        if verdict == "FAILED" and failed and all(".unwind." in l for l in failed):
+            print("  -> a loop not fully unrolled")
+            continue
+        if verdict == "FAILED":
+            # Not reported: FALSE answers come from the bug search, whose
+            # encoding and witnesses are validated; the encoding without
+            # rounds reports violations on race-free programs.
+            print("  -> violation in a proof run: no answer from it")
+            return
+        # a refusal (unsound pointer handling, unsupported feature): no proof
+        print("  -> no proof possible (refused): "
+              + " / ".join([l for l in out.splitlines() if l.strip()][-3:]))
+        return
+
+
 for unwind, rounds, extra in bounds():
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE + (GUARD_RESERVE if bounded_safe is None else 0):
         break
-    if bounded_safe is not None and time.time() - started >= STOP_AFTER:
+    if (bounded_safe is not None or PROVABLE) and time.time() - started >= STOP_AFTER:
         print("stop rule: a safe answer is held and %.0fs have passed" % STOP_AFTER)
         break
 
@@ -850,7 +941,8 @@ for unwind, rounds, extra in bounds():
                                stderr=subprocess.STDOUT, text=True,
                                errors="replace", start_new_session=True)
     deadline = time.time() + slice_
-    stop_at = started + STOP_AFTER if bounded_safe is not None else float("inf")
+    stop_at = (started + STOP_AFTER if bounded_safe is not None or PROVABLE
+               else float("inf"))
     out = None
     stop = None
     while out is None:
@@ -932,18 +1024,16 @@ for unwind, rounds, extra in bounds():
     # rounds, so it must not end the search.
 
 
-# Before a SUCCESSFUL, and before an UNKNOWN: a violation a concrete run
-# shows is the answer either way.
+if PROVABLE:
+    for mode in PROOF_MODES:
+        prove(mode)
+# Before an UNKNOWN: a violation a concrete run shows is the answer.
 left = BUDGET - (time.time() - started)
 evidence = concrete_violation(min(GUARD_BUDGET, left - 30))
 if evidence:
     report_concrete(evidence)
 if bounded_safe is not None:
-    if WANTS_CORRECTNESS_WITNESS:
-        write_witness("invariant_set", "2.1", None)
-    print(bounded_safe)
-    print("SUCCESSFUL")
-    sys.exit(0)
+    print("safe at the bounds tried, but no proof: no answer")
 
 print("UNKNOWN")
 sys.exit(1)
