@@ -834,10 +834,18 @@ GUARD_RESERVE = (min(120, 0.15 * BUDGET)
 # dereference may miss a target published late). Iekke repeats symex, each
 # pass seeded with the points-to sets collected so far, until no consulted
 # set grows, and says whether it converged; only a converged run, or one with
-# no shared pointer write, counts as a proof. Not for data races: without rounds the race check
-# ignores locks and reports races that do not exist, so a data-race task
-# never gets a TRUE.
-PROVABLE = not "no-data-race.prp" in property_path
+# no shared pointer write, counts as a proof. Data races: without rounds the
+# race check ignores locks and reports races that do not exist, so a race-free
+# proof uses the round-robin encoding with a round count R that covers every
+# schedule of the unwound program (round_bound.cpp, printed under
+# LAZYPO_ROUND_BOUND=only), plus two rounds: a race is a state reached by some
+# execution in which two conflicting accesses of different threads are both
+# enabled; the execution reaching it fits in R rounds, then one more round
+# runs the first access as the last step of its thread, and the second runs
+# in the same round (a later thread) or the next (an earlier one), which is
+# the witness shape the race encoding looks for. No partial-order reduction
+# there, so every schedule within those rounds is in the formula.
+PROVABLE = True
 PROOF_UNWINDS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
 PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
                + "--allow-pointer-unsoundness --summarise-guards --infer-alloc-types --unwinding-assertions ")
@@ -847,7 +855,29 @@ PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
 # equivalent one within R rounds (round_bound.cpp), unless it hits the
 # --max-rounds cap. DEAGLE_PROOF picks the encodings tried, in order.
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
-PROOF_MODES = os.environ.get("DEAGLE_PROOF", "cbmc").split(",")
+PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
+               else os.environ.get("DEAGLE_PROOF", "cbmc").split(","))
+MAX_PROOF_ROUNDS = 64
+
+
+def race_proof_rounds(unwind, left):
+    """R + 2 for the race-free proof at this unwind, or None (see PROVABLE)"""
+    cmd = ("LAZYPO_ROUND_BOUND=only LAZYPO_ROUND_BOUND_MAX=%d ./iekke_exe %s "
+           "%s--rounds 1 --no-por --unwind %d" % (MAX_PROOF_ROUNDS, program_path,
+                                                  PROOF_FLAGS, unwind))
+    try:
+        out = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, errors="replace",
+                             timeout=max(1, min(SLICE, left) / 2)).stdout
+    except subprocess.TimeoutExpired:
+        print("  -> round bound: timeout")
+        return None
+    m = re.search(r"Round bound \(static\): count=\d+ path=(\d+)(.*)", out)
+    if not m or "at max rounds" in m.group(2):
+        print("  -> round bound: %s" % (m.group(0) if m else "not computed"))
+        return None
+    print("  round bound %s: %d rounds" % (m.group(1), int(m.group(1)) + 2))
+    return int(m.group(1)) + 2
 
 
 def prove(mode):
@@ -858,6 +888,11 @@ def prove(mode):
         left = BUDGET - (time.time() - started) - GUARD_RESERVE
         if left <= MIN_SLICE:
             return
+        if mode == "race":
+            rounds = race_proof_rounds(unwind, left)
+            if rounds is None:
+                return
+            extra = "--rounds %d --no-por " % rounds
         cmd = "./iekke_exe %s %s%s--unwind %d --verbosity 8 --glucose" % (
             program_path, PROOF_FLAGS, extra, unwind)
         print("proof try %s unwind=%d, all interleavings (%.0fs left)"

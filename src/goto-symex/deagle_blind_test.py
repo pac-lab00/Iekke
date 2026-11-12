@@ -51,7 +51,9 @@
 # reported; a proof run's SUCCESSFUL is, unless a loop was cut (unwinding
 # assertion failed: next unwind), the points-to sets of shared pointers did
 # not converge, or the round count hit its cap; a violation in a proof run is
-# not reported; a data-race task never gets a proof run.
+# not reported; a data-race task is proved with the round-robin encoding at
+# the static round bound plus two, without partial-order reduction, and gets
+# no proof when that bound is at its cap.
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
@@ -72,10 +74,14 @@ with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
+if os.environ.get("LAZYPO_ROUND_BOUND") == "only":   # the race proof's round bound
+    print("Round bound (static): count=9 path=5"
+          + (" (at max rounds)" if mode == "proof_race_cap" else "") + " max=64 rounds=1")
+    sys.exit(0)
 if "--unwinding-assertions" in sys.argv:              # a proof run
     unwind = int(sys.argv[sys.argv.index("--unwind") + 1])
     cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
-    if mode == "proof_ok":
+    if mode in ("proof_ok", "proof_race_cap"):
         print("VERIFICATION SUCCESSFUL")
     elif mode == "proof_deep":                         # loops need unwind 8
         print(cut if unwind < 8 else "", "VERIFICATION " + ("FAILED" if unwind < 8 else "SUCCESSFUL"), sep="\n")
@@ -505,7 +511,8 @@ for prop, want in (("no-data-race", "short"), ("unreach-call", "long")):
 for mode, prop, env, want in (
         ("proof_ok", "unreach-call.prp", {}, "true"),
         ("proof_deep", "unreach-call.prp", {}, "true"),
-        ("proof_ok", "no-data-race.prp", {}, "unknown"),
+        ("proof_ok", "no-data-race.prp", {}, "true"),
+        ("proof_race_cap", "no-data-race.prp", {}, "unknown"),
         ("safe", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr_conv", "unreach-call.prp", {}, "true"),
@@ -515,11 +522,14 @@ for mode, prop, env, want in (
         ("proof_ok", "valid-memsafety.prp", {}, "true")):
     out, pids, survivors = run(mode, 30, prop=prop,
                                env_extra=dict(env, DEAGLE_STOP="2", DEAGLE_GUARD="0"))
-    proofs = [a for a in run.args if "--unwinding-assertions" in a]
+    proofs = [a for a in run.args if "--unwinding-assertions" in a
+              and "--rounds 1 --no-por" not in a]   # not the round-bound query
     got = official(out, 0 if out.strip().endswith("SUCCESSFUL") else 1)
     unwinds = [int(a.split()[a.split().index("--unwind") + 1]) for a in proofs]
     bad = got != want
-    if prop == "no-data-race.prp" and proofs:
+    if prop == "no-data-race.prp" and (
+            any("--rounds 7 --no-por" not in a for a in proofs)
+            or (mode == "proof_race_cap") != (not proofs)):
         bad = True
     if mode == "proof_deep" and unwinds[:3] != [2, 4, 8]:
         bad = True
