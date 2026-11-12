@@ -74,6 +74,11 @@ with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
+if os.environ.get("LAZYPO_ROUND_BOUND") == "only" and mode == "proof_race_late" \
+        and int(sys.argv[sys.argv.index("--unwind") + 1]) < 4:
+    # the loop that creates the threads is cut: no threads, so no bound printed
+    print("[main.unwind.0] line 9 unwinding assertion loop 0: FAILURE\nVERIFICATION FAILED")
+    sys.exit(0)
 if os.environ.get("LAZYPO_ROUND_BOUND") == "only":   # the race proof's round bound
     print("Round bound (static): count=9 path=5"
           + (" (at max rounds)" if mode == "proof_race_cap" else "") + " max=64 rounds=1")
@@ -81,7 +86,7 @@ if os.environ.get("LAZYPO_ROUND_BOUND") == "only":   # the race proof's round bo
 if "--unwinding-assertions" in sys.argv:              # a proof run
     unwind = int(sys.argv[sys.argv.index("--unwind") + 1])
     cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
-    if mode in ("proof_ok", "proof_race_cap"):
+    if mode in ("proof_ok", "proof_race_cap", "proof_race_late"):
         print("VERIFICATION SUCCESSFUL")
     elif mode == "proof_deep":                         # loops need unwind 8
         print(cut if unwind < 8 else "", "VERIFICATION " + ("FAILED" if unwind < 8 else "SUCCESSFUL"), sep="\n")
@@ -513,6 +518,7 @@ for mode, prop, env, want in (
         ("proof_deep", "unreach-call.prp", {}, "true"),
         ("proof_ok", "no-data-race.prp", {}, "true"),
         ("proof_race_cap", "no-data-race.prp", {}, "unknown"),
+        ("proof_race_late", "no-data-race.prp", {}, "true"),
         ("safe", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr_conv", "unreach-call.prp", {}, "true"),

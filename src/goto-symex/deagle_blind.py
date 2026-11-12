@@ -873,6 +873,10 @@ def race_proof_rounds(unwind, left):
         print("  -> round bound: timeout")
         return None
     m = re.search(r"Round bound \(static\): count=\d+ path=(\d+)(.*)", out)
+    if not m and re.search(r"\.unwind\.\d+\] .*: FAILURE", out):
+        # a loop cut before any thread was created: no threads, no bound yet
+        print("  -> a loop not fully unrolled (before the threads)")
+        return 0
     if not m or "at max rounds" in m.group(2):
         print("  -> round bound: %s" % (m.group(0) if m else "not computed"))
         return None
@@ -892,6 +896,8 @@ def prove(mode):
             rounds = race_proof_rounds(unwind, left)
             if rounds is None:
                 return
+            if rounds == 0:
+                continue
             extra = "--rounds %d --no-por " % rounds
         cmd = "./iekke_exe %s %s%s--unwind %d --verbosity 8 --glucose" % (
             program_path, PROOF_FLAGS, extra, unwind)
