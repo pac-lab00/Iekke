@@ -856,7 +856,7 @@ PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
 # --max-rounds cap. DEAGLE_PROOF picks the encodings tried, in order.
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
 PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
-               else os.environ.get("DEAGLE_PROOF", "cbmc").split(","))
+               else os.environ.get("DEAGLE_PROOF", "rounds,cbmc").split(","))
 MAX_PROOF_ROUNDS = 64
 
 
