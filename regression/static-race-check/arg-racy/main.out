@@ -1,6 +1,6 @@
 Iëkke version 2.0 (based on Deagle 4.1.0) 64-bit x86_64 linux
 which contains:
-CBMC version 5.67.0 (58e9b091-dirty) 64-bit x86_64 linux
+CBMC version 5.67.0 (3743b5fc-dirty) 64-bit x86_64 linux
 Parsing main.c
 Converting
 Type-checking main
@@ -9,6 +9,6 @@ Adding CPROVER library (x86_64)
 Removal of function pointers and virtual functions
 file <builtin-library-__spawned_thread> line 26 function __spawned_thread: replacing function pointer by 1 possible targets
 Generic Property Instrumentation
-STATIC RACE CHECK: UNKNOWN (thread argument not NULL)
+STATIC RACE CHECK: UNKNOWN (dereference of an untracked pointer at file main.c line 3 function t)
 EXIT=0
 SIGNAL=0

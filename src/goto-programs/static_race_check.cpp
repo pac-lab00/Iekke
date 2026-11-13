@@ -13,7 +13,8 @@ Module: Loop-independent data-race freedom check
 /// lock (or both are in atomic sections). Everything it cannot decide
 /// exactly makes it answer UNKNOWN:
 ///  - threads are created only by pthread_create called in main's own body,
-///    with a constant start routine and a NULL argument; a creation inside
+///    with a constant start routine (the argument is free, but a
+///    dereference of the start routine's parameter is untracked); a creation inside
 ///    a loop of main is an unbounded number of instances, concurrent with
 ///    each other; a join removes a thread only when its argument is the
 ///    thread-id variable written by exactly one, non-looping creation and
@@ -651,11 +652,10 @@ private:
       if(f.id() != ID_address_of ||
          to_address_of_expr(f).object().id() != ID_symbol)
         unknown("thread start routine not constant");
-      exprt arg = args[3];
-      while(arg.id() == ID_typecast)
-        arg = to_typecast_expr(arg).op();
-      if(!arg.is_constant())
-        unknown("thread argument not NULL");
+      // the argument itself is only read here; the start routine's
+      // parameter has no root, so any dereference of it (or of a pointer
+      // derived from it) in the thread is untracked and gives UNKNOWN
+      rvalue(args[3], s, ins, fn);
       // the write to the thread-id variable happens before the thread runs
       lvalue(dereference_exprt(args[0]), true, s, ins, fn);
       rvalue(args[1], s, ins, fn);
