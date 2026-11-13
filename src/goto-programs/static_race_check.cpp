@@ -141,7 +141,44 @@ private:
   int context = -1;
   bool recording = false;
   std::vector<irep_idt> call_stack;
-  std::map<std::pair<irep_idt, statet>, statet> summary;
+  // a pointer parameter takes the root of its argument at the call; a mutex
+  // parameter, the exact lock its argument names
+  struct bindingt
+  {
+    irep_idt function;
+    std::map<irep_idt, std::string> root, lock;
+    std::string key() const
+    {
+      std::string k;
+      for(const auto &r : root)
+        k += id2string(r.first) + "=" + r.second + ";";
+      for(const auto &l : lock)
+        k += id2string(l.first) + "~" + l.second + ";";
+      return k;
+    }
+  };
+  std::vector<bindingt> bindings;
+  std::map<std::pair<std::pair<irep_idt, std::string>, statet>, statet> summary;
+
+  // parameter identifiers from the function's type (the goto function's
+  // own list can be empty)
+  std::vector<irep_idt> params_of(const irep_idt &fn) const
+  {
+    std::vector<irep_idt> r;
+    const symbolt *sym;
+    if(ns.lookup(fn, sym) || sym->type.id() != ID_code)
+      return r;
+    for(const auto &p : to_code_type(sym->type).parameters())
+      r.push_back(p.get_identifier());
+    return r;
+  }
+
+  const bindingt *binding_of(const irep_idt &fn) const
+  {
+    if(!bindings.empty() && bindings.back().function == fn)
+      return &bindings.back();
+    return nullptr;
+  }
 
   [[noreturn]] void unknown(const std::string &why)
   {
@@ -229,6 +266,15 @@ private:
   // flow-insensitive: every assignment to the local gives the same root
   std::string local_root(const irep_idt &l, const irep_idt &fn, int depth)
   {
+    // a parameter takes the root of its argument at the current call
+    for(const auto &p : params_of(fn))
+      if(p == l)
+      {
+        const bindingt *b = binding_of(fn);
+        if(b == nullptr || !b->root.count(l))
+          return "";
+        return b->root.at(l);
+      }
     auto key = std::make_pair(fn, l);
     auto c = local_root_cache.find(key);
     if(c != local_root_cache.end())
@@ -237,9 +283,6 @@ private:
     const auto *f = body(fn);
     if(f == nullptr)
       return "";
-    for(const auto &p : f->parameter_identifiers)
-      if(p == l)
-        return "";
     std::string root;
     bool any = false;
     forall_goto_program_instructions(it, f->body)
@@ -467,11 +510,19 @@ private:
   }
 
   // --- lock ids -------------------------------------------------------------
-  static std::string lock_id(const exprt &arg)
+  std::string lock_id(const exprt &arg, const irep_idt &fn) const
   {
     exprt a = arg;
     while(a.id() == ID_typecast)
       a = to_typecast_expr(a).op();
+    if(a.id() == ID_symbol)
+    {
+      const bindingt *b = binding_of(fn);
+      irep_idt v = to_symbol_expr(a).get_identifier();
+      if(b != nullptr && b->lock.count(v))
+        return b->lock.at(v);
+      return "";
+    }
     if(a.id() != ID_address_of)
       return "";
     exprt o = to_address_of_expr(a).object();
@@ -670,7 +721,7 @@ private:
     if(c == "pthread_mutex_lock" || c == "pthread_spin_lock")
     {
       read_args();
-      std::string id = lock_id(args[0]);
+      std::string id = lock_id(args[0], fn);
       if(!id.empty())
         s.locks.insert(id);
       return s;
@@ -678,7 +729,7 @@ private:
     if(c == "pthread_mutex_unlock" || c == "pthread_spin_unlock")
     {
       read_args();
-      std::string id = lock_id(args[0]);
+      std::string id = lock_id(args[0], fn);
       if(id.empty())
         s.locks.clear();
       else
@@ -770,7 +821,25 @@ private:
         unknown("recursion");
     if(call_stack.size() > 40)
       unknown("call depth");
+    bindingt b;
+    b.function = callee;
+    const std::vector<irep_idt> prms = params_of(callee);
+    for(std::size_t i = 0; i < args.size() && i < prms.size(); i++)
+      if(args[i].type().id() == ID_pointer)
+      {
+        const irep_idt &prm = prms[i];
+        std::string r = root_of(args[i], fn);
+        if(!r.empty())
+          b.root[prm] = r;
+        std::string l = lock_id(args[i], fn);
+        if(!l.empty())
+          b.lock[prm] = l;
+      }
+    bindings.push_back(b);
+    local_root_cache.clear();
     statet out = analyse(callee, s);
+    bindings.pop_back();
+    local_root_cache.clear();
     write_lhs();
     return out;
   }
@@ -784,7 +853,8 @@ private:
     natural_loopst loops;
     loops(prog);
 
-    auto key = std::make_pair(fn, entry);
+    const bindingt *bd = binding_of(fn);
+    auto key = std::make_pair(std::make_pair(fn, bd ? bd->key() : std::string()), entry);
     if(!recording)
     {
       auto sm = summary.find(key);

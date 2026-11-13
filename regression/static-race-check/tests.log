@@ -321,6 +321,101 @@ Execution [OK]
 ^SIGNAL=0\r\\?$ [OK]
 ^STATIC RACE CHECK: UNKNOWN [OK]
 
+Test 'param-distinct-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'param-inc-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-incr-lock-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-lock-elements-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-lock-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
 Test 'plain-racy'
   Level: CORE
   Input: main.c
