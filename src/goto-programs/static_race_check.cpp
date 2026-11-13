@@ -9,28 +9,31 @@ Module: Loop-independent data-race freedom check
 /// the goto program before any unwinding, so loops of any length are no
 /// obstacle. It answers RACE-FREE only when every pair of conflicting
 /// accesses to a shared object from code that can run concurrently is
-/// either ordered by thread creation/join in main or protected by a common
-/// lock (or both are in atomic sections). Everything it cannot decide
-/// exactly makes it answer UNKNOWN:
-///  - threads are created only by pthread_create called in main's own body,
-///    with a constant start routine (the argument is free, but a
-///    dereference of the start routine's parameter is untracked); a creation inside
-///    a loop of main is an unbounded number of instances, concurrent with
-///    each other; a join removes a thread only when its argument is the
-///    thread-id variable written by exactly one, non-looping creation and
-///    nothing else writes that variable or takes its address;
-///  - a shared object is a global variable (named, or an array or struct as
-///    a whole), or the heap block a global pointer points to when that
-///    pointer is assigned only fresh allocations (malloc/calloc, directly or
-///    returned by a function) and only before the first thread is created;
-///    a dereference whose target cannot be traced to such a pointer, to a
-///    local object, or to memory the thread allocated itself, is UNKNOWN;
-///  - locks are pthread mutexes named by a constant address; a lock taken
-///    through a pointer is not counted, and an unlock through one releases
-///    every lock (both only make the answer UNKNOWN more often);
-///  - calls of functions without a body that take pointers, function
-///    pointers, inline assembly, __CPROVER_ASYNC, pthread_once and thread
-///    keys (they run code we do not follow) are UNKNOWN.
+/// ordered by thread creation/join in main, or holds a common mutex, or lies
+/// in atomic sections; accesses of _Atomic type take part in no race, as in
+/// the race encoding. Everything it cannot decide exactly answers UNKNOWN:
+///  - threads: created by pthread_create in main's own body with a constant
+///    start routine; a creation inside a loop of main is an unbounded number
+///    of instances, concurrent with each other. A join removes a thread only
+///    when its argument is the thread-id variable of exactly one non-looping
+///    creation, and nothing else writes that variable or takes its address.
+///    The thread argument is free, but the start routine's parameter has no
+///    target, so dereferencing it is UNKNOWN.
+///  - shared objects: global variables (an array or struct counts as one
+///    object), and the heap block or global object that a tracked pointer
+///    designates. A global pointer is tracked when its address is never
+///    taken and every definition, made in main or the static initialiser
+///    before the first thread starts, gives the same target: fresh blocks
+///    (malloc/calloc, directly or returned by a function), another tracked
+///    pointer, or one global object. A local pointer is tracked when every
+///    assignment gives the same target; a pointer parameter takes the target
+///    of its argument at the call. Any other dereference is UNKNOWN.
+///  - locks: pthread mutexes named by a constant address, or by a parameter
+///    bound to one at the call. A lock taken through any other pointer is not
+///    counted, and an unlock through one releases every lock.
+///  - calls of functions without a body that take pointers, calls through
+///    function pointers, inline assembly, __CPROVER_ASYNC, pthread_once and
+///    thread keys (they run code we do not follow) answer UNKNOWN.
 /// Accesses of main before the first creation and after every thread has
 /// been joined run alone and are never part of a race.
 
@@ -49,10 +52,8 @@ Module: Loop-independent data-race freedom check
 
 #include "goto_model.h"
 
-#include <iostream>
 #include <map>
 #include <set>
-#include <sstream>
 #include <vector>
 
 bool type_is_atomic(const typet &type); // symex_target_equation_deagle.cpp
@@ -125,7 +126,7 @@ private:
   struct sitet
   {
     irep_idt function;   // start routine
-    bool multi = false;  // created in a loop
+    bool multi = false;  // created in a loop: any number of instances
     irep_idt tid;        // thread-id variable, empty if not joinable
     std::set<unsigned> alive_at_create;
   };
@@ -219,8 +220,10 @@ private:
     return type_is_atomic(sym->type);
   }
 
-  // --- pointer roots ------------------------------------------------------
-  // "G:<name>" fresh block of global G, "LOCAL" thread-private, "" unknown
+  // --- pointer targets ("roots") --------------------------------------------
+  // "G:<global>" the heap block of tracked pointer <global>, "S:<global>" a
+  // global object, "FRESH" a block just allocated, "LOCAL" memory private to
+  // the thread (its locals, string constants, NULL), "" unknown
   std::map<std::pair<irep_idt, irep_idt>, std::string> local_root_cache;
 
   std::string root_of(const exprt &p, const irep_idt &fn, int depth = 0)
@@ -354,12 +357,8 @@ private:
   {
     if(e.id() == ID_symbol && to_symbol_expr(e).get_identifier() == l)
       return true;
-    if(e.id() == ID_dereference || e.id() == ID_index)
-    {
-      // a value loaded through the pointer is not the pointer
-      if(e.id() == ID_dereference)
-        return false;
-    }
+    if(e.id() == ID_dereference)
+      return false; // a value loaded through the pointer is not the pointer
     for(const auto &op : e.operands())
       if(mentions(op, l))
         return true;
@@ -384,7 +383,7 @@ private:
       if(it->is_set_return_value())
       {
         std::string r = root_of(it->return_value(), callee);
-        if(r != "LOCAL_FRESH" && r != "FRESH")
+        if(r != "FRESH")
           return "";
         root = "FRESH";
       }
@@ -565,7 +564,7 @@ private:
 
   // --- the transfer function ------------------------------------------------
   statet step(goto_programt::const_targett it, statet s, const irep_idt &fn,
-              const goto_programt &prog, const natural_loopst *loops)
+              const natural_loopst *loops)
   {
     const auto &ins = *it;
     if(ins.is_assign())
@@ -888,7 +887,7 @@ private:
         unknown("fixpoint too long");
       auto it = work.back();
       work.pop_back();
-      statet out = step(it, in[it], fn, prog, &loops);
+      statet out = step(it, in[it], fn, &loops);
       out.reached = true;
       if(it->is_end_function())
       {
@@ -911,7 +910,7 @@ private:
       // every reached instruction once, with its final state
       forall_goto_program_instructions(it, prog)
         if(in.count(it) && in[it].reached)
-          step(it, in[it], fn, prog, &loops);
+          step(it, in[it], fn, &loops);
     }
     call_stack.pop_back();
     summary[key] = exit_state;
