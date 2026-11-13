@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 2 --glucose
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Without --rounds the ordering constraints go to Deagle's closure solver;
+--glucose used to replace that solver and crash (segmentation fault).

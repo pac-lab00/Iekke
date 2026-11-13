@@ -827,8 +827,9 @@ GUARD_RESERVE = (min(120, 0.15 * BUDGET)
 # of SV-COMP 2027, November 2026). The bounds above explore a bounded number
 # of rounds and cut loops, so their SUCCESSFUL only steers the stop rule and
 # is never reported. A TRUE comes from a proof run instead: every interleaving
-# (no --rounds: the encoding of all schedules), every loop checked to be fully
-# unrolled (--unwinding-assertions), no option that cuts executions
+# (the round-robin encoding at a round count that covers every schedule, see
+# below), every loop checked to be fully unrolled (--unwinding-assertions),
+# no option that cuts executions
 # (--dynamic-array-bound, --symmetric-instance), and no unsound pointer
 # handling. Stock CBMC refuses every write of a shared pointer (#305: a
 # dereference may miss a target published late). Iekke repeats symex, each
@@ -847,17 +848,52 @@ GUARD_RESERVE = (min(120, 0.15 * BUDGET)
 # there, so every schedule within those rounds is in the formula.
 PROVABLE = True
 PROOF_UNWINDS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+# Spin loops (spin_loops.cpp): an iteration that writes no memory and leaves
+# the loop's locals unchanged only repeats the one before; cutting it keeps
+# every reachable state and lets a wait loop be fully unwound.
 PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
-               + "--allow-pointer-unsoundness --summarise-guards --infer-alloc-types --unwinding-assertions ")
+               + "--allow-pointer-unsoundness --summarise-guards --infer-alloc-types --unwinding-assertions "
+               + "--spin-loop-reduction ")
 # The round-robin encoding with partial-order reduction proves too once the
 # number of rounds covers every schedule: --infer-rounds computes, for the
 # unwound program, a round count R such that every execution has an
 # equivalent one within R rounds (round_bound.cpp), unless it hits the
-# --max-rounds cap. DEAGLE_PROOF picks the encodings tried, in order.
+# --max-rounds cap. The encoding without rounds covers every schedule with
+# no round count and is tried first. It is solved with Deagle's segment
+# solver: the default closure solver wrongly reports UNSAT (on
+# pthread-theta/unwind3-100, expected FALSE, it found the thread-creation
+# loop fully unwound at 32 of 100 iterations and answered TRUE).
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
+SEGMENT_PROOF_FLAGS = "--deagle-segment "
 PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
-               else os.environ.get("DEAGLE_PROOF", "rounds,cbmc").split(","))
+               else ["segment", "rounds"])
 MAX_PROOF_ROUNDS = 64
+
+
+def run_watched(cmd, timeout):
+    """Run one proof command, killed at the timeout or when it outgrows the
+    per-bound memory cap (as the bounds of the bug search are): one run that
+    reached the run's limit would get the whole run killed from outside.
+    Returns (output, None) or (None, "timeout" | "memory")."""
+    global current
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
+    deadline = time.time() + timeout
+    while True:
+        try:
+            out, _ = current.communicate(
+                timeout=max(0.01, min(POLL, deadline - time.time())))
+            current = None
+            return out, None
+        except subprocess.TimeoutExpired:
+            stop = ("timeout" if time.time() >= deadline else
+                    "memory" if CAP and group_rss(current.pid) > CAP else None)
+            if stop:
+                kill_bound(current)
+                current.communicate()
+                current = None
+                return None, stop
 
 
 def race_proof_rounds(unwind, left):
@@ -865,12 +901,9 @@ def race_proof_rounds(unwind, left):
     cmd = ("LAZYPO_ROUND_BOUND=only LAZYPO_ROUND_BOUND_MAX=%d ./iekke_exe %s "
            "%s--rounds 1 --no-por --unwind %d" % (MAX_PROOF_ROUNDS, program_path,
                                                   PROOF_FLAGS, unwind))
-    try:
-        out = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, errors="replace",
-                             timeout=max(1, min(SLICE, left) / 2)).stdout
-    except subprocess.TimeoutExpired:
-        print("  -> round bound: timeout")
+    out, stop = run_watched(cmd, max(1, min(SLICE, left) / 2))
+    if stop:
+        print("  -> round bound: %s" % stop)
         return None
     m = re.search(r"Round bound \(static\): count=\d+ path=(\d+)(.*)", out)
     if not m and re.search(r"\.unwind\.\d+\] .*: FAILURE", out):
@@ -887,7 +920,7 @@ def race_proof_rounds(unwind, left):
 def prove(mode):
     """Proof runs at growing unwinds; returns only when no proof was found."""
     global current
-    extra = ROUNDS_PROOF_FLAGS if mode == "rounds" else ""
+    extra = SEGMENT_PROOF_FLAGS if mode == "segment" else ROUNDS_PROOF_FLAGS
     for unwind in PROOF_UNWINDS:
         left = BUDGET - (time.time() - started) - GUARD_RESERVE
         if left <= MIN_SLICE:
@@ -905,18 +938,10 @@ def prove(mode):
               % (mode, unwind, left))
         if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
             os.remove(WITNESS_CONTENT)
-        current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, text=True,
-                                   errors="replace", start_new_session=True)
-        try:
-            out, _ = current.communicate(timeout=max(0.01, min(SLICE, left)))
-        except subprocess.TimeoutExpired:
-            kill_bound(current)
-            current.communicate()
-            current = None
-            print("  -> timeout")
+        out, stop = run_watched(cmd, max(0.01, min(SLICE, left)))
+        if stop:
+            print("  -> %s" % stop)
             return
-        current = None
         verdict = verdict_of(out)
         failed = [l for l in out.splitlines()
                   if l.startswith("[") and l.rstrip().endswith(": FAILURE")]

@@ -87,8 +87,20 @@ if os.environ.get("LAZYPO_ROUND_BOUND") == "only":   # the race proof's round bo
     print("Round bound (static): count=9 path=5"
           + (" (at max rounds)" if mode == "proof_race_cap" else "") + " max=64 rounds=1")
     sys.exit(0)
+if "--unwinding-assertions" in sys.argv and mode == "proof_hog":
+    with open(os.path.join(here, "pids"), "a") as f:   # a proof run that grows
+        f.write("%d\n" % os.getpid())
+    held = []
+    for mb in range(50, 1250, 50):
+        held.append(b"\x01" * (50 << 20))
+        with open(os.path.join(here, "peak"), "w") as f:
+            f.write(str(mb))
+        time.sleep(0.2)
+    time.sleep(120)
 if "--unwinding-assertions" in sys.argv:              # a proof run
     unwind = int(sys.argv[sys.argv.index("--unwind") + 1])
+    if "--infer-rounds" in sys.argv and mode != "proof_cap":
+        print("Infer rounds: static round bound 5")
     cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
     if mode in ("proof_ok", "proof_race_cap", "proof_race_late"):
         print("VERIFICATION SUCCESSFUL")
@@ -100,6 +112,8 @@ if "--unwinding-assertions" in sys.argv:              # a proof run
         print("pointer handling for concurrency is unsound\n"
               "points-to sets of shared pointers converged after 2 seeded symex pass(es)\n"
               "VERIFICATION SUCCESSFUL")
+    elif mode == "proof_cap" and "--deagle-segment" in sys.argv:
+        print(cut + "\nVERIFICATION FAILED")   # only the round-robin proof applies
     elif mode == "proof_cap":
         print(("Infer rounds: static round bound 64 (the --max-rounds cap)\n" if "--infer-rounds" in sys.argv else "")
               + "VERIFICATION SUCCESSFUL")
@@ -526,8 +540,7 @@ for mode, prop, env, want in (
         ("safe", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr_conv", "unreach-call.prp", {}, "true"),
-        ("proof_cap", "unreach-call.prp", {"DEAGLE_PROOF": "rounds"}, "unknown"),
-        ("proof_cap", "unreach-call.prp", {"DEAGLE_PROOF": "rounds,cbmc"}, "true"),
+        ("proof_cap", "unreach-call.prp", {}, "unknown"),
         ("proof_bug", "unreach-call.prp", {}, "unknown"),
         ("proof_ok", "valid-memsafety.prp", {}, "true"),
         ("race_static", "no-data-race.prp", {}, "true"),
@@ -546,12 +559,35 @@ for mode, prop, env, want in (
     if mode == "proof_deep" and unwinds[:3] != [2, 4, 8]:
         bad = True
     if any("--allow-pointer-unsoundness" not in a.split() for a in proofs):
+        bad = True
+    # a proof run without rounds uses the segment solver (the default closure
+    # solver proved a buggy program), and runs before the round-robin one
+    if any("--rounds" not in a.split() and "--deagle-segment" not in a.split()
+           for a in proofs):
         bad = True   # also catches two options run together (memory safety's last one)
+    if (prop != "no-data-race.prp" and mode == "proof_deep"
+            and "--deagle-segment" not in proofs[0].split()):
+        bad = True
     if bad:
         print("FAIL proof %s %s %s: read as %r, want %r, proof unwinds %s"
               % (mode, prop, env, got, want, unwinds))
         ok = False
     else:
         print("ok   proof %s %s %s: %s" % (mode, prop, env, got))
+
+# Case "proof memory": a proof run that outgrows the run's memory is stopped
+# on its own, as a bound of the bug search is; before, it ran until the
+# memory limit killed the whole run (372 OUT OF MEMORY in the pre-run of
+# 2026-11-13).
+out, pids, survivors = run("proof_hog", 40, prop="unreach-call.prp",
+                           env_extra={"DEAGLE_MEMLIMIT": str(600 << 20),
+                                      "DEAGLE_STOP": "2", "DEAGLE_GUARD": "0"})
+last = out.strip().splitlines()[-1] if out.strip() else ""
+if run.peak >= 600 or last != "UNKNOWN" or survivors or "-> memory" not in out:
+    print("FAIL proof memory: peak %d MB of 600, last line %r, survivors %s"
+          % (run.peak, last, survivors))
+    ok = False
+else:
+    print("ok   proof memory: proof run stopped at %d MB of 600" % run.peak)
 
 sys.exit(0 if ok else 1)

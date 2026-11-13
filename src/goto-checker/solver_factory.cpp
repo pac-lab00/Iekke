@@ -288,7 +288,15 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
   // experiment needs variable provenance, which the external DIMACS path cannot
   // carry, and an explicit --glucose must win over the Deagle solvers that this
   // fork enables by default. Without the flag nothing changes.
-  if(options.get_bool_option("glucose"))
+  // Without --rounds the memory-model encoding hands its ordering constraints
+  // to the selected Deagle solver (bmc_util casts the solver to it), so
+  // Glucose cannot stand in there: it crashed on the first program with an
+  // ordering edge (libvsync/ticketlock, Huawei).
+  if(options.get_bool_option("glucose") &&
+     !(options.get_unsigned_int_option("rounds") == 0 &&
+       (options.get_bool_option("deagle-closure") ||
+        options.get_bool_option("deagle-icd") ||
+        options.get_bool_option("deagle-segment"))))
   {
     // SAT Modulo SAT (canonicality in a slave module) is a separate backend,
     // opt-in with LAZYPO_SMS in the environment -- the same switch bmc_util
