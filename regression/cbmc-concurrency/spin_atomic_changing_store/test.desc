@@ -1,0 +1,9 @@
+CORE
+main.c
+--spin-loop-reduction --unwind 2 --unwinding-assertions
+^EXIT=10$
+^SIGNAL=0$
+unwinding assertion loop 0: FAILURE
+^VERIFICATION FAILED$
+--
+^warning: ignoring

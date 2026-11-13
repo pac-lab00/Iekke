@@ -1,4 +1,5 @@
 SRC = allocate_objects.cpp \
+      spin_loops.cpp \
       static_race_check.cpp \
       adjust_float_expressions.cpp \
       builtin_functions.cpp \

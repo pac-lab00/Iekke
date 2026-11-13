@@ -69,6 +69,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <goto-programs/remove_unused_functions.h>
 #include <goto-programs/set_properties.h>
 #include <goto-programs/show_goto_functions.h>
+#include <goto-programs/spin_loops.h>
 #include <goto-programs/static_race_check.h>
 #include <goto-programs/show_properties.h>
 #include <goto-programs/show_symbol_table.h>
@@ -1045,6 +1046,13 @@ int cbmc_parse_optionst::get_goto_program(
       goto_model, ui_message_handler, cmdline.isset("list-goto-functions"));
     return CPROVER_EXIT_SUCCESS;
   }
+
+  // --spin-loop-reduction: cut the iterations of side-effect-free loops
+  // that change nothing (spin_loops.cpp)
+  if(cmdline.isset("spin-loop-reduction"))
+    log.status() << "Spin-loop reduction: "
+                 << spin_loop_reduction(goto_model) << " loop(s)"
+                 << messaget::eom;
 
   // --static-race-check: decide race freedom on the goto program, before
   // any unwinding (static_race_check.cpp), and stop
