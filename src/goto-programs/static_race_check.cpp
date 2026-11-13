@@ -253,6 +253,9 @@ private:
       }
       if(o.id() == ID_string_constant)
         return "LOCAL";
+      // &p->field, &p[i]: inside the object p points to
+      if(o.id() == ID_dereference)
+        return root_of(to_dereference_expr(o).pointer(), fn, depth + 1);
       return "";
     }
     if(p.id() == ID_symbol)
