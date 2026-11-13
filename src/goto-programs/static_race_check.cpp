@@ -416,6 +416,14 @@ private:
   void lvalue(const exprt &e, bool write, const statet &s,
               const goto_programt::instructiont &ins, const irep_idt &fn)
   {
+    // an access of _Atomic type (an _Atomic variable, element or pointee)
+    // takes part in no race; only the indices and pointers on the way to it
+    // are read
+    if(type_is_atomic(e.type()))
+    {
+      address(e, s, ins, fn);
+      return;
+    }
     if(e.id() == ID_symbol)
     {
       const auto &sy = to_symbol_expr(e);
