@@ -1,0 +1,14 @@
+Iëkke version 2.0 (based on Deagle 4.1.0) 64-bit x86_64 linux
+which contains:
+CBMC version 5.67.0 (e5b6aa12-dirty) 64-bit x86_64 linux
+Parsing main.c
+Converting
+Type-checking main
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+file <builtin-library-__spawned_thread> line 26 function __spawned_thread: replacing function pointer by 1 possible targets
+Generic Property Instrumentation
+STATIC RACE CHECK: UNKNOWN (fresh pointer reassigned while threads run)
+EXIT=0
+SIGNAL=0

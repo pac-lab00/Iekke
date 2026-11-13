@@ -69,6 +69,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <goto-programs/remove_unused_functions.h>
 #include <goto-programs/set_properties.h>
 #include <goto-programs/show_goto_functions.h>
+#include <goto-programs/static_race_check.h>
 #include <goto-programs/show_properties.h>
 #include <goto-programs/show_symbol_table.h>
 
@@ -1042,6 +1043,15 @@ int cbmc_parse_optionst::get_goto_program(
   {
     show_goto_functions(
       goto_model, ui_message_handler, cmdline.isset("list-goto-functions"));
+    return CPROVER_EXIT_SUCCESS;
+  }
+
+  // --static-race-check: decide race freedom on the goto program, before
+  // any unwinding (static_race_check.cpp), and stop
+  if(cmdline.isset("static-race-check"))
+  {
+    std::cout << "STATIC RACE CHECK: " << static_race_check(goto_model)
+              << std::endl;
     return CPROVER_EXIT_SUCCESS;
   }
 

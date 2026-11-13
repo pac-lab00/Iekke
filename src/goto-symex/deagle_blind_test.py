@@ -70,6 +70,10 @@ FAKE_TOOL = r'''#! /usr/bin/env python3
 import os, subprocess, sys, time
 here = os.path.dirname(os.path.abspath(__file__))
 mode = open(os.path.join(here, "mode")).read().strip()
+if "--static-race-check" in sys.argv:              # the race-freedom check
+    print("STATIC RACE CHECK: " + ("RACE-FREE" if mode == "race_static"
+                                   else "UNKNOWN (fake)"))
+    sys.exit(0)
 with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
@@ -525,7 +529,9 @@ for mode, prop, env, want in (
         ("proof_cap", "unreach-call.prp", {"DEAGLE_PROOF": "rounds"}, "unknown"),
         ("proof_cap", "unreach-call.prp", {"DEAGLE_PROOF": "rounds,cbmc"}, "true"),
         ("proof_bug", "unreach-call.prp", {}, "unknown"),
-        ("proof_ok", "valid-memsafety.prp", {}, "true")):
+        ("proof_ok", "valid-memsafety.prp", {}, "true"),
+        ("race_static", "no-data-race.prp", {}, "true"),
+        ("race_static", "unreach-call.prp", {}, "unknown")):
     out, pids, survivors = run(mode, 30, prop=prop,
                                env_extra=dict(env, DEAGLE_STOP="2", DEAGLE_GUARD="0"))
     proofs = [a for a in run.args if "--unwinding-assertions" in a
@@ -535,7 +541,7 @@ for mode, prop, env, want in (
     bad = got != want
     if prop == "no-data-race.prp" and (
             any("--rounds 7 --no-por" not in a for a in proofs)
-            or (mode == "proof_race_cap") != (not proofs)):
+            or (mode in ("proof_race_cap", "race_static")) != (not proofs)):
         bad = True
     if mode == "proof_deep" and unwinds[:3] != [2, 4, 8]:
         bad = True

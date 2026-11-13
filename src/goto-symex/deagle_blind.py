@@ -955,6 +955,28 @@ def prove(mode):
         return
 
 
+# Race freedom decided on the program before unwinding (--static-race-check,
+# static_race_check.cpp): every pair of conflicting accesses that can run
+# concurrently is ordered by thread creation/join in main or holds a common
+# lock; whatever the check cannot decide exactly makes it answer UNKNOWN.
+# Loops of any length are no obstacle, and no bound is involved, so a
+# RACE-FREE answer is a proof and needs no bug search.
+if "no-data-race.prp" in property_path:
+    try:
+        check = subprocess.run("./iekke_exe %s %s--static-race-check" % (
+                                   program_path, data_model + " "),
+                               shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", timeout=60).stdout
+    except subprocess.TimeoutExpired:
+        check = ""
+    line = [l for l in check.splitlines() if l.startswith("STATIC RACE CHECK:")]
+    print(line[0] if line else "static race check: no answer")
+    if line and line[0] == "STATIC RACE CHECK: RACE-FREE":
+        print("SUCCESSFUL")
+        sys.exit(0)
+
+
 for unwind, rounds, extra in bounds():
     left = BUDGET - (time.time() - started)
     if left <= MIN_SLICE + (GUARD_RESERVE if bounded_safe is None else 0):
