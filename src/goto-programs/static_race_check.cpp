@@ -134,7 +134,9 @@ private:
   std::map<goto_programt::const_targett, unsigned> site_of;
 
   std::vector<accesst> accesses;
-  std::set<irep_idt> fresh_roots; // global pointers holding fresh blocks only
+  // global pointers with one known target: "G:<self or other global>" a fresh
+  // block, "S:<global>" a global object
+  std::map<irep_idt, std::string> global_root;
   std::set<irep_idt> tid_written_elsewhere;
 
   // per call: current context
@@ -253,9 +255,10 @@ private:
     {
       const auto &s = to_symbol_expr(p);
       if(is_global(s))
-        return fresh_roots.count(s.get_identifier())
-                 ? "G:" + id2string(s.get_identifier())
-                 : "";
+      {
+        auto g = global_root.find(s.get_identifier());
+        return g == global_root.end() ? "" : g->second;
+      }
       return local_root(s.get_identifier(), fn, depth);
     }
     if(p.is_constant())
@@ -563,8 +566,8 @@ private:
       if(ins.assign_lhs().id() == ID_symbol)
       {
         irep_idt v = to_symbol_expr(ins.assign_lhs()).get_identifier();
-        if(fresh_roots.count(v) && (context != -1 || !s.alive.empty()))
-          unknown("fresh pointer reassigned while threads run");
+        if(global_root.count(v) && (context != -1 || !s.alive.empty()))
+          unknown("tracked pointer reassigned while threads run");
       }
     }
     else if(ins.is_goto() || ins.is_assume() || ins.is_assert())
@@ -622,9 +625,9 @@ private:
       {
         lvalue(ins.call_lhs(), true, s, ins, fn);
         if(ins.call_lhs().id() == ID_symbol &&
-           fresh_roots.count(to_symbol_expr(ins.call_lhs()).get_identifier()) &&
+           global_root.count(to_symbol_expr(ins.call_lhs()).get_identifier()) &&
            (context != -1 || !s.alive.empty()))
-          unknown("fresh pointer reassigned while threads run");
+          unknown("tracked pointer reassigned while threads run");
       }
     };
 
@@ -958,7 +961,17 @@ private:
     // fresh roots: global pointers whose every assignment is a fresh block
     // (or NULL), made in main; the check that main does it before creating
     // threads is in step()
-    std::map<irep_idt, bool> candidate;
+    // every assignment to a global pointer, with its fixed root (a call
+    // result, NULL) or the expression to resolve once the other globals have
+    // roots; only main and the static initialiser may assign them
+    struct defn
+    {
+      irep_idt fn;
+      std::string fixed;
+      exprt rhs;
+    };
+    std::map<irep_idt, std::vector<defn>> defs_of;
+    std::set<irep_idt> disqualified;
     for(const auto &fp : model.goto_functions.function_map)
     {
       if(!fp.second.body_available())
@@ -967,7 +980,9 @@ private:
       forall_goto_program_instructions(it, fp.second.body)
       {
         irep_idt v;
-        std::string r;
+        defn d;
+        d.fn = fn;
+        d.rhs = nil_exprt();
         if(it->is_assign() && it->assign_lhs().id() == ID_symbol)
         {
           v = to_symbol_expr(it->assign_lhs()).get_identifier();
@@ -975,27 +990,28 @@ private:
           while(rhs.id() == ID_typecast)
             rhs = to_typecast_expr(rhs).op();
           if(rhs.is_constant())
-            r = "NULL";
+            d.fixed = "NULL";
           else if(rhs.id() == ID_symbol && !is_global(to_symbol_expr(rhs)))
           {
             // a local temporary holding one call result, copied into this
             // global and nowhere else
             const auto *f = body(fn);
-            r = "";
             irep_idt t = to_symbol_expr(rhs).get_identifier();
-            int defs = 0, uses = 0;
+            int ndefs = 0, uses = 0;
             std::string cr;
+            bool from_call = false;
             forall_goto_program_instructions(jt, f->body)
             {
               if(jt->is_function_call() && jt->call_lhs().id() == ID_symbol &&
                  to_symbol_expr(jt->call_lhs()).get_identifier() == t)
               {
-                defs++;
+                ndefs++;
                 cr = call_root(*jt, fn);
+                from_call = true;
               }
               if(jt->is_assign() && jt->assign_lhs().id() == ID_symbol &&
                  to_symbol_expr(jt->assign_lhs()).get_identifier() == t)
-                defs++;
+                ndefs++;
               if(jt->is_assign() && mentions(jt->assign_rhs(), t))
                 uses++;
               if(jt->is_function_call())
@@ -1003,14 +1019,20 @@ private:
                   if(mentions(a, t))
                     uses++;
             }
-            if(defs == 1 && uses == 1)
-              r = cr;
+            if(from_call)
+              d.fixed = (ndefs == 1 && uses == 1) ? cr : "BAD";
+            else
+              d.rhs = it->assign_rhs(); // resolved like any local
           }
+          else
+            d.rhs = it->assign_rhs();
         }
         else if(it->is_function_call() && it->call_lhs().id() == ID_symbol)
         {
           v = to_symbol_expr(it->call_lhs()).get_identifier();
-          r = call_root(*it, fn);
+          d.fixed = call_root(*it, fn);
+          if(d.fixed.empty())
+            d.fixed = "BAD";
         }
         else
           continue;
@@ -1018,18 +1040,88 @@ private:
         if(ns.lookup(v, sym) || !sym->is_static_lifetime ||
            sym->type.id() != ID_pointer)
           continue;
-        bool ok = (r == "FRESH" || r == "NULL") &&
-                  (fn == "main" || fn == "__CPROVER_initialize");
-        if(!candidate.count(v))
-          candidate[v] = ok;
-        else
-          candidate[v] = candidate[v] && ok;
+        if(fn != "main" && fn != "__CPROVER_initialize")
+          disqualified.insert(v);
+        defs_of[v].push_back(d);
       }
     }
-    // a pointer copied into another global, or whose address is taken, is out
-    for(auto &c : candidate)
-      if(c.second)
-        fresh_roots.insert(c.first);
+    // a pointer whose address is taken can change behind our back
+    for(const auto &a : addr)
+      disqualified.insert(a.first);
+    // fixpoint: a root once found is kept only while every definition agrees
+    for(int round = 0; round < 10; round++)
+    {
+      bool changed = false;
+      for(const auto &dv : defs_of)
+      {
+        if(disqualified.count(dv.first))
+          continue;
+        std::string root;
+        bool ok = true;
+        for(const auto &d : dv.second)
+        {
+          std::string r = d.fixed;
+          if(r.empty())
+            r = root_of(d.rhs, d.fn);
+          if(r == "NULL")
+            continue;
+          if(r == "FRESH")
+            r = "G:" + id2string(dv.first);
+          if(r.empty() || r == "BAD" || r == "LOCAL" ||
+             (r.rfind("G:", 0) != 0 && r.rfind("S:", 0) != 0) ||
+             (!root.empty() && r != root))
+          {
+            ok = false;
+            break;
+          }
+          root = r;
+        }
+        std::string old = global_root.count(dv.first) ? global_root[dv.first] : "";
+        std::string now = ok ? root : "";
+        if(now != old)
+        {
+          changed = true;
+          if(now.empty())
+            global_root.erase(dv.first);
+          else
+            global_root[dv.first] = now;
+        }
+      }
+      if(!changed)
+        break;
+      local_root_cache.clear();
+    }
+    // final check, dropping only: every kept root agrees with every
+    // definition under the final map
+    for(bool dropped = true; dropped;)
+    {
+      dropped = false;
+      local_root_cache.clear();
+      for(auto it = global_root.begin(); it != global_root.end();)
+      {
+        bool ok = true;
+        for(const auto &d : defs_of[it->first])
+        {
+          std::string r = d.fixed;
+          if(r.empty())
+            r = root_of(d.rhs, d.fn);
+          if(r == "NULL")
+            continue;
+          if(r == "FRESH")
+            r = "G:" + id2string(it->first);
+          if(r != it->second)
+            ok = false;
+        }
+        if(ok)
+          ++it;
+        else
+        {
+          it = global_root.erase(it);
+          dropped = true;
+        }
+      }
+    }
+    local_root_cache.clear();
   }
 
   bool conc_site(unsigned a, unsigned b) const
