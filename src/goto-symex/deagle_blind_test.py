@@ -57,6 +57,7 @@
 # Case "buffer": a wrapper killed from outside still leaves its "try" lines
 # in the log. Before the fix they sat in a block buffer and were lost.
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -78,8 +79,15 @@ with open(os.path.join(here, "args"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
+def loop_unwind(loop):
+    """the unwinding the tool would apply to loop"""
+    if "--unwindset" in sys.argv:
+        for entry in sys.argv[sys.argv.index("--unwindset") + 1].split(","):
+            if entry.startswith(loop + ":"):
+                return int(entry.split(":")[1])
+    return int(sys.argv[sys.argv.index("--unwind") + 1])
 if os.environ.get("LAZYPO_ROUND_BOUND") == "only" and mode == "proof_race_late" \
-        and int(sys.argv[sys.argv.index("--unwind") + 1]) < 4:
+        and loop_unwind("main.0") < 4:
     # the loop that creates the threads is cut: no threads, so no bound printed
     print("[main.unwind.0] line 9 unwinding assertion loop 0: FAILURE\nVERIFICATION FAILED")
     sys.exit(0)
@@ -98,7 +106,7 @@ if "--unwinding-assertions" in sys.argv and mode == "proof_hog":
         time.sleep(0.2)
     time.sleep(120)
 if "--unwinding-assertions" in sys.argv:              # a proof run
-    unwind = int(sys.argv[sys.argv.index("--unwind") + 1])
+    unwind = loop_unwind("main.0")
     if "--infer-rounds" in sys.argv and mode != "proof_cap":
         print("Infer rounds: static round bound 5")
     cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
@@ -552,13 +560,21 @@ for mode, prop, env, want in (
     proofs = [a for a in run.args if "--unwinding-assertions" in a
               and "--rounds 1 --no-por" not in a]   # not the round-bound query
     got = official(out, 0 if out.strip().endswith("SUCCESSFUL") else 1)
-    unwinds = [int(a.split()[a.split().index("--unwind") + 1]) for a in proofs]
+    # the unwinding of main.0 in each proof run (--unwindset over --unwind)
+    unwinds = [int(re.search(r"main\.0:(\d+)", a).group(1))
+               if re.search(r"main\.0:(\d+)", a)
+               else int(a.split()[a.split().index("--unwind") + 1]) for a in proofs]
     bad = got != want
     if prop == "no-data-race.prp" and (
             any("--rounds 7 --no-por" not in a for a in proofs)
             or (mode in ("proof_race_cap", "race_static")) != (not proofs)):
         bad = True
-    if mode == "proof_deep" and unwinds[:3] != [2, 4, 8]:
+    # only the loop that was cut is unwound further, one iteration at a time,
+    # and every other loop stays at the start
+    if mode == "proof_deep" and (
+            unwinds[:7] != [2, 3, 4, 5, 6, 7, 8]
+            or any(a.split()[a.split().index("--unwind") + 1] != "2" for a in proofs)
+            or any(re.search(r"--unwindset (?!main\.0:\d+ )", a) for a in proofs)):
         bad = True
     if any("--allow-pointer-unsoundness" not in a.split() for a in proofs):
         bad = True

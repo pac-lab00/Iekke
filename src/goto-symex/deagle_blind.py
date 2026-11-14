@@ -847,7 +847,13 @@ GUARD_RESERVE = (min(120, 0.15 * BUDGET)
 # the witness shape the race encoding looks for. No partial-order reduction
 # there, so every schedule within those rounds is in the formula.
 PROVABLE = True
-PROOF_UNWINDS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+# Proof runs start with every loop unwound PROOF_UNWIND_START times; after a
+# run in which some loops were not fully unrolled, only those loops are
+# unwound further (one more iteration up to 8, then doubling), so a loop that
+# needs many iterations does not blow up the unrolling of all the others.
+# Every loop is still checked to be fully unrolled.
+PROOF_UNWIND_START = 2
+PROOF_UNWIND_MAX = 1024
 # Spin loops (spin_loops.cpp): an iteration that writes no memory and leaves
 # the loop's locals unchanged only repeats the one before; cutting it keeps
 # every reachable state and lets a wait loop be fully unwound.
@@ -899,11 +905,42 @@ def run_watched(cmd, timeout):
                 return None, stop
 
 
+def next_unwind(n):
+    """the next unwinding of a loop that was not fully unrolled"""
+    return n + 1 if n < 8 else 2 * n
+
+
+def unwind_options(raised):
+    """--unwind for every loop, --unwindset for the loops raised above it"""
+    opts = "--unwind %d " % PROOF_UNWIND_START
+    if raised:
+        opts += "--unwindset %s " % ",".join(
+            "%s:%d" % (loop, n) for loop, n in sorted(raised.items()))
+    return opts
+
+
+def cut_loops(out):
+    """the loops (function.number) whose unwinding assertion failed"""
+    return sorted(set("%s.%s" % m.groups() for m in re.finditer(
+        r"^\[(.+)\.unwind\.(\d+)\] .*: FAILURE", out, re.M)))
+
+
+def raise_loops(raised, cut):
+    """Unwind the loops in cut further; False when there is none or one
+    would go past PROOF_UNWIND_MAX."""
+    if not cut:
+        return False
+    for loop in cut:
+        raised[loop] = next_unwind(raised.get(loop, PROOF_UNWIND_START))
+    return max(raised.values()) <= PROOF_UNWIND_MAX
+
+
 def race_proof_rounds(unwind, left):
-    """R + 2 for the race-free proof at this unwind, or None (see PROVABLE)"""
+    """R + 2 for the race-free proof with these unwind options (an int 0 with
+    the loops cut before any thread was created), or None (see PROVABLE)"""
     cmd = ("LAZYPO_ROUND_BOUND=only LAZYPO_ROUND_BOUND_MAX=%d ./iekke_exe %s "
-           "%s--rounds 1 --no-por --unwind %d" % (MAX_PROOF_ROUNDS, program_path,
-                                                  PROOF_FLAGS, unwind))
+           "%s--rounds 1 --no-por %s" % (MAX_PROOF_ROUNDS, program_path,
+                                         PROOF_FLAGS, unwind))
     out, stop = run_watched(cmd, max(1, min(SLICE, left) / 2))
     if stop:
         print("  -> round bound: %s" % stop)
@@ -912,33 +949,38 @@ def race_proof_rounds(unwind, left):
     if not m and re.search(r"\.unwind\.\d+\] .*: FAILURE", out):
         # a loop cut before any thread was created: no threads, no bound yet
         print("  -> a loop not fully unrolled (before the threads)")
-        return 0
+        return 0, cut_loops(out)
     if not m or "at max rounds" in m.group(2):
         print("  -> round bound: %s" % (m.group(0) if m else "not computed"))
         return None
     print("  round bound %s: %d rounds" % (m.group(1), int(m.group(1)) + 2))
-    return int(m.group(1)) + 2
+    return int(m.group(1)) + 2, []
 
 
 def prove(mode):
     """Proof runs at growing unwinds; returns only when no proof was found."""
     global current
     extra = SEGMENT_PROOF_FLAGS if mode == "segment" else ROUNDS_PROOF_FLAGS
-    for unwind in PROOF_UNWINDS:
+    raised = {}   # loop -> unwinding, for the loops raised above the start
+    while True:
         left = BUDGET - (time.time() - started) - GUARD_RESERVE
         if left <= MIN_SLICE:
             return
+        unwind = unwind_options(raised)
         if mode == "race":
-            rounds = race_proof_rounds(unwind, left)
-            if rounds is None:
+            bound = race_proof_rounds(unwind, left)
+            if bound is None:
                 return
+            rounds, cut = bound
             if rounds == 0:
+                if not raise_loops(raised, cut):
+                    return
                 continue
             extra = "--rounds %d --no-por " % rounds
-        cmd = "./iekke_exe %s %s%s--unwind %d --verbosity 8 --glucose" % (
+        cmd = "./iekke_exe %s %s%s%s--verbosity 8 --glucose" % (
             program_path, PROOF_FLAGS, extra, unwind)
-        print("proof try %s unwind=%d, all interleavings (%.0fs left)"
-              % (mode, unwind, left))
+        print("proof try %s %s, all interleavings (%.0fs left)"
+              % (mode, unwind.strip(), left))
         if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
             os.remove(WITNESS_CONTENT)
         out, stop = run_watched(cmd, max(0.01, min(SLICE, left)))
@@ -969,7 +1011,9 @@ def prove(mode):
             print("SUCCESSFUL")
             sys.exit(0)
         if verdict == "FAILED" and failed and all(".unwind." in l for l in failed):
-            print("  -> a loop not fully unrolled")
+            print("  -> not fully unrolled: %s" % " ".join(cut_loops(out)))
+            if not raise_loops(raised, cut_loops(out)):
+                return
             continue
         if verdict == "FAILED":
             # Not reported: FALSE answers come from the bug search, whose
