@@ -865,17 +865,19 @@ PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
 # unwound program, a round count R such that every execution has an
 # equivalent one within R rounds (round_bound.cpp), unless it hits the
 # --max-rounds cap. The encoding without rounds covers every schedule with
-# no round count and is tried first. It is solved with Deagle's segment
-# solver: the default closure solver wrongly reports UNSAT (on
-# pthread-theta/unwind3-100, expected FALSE, it found the thread-creation
-# loop fully unwound at 32 of 100 iterations and answered TRUE).
+# no round count and is tried first: CBMC's partial-order encoding
+# (--cbmc-memory-model) on the SAT solver. Deagle's ordering-consistency
+# solvers are not used: the closure solver reported a loop fully unwound
+# when it was not (pthread-theta/unwind3-100, expected FALSE: a wrong TRUE)
+# and the segment solver missed the race of
+# goblint-regression/09-regions_18-nested_rc; CBMC's encoding is right on
+# both.
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
-SEGMENT_PROOF_FLAGS = "--deagle-segment "
-# Not for races: on goblint-regression/09-regions_18-nested_rc (racy) the
-# encoding without rounds with --datarace found no race with either the
-# segment or the closure solver.
+MEMORY_MODEL_PROOF_FLAGS = "--cbmc-memory-model "
+# Not for races: without rounds --datarace reports races on race-free
+# programs (libvsync ticketlock, mcslock), so it would prove nothing.
 PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
-               else ["segment", "rounds"])
+               else ["memory-model", "rounds"])
 MAX_PROOF_ROUNDS = 64
 
 
@@ -960,7 +962,8 @@ def race_proof_rounds(unwind, left):
 def prove(mode):
     """Proof runs at growing unwinds; returns only when no proof was found."""
     global current
-    extra = SEGMENT_PROOF_FLAGS if mode == "segment" else ROUNDS_PROOF_FLAGS
+    extra = (MEMORY_MODEL_PROOF_FLAGS if mode == "memory-model"
+             else ROUNDS_PROOF_FLAGS)
     raised = {}   # loop -> unwinding, for the loops raised above the start
     while True:
         left = BUDGET - (time.time() - started) - GUARD_RESERVE

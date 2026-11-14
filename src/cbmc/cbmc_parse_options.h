@@ -33,7 +33,7 @@ class optionst;
 
 // clang-format off
 #define CBMC_OPTIONS \
-  "(deagle-closure)(deagle-icd)(deagle-segment)(datarace)(goblint)(locksmith)(deadlock)" \
+  "(deagle-closure)(deagle-icd)(deagle-segment)(cbmc-memory-model)(datarace)(goblint)(locksmith)(deadlock)" \
   "(symmetric-instance):" \
   "(read-implication)(no-read-implication)" \
   "(narrow-shared)(no-narrow-shared)" \

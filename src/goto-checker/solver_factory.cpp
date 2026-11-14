@@ -735,7 +735,11 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
   // race-free programs -- mutex1, sc4-sc6 and
   // svcomp13_read_write_lock_safe among them.
 #ifdef HAVE_MINISAT2
-  if(cmdline.isset("deagle-closure") || (!cmdline.isset("deagle-segment") && !cmdline.isset("deagle-icd") && !solver_set))
+  // --cbmc-memory-model: without --rounds, CBMC's own partial-order encoding
+  // (from-read constraints included) on the SAT solver, no Deagle solver
+  if(cmdline.isset("deagle-closure") ||
+     (!cmdline.isset("deagle-segment") && !cmdline.isset("deagle-icd") &&
+      !cmdline.isset("cbmc-memory-model") && !solver_set))
     options.set_option("deagle-closure", true);
 
   if(cmdline.isset("deagle-icd"))

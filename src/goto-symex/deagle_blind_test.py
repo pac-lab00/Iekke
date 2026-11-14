@@ -110,7 +110,7 @@ if "--unwinding-assertions" in sys.argv:              # a proof run
     if "--infer-rounds" in sys.argv and mode != "proof_cap":
         print("Infer rounds: static round bound 5")
     cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
-    if mode in ("proof_race_cap", "proof_race_late") and "--deagle-segment" in sys.argv:
+    if mode in ("proof_race_cap", "proof_race_late") and "--cbmc-memory-model" in sys.argv:
         print(cut + "\nVERIFICATION FAILED")   # only the round-robin proof applies
     elif mode in ("proof_ok", "proof_race_cap", "proof_race_late"):
         print("VERIFICATION SUCCESSFUL")
@@ -122,7 +122,7 @@ if "--unwinding-assertions" in sys.argv:              # a proof run
         print("pointer handling for concurrency is unsound\n"
               "points-to sets of shared pointers converged after 2 seeded symex pass(es)\n"
               "VERIFICATION SUCCESSFUL")
-    elif mode == "proof_cap" and "--deagle-segment" in sys.argv:
+    elif mode == "proof_cap" and "--cbmc-memory-model" in sys.argv:
         print(cut + "\nVERIFICATION FAILED")   # only the round-robin proof applies
     elif mode == "proof_cap":
         print(("Infer rounds: static round bound 64 (the --max-rounds cap)\n" if "--infer-rounds" in sys.argv else "")
@@ -578,13 +578,13 @@ for mode, prop, env, want in (
         bad = True
     if any("--allow-pointer-unsoundness" not in a.split() for a in proofs):
         bad = True
-    # a proof run without rounds uses the segment solver (the default closure
+    # a proof run without rounds uses CBMC's encoding (Deagle's closure
     # solver proved a buggy program), and runs before the round-robin one
-    if any("--rounds" not in a.split() and "--deagle-segment" not in a.split()
+    if any("--rounds" not in a.split() and "--cbmc-memory-model" not in a.split()
            for a in proofs):
         bad = True   # also catches two options run together (memory safety's last one)
     if (prop != "no-data-race.prp" and mode == "proof_deep"
-            and "--deagle-segment" not in proofs[0].split()):
+            and "--cbmc-memory-model" not in proofs[0].split()):
         bad = True
     if bad:
         print("FAIL proof %s %s %s: read as %r, want %r, proof unwinds %s"
