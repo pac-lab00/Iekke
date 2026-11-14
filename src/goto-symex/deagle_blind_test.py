@@ -586,8 +586,8 @@ for mode, prop, env, want in (
     # only the loop that was cut is unwound further, one iteration at a time,
     # and every other loop stays at the start
     if mode == "proof_deep" and (
-            unwinds[:5] != [4, 5, 6, 7, 8]
-            or any(a.split()[a.split().index("--unwind") + 1] != "4" for a in proofs)
+            unwinds[:6] != [2, 4, 5, 6, 7, 8]
+            or any(a.split()[a.split().index("--unwind") + 1] != "2" for a in proofs)
             or any(re.search(r"--unwindset (?!main\.0:\d+ )", a) for a in proofs)):
         bad = True
     if any("--allow-pointer-unsoundness" not in a.split() for a in proofs):

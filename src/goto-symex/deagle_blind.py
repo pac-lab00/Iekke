@@ -859,10 +859,13 @@ GUARD_RESERVE = (min(120, 0.15 * BUDGET)
 PROVABLE = True
 # Proof runs start with every loop unwound PROOF_UNWIND_START times; after a
 # run in which some loops were not fully unrolled, only those loops are
-# unwound further (one more iteration up to 8, then doubling), so a loop that
-# needs many iterations does not blow up the unrolling of all the others.
-# Every loop is still checked to be fully unrolled.
-PROOF_UNWIND_START = 4
+# unwound further, so a loop that needs many iterations does not blow up the
+# unrolling of all the others. Every loop is still checked to be fully
+# unrolled. A cut loop goes straight to 4 (the loops after a cut one are
+# reached only in a later run, so small steps cost one run per loop: rwlock
+# took 11), then one iteration more up to 8, then doubling; starting every
+# loop at 4 instead made small programs slower (6 proofs lost on the cluster).
+PROOF_UNWIND_START = 2
 PROOF_UNWIND_MAX = 1024
 # Spin loops (spin_loops.cpp): an iteration that writes no memory and leaves
 # the loop's locals unchanged only repeats the one before; cutting it keeps
@@ -919,7 +922,7 @@ def run_watched(cmd, timeout):
 
 def next_unwind(n):
     """the next unwinding of a loop that was not fully unrolled"""
-    return n + 1 if n < 8 else 2 * n
+    return 4 if n < 4 else n + 1 if n < 8 else 2 * n
 
 
 def unwind_options(raised):
