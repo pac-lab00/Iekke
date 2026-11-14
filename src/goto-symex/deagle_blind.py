@@ -77,7 +77,11 @@ BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
 # 21-round bound at about 350 s on the ARM nodes) is lost. 400 s keeps a
 # margin and cuts a third of the CPU time, nearly all of it spent on safe
 # tasks that the old rule kept refuting until the budget was gone.
-STOP_AFTER = float(os.environ.get("DEAGLE_STOP", "400"))
+# Since TRUE needs a proof (below), the time after the stop goes to the proof
+# runs. On the 14 November cluster run (825 expected-FALSE tasks, 794 bugs
+# found) 4 bugs took over 120 s and 1 over 250 s, so the stop is at 200 s and
+# the proofs get the rest.
+STOP_AFTER = float(os.environ.get("DEAGLE_STOP", "200"))
 MIN_SLICE = 3.0
 # No single bound may eat the whole budget. The schedule deliberately mixes two
 # regimes -- deep unwind at few rounds, and deep rounds at modest unwind -- and
@@ -852,7 +856,7 @@ PROVABLE = True
 # unwound further (one more iteration up to 8, then doubling), so a loop that
 # needs many iterations does not blow up the unrolling of all the others.
 # Every loop is still checked to be fully unrolled.
-PROOF_UNWIND_START = 2
+PROOF_UNWIND_START = 4
 PROOF_UNWIND_MAX = 1024
 # Spin loops (spin_loops.cpp): an iteration that writes no memory and leaves
 # the loop's locals unchanged only repeats the one before; cutting it keeps
@@ -986,7 +990,8 @@ def prove(mode):
               % (mode, unwind.strip(), left))
         if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
             os.remove(WITNESS_CONTENT)
-        out, stop = run_watched(cmd, max(0.01, min(SLICE, left)))
+        # a proof run may use all the time left: the bug search is over
+        out, stop = run_watched(cmd, max(0.01, left))
         if stop:
             print("  -> %s" % stop)
             return
