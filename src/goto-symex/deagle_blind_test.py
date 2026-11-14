@@ -31,6 +31,8 @@
 # other bound giving no verdict the answer must be SUCCESSFUL.
 # Case "stop": once a SUCCESSFUL is held, the search ends at DEAGLE_STOP
 # seconds, cutting the running bound, and reports it; without one it goes on.
+# Case "stop cut": a bound running at DEAGLE_STOP may go on until
+# DEAGLE_STOP_CUT, and is cut there.
 # Case "official": the output read the way SV-COMP's tool-info module reads
 # it (TRUE if "SUCCESSFUL" is on any line, else FALSE if "FAILED" is) must
 # give the wrapper's answer: a bug found after a safe bound is FALSE, and an
@@ -373,7 +375,8 @@ else:
     print("ok   suggest: its bounded SUCCESSFUL is not an answer")
 
 t0 = time.time()
-out, pids, survivors = run("stop", 60, env_extra={"DEAGLE_STOP": "5"})
+out, pids, survivors = run("stop", 60, env_extra={"DEAGLE_STOP": "5",
+                                                    "DEAGLE_STOP_CUT": "5"})
 took = time.time() - t0
 last = out.strip().splitlines()[-1] if out.strip() else ""
 if last != "UNKNOWN" or took > 20 or survivors or "stop rule" not in out:
@@ -381,6 +384,17 @@ if last != "UNKNOWN" or took > 20 or survivors or "stop rule" not in out:
     ok = False
 else:
     print("ok   stop: search ended after %.0fs of a 60s budget, nothing left running" % took)
+
+t0 = time.time()
+out, pids, survivors = run("stop", 60, env_extra={"DEAGLE_STOP": "5",
+                                                    "DEAGLE_STOP_CUT": "15"})
+took = time.time() - t0
+if not 14 <= took <= 30 or survivors or "stop rule" not in out:
+    print("FAIL stop cut: search ended after %.0fs (want about 15), survivors %s"
+          % (took, survivors))
+    ok = False
+else:
+    print("ok   stop cut: the running bound went on to %.0fs" % took)
 
 def official(out, rc):
     """benchexec/tools/iekke.py determine_result, as SV-COMP runs it"""

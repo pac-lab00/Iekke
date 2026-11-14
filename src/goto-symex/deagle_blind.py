@@ -82,6 +82,12 @@ BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
 # found) 4 bugs took over 120 s and 1 over 250 s, so the stop is at 200 s and
 # the proofs get the rest.
 STOP_AFTER = float(os.environ.get("DEAGLE_STOP", "200"))
+# A bound already running at STOP_AFTER may finish, up to STOP_CUT: the bugs
+# of libvsync safestack_relacy(_racy) are found by a bound that starts at
+# about 60 s and ends at about 330 s, and the 21 October replay lost a bug only
+# with the cut before 360 s. No new bound starts after STOP_AFTER, so the
+# proofs still get the time from STOP_CUT at the latest.
+STOP_CUT = max(STOP_AFTER, float(os.environ.get("DEAGLE_STOP_CUT", "360")))
 MIN_SLICE = 3.0
 # No single bound may eat the whole budget. The schedule deliberately mixes two
 # regimes -- deep unwind at few rounds, and deep rounds at modest unwind -- and
@@ -1084,7 +1090,7 @@ for unwind, rounds, extra in bounds():
                                stderr=subprocess.STDOUT, text=True,
                                errors="replace", start_new_session=True)
     deadline = time.time() + slice_
-    stop_at = (started + STOP_AFTER if bounded_safe is not None or PROVABLE
+    stop_at = (started + STOP_CUT if bounded_safe is not None or PROVABLE
                else float("inf"))
     out = None
     stop = None
