@@ -102,7 +102,9 @@ if "--unwinding-assertions" in sys.argv:              # a proof run
     if "--infer-rounds" in sys.argv and mode != "proof_cap":
         print("Infer rounds: static round bound 5")
     cut = "[main.unwind.0] line 5 unwinding assertion loop 0: FAILURE"
-    if mode in ("proof_ok", "proof_race_cap", "proof_race_late"):
+    if mode in ("proof_race_cap", "proof_race_late") and "--deagle-segment" in sys.argv:
+        print(cut + "\nVERIFICATION FAILED")   # only the round-robin proof applies
+    elif mode in ("proof_ok", "proof_race_cap", "proof_race_late"):
         print("VERIFICATION SUCCESSFUL")
     elif mode == "proof_deep":                         # loops need unwind 8
         print(cut if unwind < 8 else "", "VERIFICATION " + ("FAILED" if unwind < 8 else "SUCCESSFUL"), sep="\n")

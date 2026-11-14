@@ -865,6 +865,9 @@ PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
 # loop fully unwound at 32 of 100 iterations and answered TRUE).
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
 SEGMENT_PROOF_FLAGS = "--deagle-segment "
+# Not for races: on goblint-regression/09-regions_18-nested_rc (racy) the
+# encoding without rounds with --datarace found no race with either the
+# segment or the closure solver.
 PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
                else ["segment", "rounds"])
 MAX_PROOF_ROUNDS = 64
