@@ -1,53 +1,21 @@
 #! /usr/bin/python3
-# Name-blind wrapper: same tool, same property flags, no decision that depends
-# on which file it was handed.
+# SV-COMP wrapper for Iekke. Every decision depends on the property and on
+# the program text; none on the name of the task.
 #
-# The deployed wrapper decides two things by benchmark *name*: it reads
-# (unwind, rounds, symmetric_instance) out of output_unwind_rounds.csv keyed on
-# the name, and it refuses to analyse twelve names at all via KNOWN_UNKNOWN.
-# Neither is justifiable from the program, so a score measured with them is not
-# one anyone can defend. This arm removes both and searches for the bound
-# instead.
+# Bug search. A ladder of (unwind, rounds) bounds, the same for every program,
+# is tried in order under the time budget. A violation found at any bound is
+# reported as FALSE: it is a real execution of the program.
 #
-# ---------------------------------------------------------------------------
-# Two corrections, both paid for in a wasted run. Do not undo either.
+# Proof. TRUE comes only from a proof run: every loop fully unwound, checked
+# by unwinding assertions, and every interleaving covered, either by CBMC's
+# partial-order encoding or by the round-robin encoding at a round count that
+# covers every schedule. For data races a static lockset and creation-order
+# check is tried first. A SUCCESSFUL at a bound of the ladder is not a proof
+# and is never reported.
 #
-# 1. NEVER STOP ON A SUCCESSFUL. The first version treated "SUCCESSFUL with no
-#    'Unwinding incomplete' line" as a real proof and returned it. That is
-#    wrong: complete unwinding only says the *loops* were not cut. The *round*
-#    bound is an under-approximation too, and the tool warns about it on every
-#    single run -- "Context-bounded analysis may yield unsound verification
-#    results". In a round-bounded tool no SUCCESSFUL is ever a proof, so the
-#    only sound stopping condition is a counterexample or an exhausted budget.
-#    That bug cost 11 missed bugs in the first 303 pairs, against zero for the
-#    deployed configuration: fib_unsafe-6/10/12, triangular-longest-2 and
-#    singleton all came back SUCCESSFUL in under a second, at (2,2), on
-#    programs with real reachable violations.
-#
-# 2. ROUNDS HAVE TO CLIMB AS HIGH AS THE HAND TUNING DOES. The schedule topped
-#    out at 6 rounds. The calibrated table uses 7 for fib_unsafe-6, 11 for
-#    fib_unsafe-10, 13 for fib_unsafe-12 and 21 for triangular-longest-2. A
-#    name-blind arm has to be able to reach the bounds the name-keyed one was
-#    handed, or it is not a fair replacement -- it is just a worse tool.
-# ---------------------------------------------------------------------------
-#
-# What is left is a plain search for violations under a time budget:
-#
-#   FAILED at any bound          -> report FAILED and stop. A counterexample
-#                                   found under a bound is still real; the tool
-#                                   says so itself.
-#   SUCCESSFUL                   -> remember it and keep climbing.
-#   timeout, refusal, crash      -> that bound failed, not the search. Move to
-#                                   the next one.
-#   budget gone                  -> report the remembered SUCCESSFUL, else
-#                                   UNKNOWN.
-#
-# Reporting the remembered SUCCESSFUL at the end, rather than UNKNOWN, is
-# deliberate and is NOT the vacuity rule that was measured and rejected
-# earlier: that rule *suppressed* bounded safe answers and cost -0.98 per task,
-# because 65% of correct SUCCESSFULs on expected-true tasks have incomplete
-# unwinding. Here the bounded safe answer is still reported -- it is simply
-# reported last, after the budget has been spent trying to refute it.
+# Otherwise the answer is UNKNOWN. Before it, for unreach-call, no-overflow
+# and memory safety, the program is compiled with a sanitizer and run
+# concretely; a violation observed there is reported as FALSE.
 import datetime
 import hashlib
 import os
@@ -65,28 +33,16 @@ import uuid
 # "try ..." line included, so the log cannot say which bound it died in.
 sys.stdout.reconfigure(line_buffering=True)
 
-# Below the 900 s CPU limit on purpose. The budget is measured in wall time,
-# and a bounded SUCCESSFUL is only reported once it is spent, so a budget of
-# 900 reports it at about 900 s of CPU -- which SV-COMP scores as a timeout.
+# Below the 900 s CPU limit: the budget is measured in wall time, and the
+# wrapper needs a margin to report before the limit is reached.
 BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
-# Once a bounded SUCCESSFUL is held, the search stops at STOP_AFTER seconds:
-# no further bound is started, and a running one is cut. Measured on the
-# 21 October cluster run (3176 tasks, the bound trails replayed, the replay
-# agreeing with the run on every task): with the stop at 360 s or later no
-# answer changes, at 340 s the bug in triangular-longest-2 (found by the
-# 21-round bound at about 350 s on the ARM nodes) is lost. 400 s keeps a
-# margin and cuts a third of the CPU time, nearly all of it spent on safe
-# tasks that the old rule kept refuting until the budget was gone.
-# Since TRUE needs a proof (below), the time after the stop goes to the proof
-# runs. On the 14 November cluster run (825 expected-FALSE tasks, 794 bugs
-# found) 4 bugs took over 120 s and 1 over 250 s, so the stop is at 200 s and
-# the proofs get the rest.
+# The bug search starts no new bound after STOP_AFTER seconds; the rest of
+# the budget goes to the proof runs. Most violations are found well before
+# this point.
 STOP_AFTER = float(os.environ.get("DEAGLE_STOP", "200"))
-# A bound already running at STOP_AFTER may finish, up to STOP_CUT: the bugs
-# of libvsync safestack_relacy(_racy) are found by a bound that starts at
-# about 60 s and ends at about 330 s, and the 21 October replay lost a bug only
-# with the cut before 360 s. No new bound starts after STOP_AFTER, so the
-# proofs still get the time from STOP_CUT at the latest.
+# A bound already running at STOP_AFTER may finish, up to STOP_CUT, so that a
+# slow bound started early is not lost. The proofs get the time from STOP_CUT
+# at the latest.
 STOP_CUT = max(STOP_AFTER, float(os.environ.get("DEAGLE_STOP_CUT", "360")))
 MIN_SLICE = 3.0
 # No single bound may eat the whole budget. The schedule deliberately mixes two
@@ -96,31 +52,15 @@ SLICE = BUDGET / 3.0
 # How often a running bound's memory is checked, in seconds.
 POLL = 0.25
 
-# Declared up front, identical for every program, ordered by rising cost.
-# Two regimes have to be covered, because the benchmark set contains both:
-# concurrency bugs that need many context switches at a modest unwind (the
-# fib/triangular family, up to 21 rounds), and bugs behind long loops that need
-# a huge unwind at very few rounds (the race_reach family, calibrated at
-# unwind 10001).
+# Declared up front, identical for every program, roughly in order of rising
+# cost. Two regimes are covered: bounds with many rounds and a small unwind
+# find bugs that need many context switches but few loop iterations; bounds
+# with a large unwind and few rounds find bugs behind long loops.
 #
-# The deep-rounds entries come before the deep-unwind ones. Cost order put
-# (256,3) and (1024,3) in the middle, and a bound that large can exhaust
-# --object-bits and return no verdict at all; with the old "stop when the tool
-# refuses" rule that aborted the search before (32,21) was ever tried. The
-# rounds the hand tuning uses -- 7, 11, 13, 21 -- must all be reachable.
-#
-# (8,4) was added after the Huawei challenge tasks: the race in twalock needs
-# 4 rounds and is found at unwind 8 in 7 s, while (16,4) takes 298 s. A (4,2)
-# added at the same time was taken out again: on 128 tasks rerun with and
-# without it, it changed one answer, safestack_relacy (unreach-call), from
-# no answer to a wrong TRUE -- a quick bounded SUCCESSFUL, its bug needing
-# (3,4) in over 300 s -- and hclhlock, which it had been added for, is answered
-# at (4,3) in time once --thread-symmetry is off.
-#
-# (3,4) comes right after the first bound: safestack_relacy_racy has a race
-# that needs 4 rounds and is found at (3,4) in 213 s on x86; behind (4,3), which
-# answers safe at that point, the stop rule ended the search first and the task
-# was answered with a wrong TRUE (-32). At (2,4) the program gives no verdict.
+# The deep-rounds entries come before the deep-unwind ones: a very large
+# unwind can exhaust --object-bits and give no verdict, and must not delay the
+# bounds with more rounds. A bound with 4 rounds comes early, at a small
+# unwind, where it is cheap.
 SCHEDULE = [
     (2, 2), (3, 4), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
     (32, 13), (32, 21), (64, 4), (256, 3), (1024, 3), (4096, 3),
@@ -129,37 +69,26 @@ SCHEDULE = [
 
 # Tried before the schedule: the program with its symmetric array families
 # instantiated at two slots (--symmetric-instance, which recognises them from
-# the program, not from its name, and refuses when it finds none). A setup
-# loop over 256 slots is then two iterations long and runs to completion at a
-# small unwind, where unreduced it is cut and every bound below 256 answers
-# vacuously. The reduced program is an under-approximation, so only its
-# FAILED is believed; a SUCCESSFUL from it is not a bounded answer for the
-# original and is never reported.
+# the program and refuses when it finds none). A setup loop over all slots is
+# then two iterations long and runs to completion at a small unwind. The
+# reduced program is an under-approximation, so only its FAILED is believed;
+# its SUCCESSFUL is ignored.
 REDUCED = (4, 2, "--symmetric-instance 2")
 REDUCED_SLICE = 30.0
 
 # Tried next: every loop at the limit the tool suggests for it
-# (--unwind-suggest, Deagle's analysis of the loop's text: counter, bound,
-# step, assumed upper bounds), the others at UNSUGGESTED. One bound for all
-# loops unrolls short loops as far as the longest needs, and symex cannot
-# always see where they exit: on reorder_c11_good-20 Deagle's per-loop limits
-# give 4.9M clauses where --unwind 32 gives 36.8M. The suggestion is a
-# heuristic -- a body that also changes the counter makes it too small -- so a
-# SUCCESSFUL from this step is a bounded answer, like one from any bound of
-# the schedule, and is kept as one. It is often the only bound that runs a
-# long setup loop to completion: every bound of the schedule cuts it and
-# answers nothing, as on the goblint list programs (09-regions_21: safe at
-# this step in 19 s on x86, then UNKNOWN after 871 s). Replayed over the 3346
-# logs of two cluster runs: no task found FAILED after the stop rule's mark
-# with this step safe or timed out, so holding its answer cuts no bug.
+# (--unwind-suggest, an analysis of the loop's text: counter, bound, step,
+# assumed upper bounds), the others at UNSUGGESTED. One bound for all loops
+# unrolls short loops as far as the longest needs, and symex cannot always see
+# where they exit, so per-loop limits give a much smaller formula. The
+# suggestion is a heuristic (a body that also changes the counter makes it too
+# small), so a SUCCESSFUL from this step is a bounded answer like any other.
 UNSUGGESTED = 3
 SUGGEST_ROUNDS = 3
 # Bounds with at least this many rounds run with --por, the others without:
-# 7 is the smallest round count in the ladder at which bugs that need many
-# rounds appear (see the deep-rounds rungs above), and that is where partial-
-# order reduction pays; at fewer rounds it only adds constraints. One setting
-# per bound: SV-COMP limits CPU time over all cores, so running both settings
-# in parallel spends the budget twice as fast.
+# partial-order reduction pays off when there are many rounds; at few rounds
+# it only adds constraints. One setting per bound: the CPU limit counts all
+# cores, so running both settings in parallel spends the budget twice as fast.
 POR_MIN_ROUNDS = 7
 SUGGEST_CAP = 1024
 SUGGEST_SLICE = 60.0
@@ -168,8 +97,7 @@ SUGGEST_TIMEOUT = 30.0
 # An array allocated with a non-constant number of elements n gets a constant
 # number K, under the condition n <= K (--dynamic-array-bound): field
 # sensitivity then splits it into scalars, where an array of symbolic size goes
-# to the array theory whole -- 34x fewer clauses on the per-thread-array
-# family. It cuts the executions that ask for more than K, as the unwinding
+# to the array theory whole. It cuts the executions that ask for more than K, as the unwinding
 # bound cuts loops, so K climbs with the unwind: a loop over the array is cut
 # there anyway. Field sensitivity splits arrays of up to 64 elements. Not for
 # memory safety: the array has K elements, so an access between n and K would
@@ -180,42 +108,27 @@ def array_bound(unwind):
 
 # Arrays read byte-wise (through a pointer to an element's member, by memcpy)
 # are answered byte by byte from the writes in schedule order
-# (--array-rf-bytes) instead of carrying the whole array on every access: on
-# twalock (__twa_array[4096] at a computed index) 41M variables become 64k.
-# On by default only together with (8,4) above: alone it made the small
-# bounds of twalock fast and safe, and the stop rule then reported a wrong TRUE.
+# (--array-rf-bytes) instead of carrying the whole array on every access,
+# which keeps large arrays read at a computed index small in the formula.
 ARRAY_RF_BYTES = "--array-rf-bytes "
 
-# Two encoding options that change only how the program is written into the
+# Encoding options that change only how the program is written into the
 # formula. --summarise-guards: after a call, the path condition is "condition
 # at the call AND one fresh symbol" instead of the whole exit condition, so it
-# stops growing with the call depth (cafe_ccic: 85000 nodes -> about 300).
+# stops growing with the call depth.
 # --infer-alloc-types: a block allocated with a constant size and cast at once
 # is typed by the cast, so pointer analysis keeps one entry per member.
-# Full corpus on the cluster (2026-10-29): no answer changed apart from tasks
-# near the time limit (+2 correct, -1).
 # --merge-exclusive-threads: thread creations on paths that exclude each other
-# share one thread. On 55 driver tasks (2026-10-30) no answer changed; it fires
-# on the large ldv drivers only (nsc-ircc: 23.4M -> 17.0M clauses, 8.1 -> 5.9 GB).
-# --index-chain is NOT passed. It gives 10-46% fewer clauses from 3 rounds up
-# with the same verdicts at u2, but the solver can be far slower on it:
-# triangular-longer-2 at (32,13) took 168 s instead of 3.7 s with 38% fewer
-# clauses, so on the cluster (2026-10-31) the bugs of fib_unsafe-10/11,
-# triangular-longer-2/longest-2 and unwind3-100 were no longer found in the
-# slice and the stop rule reported five wrong TRUEs.
+# share one thread.
 # --own-view-reads: a shared read of an object no other thread writes after
-# the first spawn is read from the thread own view, so constants propagate
-# through it. Timed 2026-11-01 (Release build, one run at a time): never slower
-# on 58 runs, same verdicts; adutux 297 -> 100 s, nsc-ircc 140 -> 106 s,
-# array-eq-symm 18.2 -> 0.7 s, unwind3-100 19.8 -> 8.6 s.
+# the first spawn is read from the thread's own view, so constants propagate
+# through it.
+# --index-chain is not passed: it gives fewer clauses, but the solver can be
+# much slower on them.
 ENCODING_FLAGS = ("--summarise-guards --infer-alloc-types --merge-exclusive-threads "
                   "--own-view-reads ")
 
-# --thread-symmetry is NOT passed. It was, from 2026-10-21, without a corpus
-# measurement; on unwind3-100 at (256,3) it made the solver 8x slower (42 s ->
-# 344 s, past the 290 s slice), so the bug was no longer found and the stop
-# rule reported a wrong TRUE. On 176 tasks measured earlier it changed no
-# verdict.
+# --thread-symmetry is not passed: it can make the solver much slower.
 
 # The version alone: BenchExec shows it next to the name of the tool.
 if len(sys.argv) < 2 or sys.argv[1] in ("-v", "--version"):
@@ -235,9 +148,8 @@ program_path = sys.argv[2]
 
 # The data model comes from the task's yml, and BenchExec passes it as the
 # third argument. Dropping it runs every task in the tool's default model,
-# which Deagle fixes at ILP32 (config.cpp, "default --32") -- so an LP64 task
-# is analysed with 4-byte longs and pointers, which changes overflows, offsets
-# and sizes in the program.
+# which is ILP32 (config.cpp, "default --32"): an LP64 task would be analysed
+# with 4-byte longs and pointers, which changes overflows, offsets and sizes.
 data_model = sys.argv[3] if len(sys.argv) > 3 else ""
 if data_model not in ("", "--32", "--64"):
     print("Unknown data model: %s" % data_model)
@@ -247,7 +159,7 @@ flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
 flags += data_model + " "
 # SV-COMP conventions since 2026: malloc, calloc and realloc may return NULL
 # (sv-benchmarks c/CONVENTIONS.md); CBMC assumes they succeed unless told
-# otherwise. pthread/bigshot_s2 (valid-memsafety, relabelled false) needs it.
+# otherwise.
 flags += "--malloc-may-fail --malloc-fail-null "
 if "unreach-call.prp" in property_path:
     flags += ""
@@ -255,9 +167,9 @@ elif "no-data-race.prp" in property_path:
     flags += "--no-assertions --datarace "
 elif "no-overflow.prp" in property_path:
     flags += "--no-assertions --signed-overflow-check --unsigned-overflow-check "
-    # the values read from __VERIFIER_nondet_* in the violation witness: one
-    # more confirmed overflow witness (ConcurrentWitness2Test), none lost;
-    # for unreach-call UAutomizer rejected 5 it confirmed without them
+    # the values read from __VERIFIER_nondet_* in the violation witness, which
+    # helps validators replay an overflow; not used for unreach-call, where
+    # validators accept the witness without them
     flags += "--yaml-witness-values "
 elif "valid-memsafety.prp" in property_path:
     flags += "--no-assertions --pointer-check --bounds-check --alloc-check --memory-leak-check "
@@ -269,16 +181,12 @@ else:
 # Witnesses in the YAML format of sv-witnesses: since 2027 a TRUE or FALSE
 # answer for unreach-call and no-overflow without one scores nothing ("witness
 # missing"), and the validators look for witness.yml in the working
-# directory. A TRUE gets a correctness witness without invariants, which the
-# validators confirmed for Theta in 2027 (pthread/bigshot_s and 157 more); a
-# FALSE gets the violation sequence the tool writes from its counterexample
+# directory. A TRUE gets a correctness witness without invariants; a FALSE
+# gets the violation sequence the tool writes from its counterexample
 # (--yaml-witness: thread creations and the violation), wrapped here in the
-# metadata only the wrapper knows. Memory safety scored without witnesses, so
-# none is written there: an unconfirmed one could only lose the points.
-# No-data-race in 2027 scored a TRUE without a witness (Iekke: 688 correct at
-# +2) but a FALSE only with a confirmed one (209 "correct-unconfirmed" at 0;
-# Theta's YAML race witnesses -- the two racing accesses as targets of one
-# segment -- were confirmed): there only the violation witness is written.
+# metadata only the wrapper knows. Memory safety is scored without witnesses,
+# so none is written there. No-data-race scores a TRUE without a witness and a
+# FALSE only with a confirmed one, so only the violation witness is written.
 WITNESS = "witness.yml"
 WITNESS_CONTENT = "witness-content.yml"
 WANTS_CORRECTNESS_WITNESS = ("unreach-call.prp" in property_path
@@ -344,8 +252,8 @@ def verdict_of(text):
 
     Only the last line counts: the tool prints its own verdict vocabulary
     inside diagnostics, and a crashed or killed run that emitted a warning
-    containing "VERIFICATION SUCCESSFUL" has been scored as a successful
-    verification before now.
+    containing "VERIFICATION SUCCESSFUL" must not read as a successful
+    verification.
     """
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
@@ -370,7 +278,7 @@ def kill_bound(proc):
     Killing only the shell -- what subprocess.run does on a timeout -- leaves
     the tool and the external glucose it spawned running. They then overlap
     the next bound and outlive the wrapper, spending CPU that SV-COMP charges
-    to this run (seen at 1.85x wall time). Each bound therefore gets its own
+    to this run. Each bound therefore gets its own
     process group, and the group is what is killed.
     """
     try:
@@ -425,8 +333,7 @@ def memory_limit():
 
     DEAGLE_MEMLIMIT if set, else the tightest cgroup limit on the way up from
     this process's cgroup (where BenchExec puts its limit, often on a parent),
-    else the machine's RAM. Both cgroup versions occur: the cluster nodes keep
-    memory on v1, iekke-lab is v2.
+    else the machine's RAM. Both cgroup versions are handled.
     """
     if os.environ.get("DEAGLE_MEMLIMIT"):
         return int(os.environ["DEAGLE_MEMLIMIT"])
@@ -488,8 +395,7 @@ def group_rss(pgid):
 
 # One bound that outgrows the run's memory gets the whole run killed from
 # outside, and with it every answer the earlier bounds found: a remembered
-# SUCCESSFUL is lost, and the run scores as a memory-out. On the 40-node
-# cluster that was 150 of the first 190 unknowns. So each bound is held below
+# SUCCESSFUL is lost, and the run scores as a memory-out. So each bound is held below
 # the run's limit, with room left for the wrapper and for growth between two
 # checks, and a bound that crosses it fails alone, as a timed-out one does.
 limit = memory_limit()
@@ -522,16 +428,10 @@ def bounds():
 
 
 # A violation found with more rounds than needed gives a longer witness, and a
-# validator has 90 s to follow it: on pthread-divine/one_time_barrier_3t the
-# race found at 3 rounds (lines 743/759, after a second pass through the
-# barrier) was never confirmed by Dartagnan, the one found at 2 rounds (lines
-# 715/717, at the first entry) twice out of two. A violation at fewer rounds is
-# one at more rounds too, so the answer does not change: the run is repeated at
+# validator has limited time to follow it. A violation at fewer rounds is one
+# at more rounds too, so the answer does not change: the run is repeated at
 # SHORT_ROUNDS for a short while, and its witness kept if it finds one. Only
-# for data races: over the 620 correct FALSE answers (2027 validators, each
-# change repeated three times) it gained two races (one_time_barrier_3t,
-# reorder_5-race) and lost one reachability task, whose shorter witness
-# UAutomizer rejects (goblint 28-race_reach_77-tricky_address4_racing).
+# for data races.
 SHORT_ROUNDS = 2
 SHORT_SLICE = 30
 
@@ -566,8 +466,7 @@ def shorter_witness(cmd, rounds):
 # module it runs (benchexec/tools/iekke.py) recognises valid-deref only by
 # "pointer_dereference." or "alloc.assertion." on a FAILURE line, and CBMC
 # names its --bounds-check properties "array_bounds.": alone, such a failure
-# is read as false(unreach-call), a wrong answer for a memory-safety task
-# (pthread-array-bounds/global-histogram, valid-deref).
+# is read as false(unreach-call), a wrong answer for a memory-safety task.
 def deref_reading(out):
     failed = [l for l in out.splitlines()
               if l.startswith("[") and l.rstrip().endswith(": FAILURE")]
@@ -579,15 +478,13 @@ def deref_reading(out):
     return None
 
 
-# The concrete guard. A SUCCESSFUL from bounded model checking is only as deep
-# as the bound, and a bug deeper than the bound makes it a wrong TRUE (-32):
-# pthread-overflow/deep-* need 14 to 36 context switches, and
-# weaver-mutants/popl20-nonblocking-cntr-v2 overflows after 2^31 iterations,
-# which a native run reaches in seconds. Before a SUCCESSFUL is reported, the
-# program is compiled with the sanitizer of the property and run, with
-# extreme and random values for __VERIFIER_nondet_* and random delays at
-# thread creation and around locks. A run that shows the violation is a
-# concrete execution of the bug, so the answer is FAILED instead.
+# The concrete guard. Bounded model checking misses bugs deeper than the
+# bound, such as ones that need many context switches or 2^31 loop
+# iterations, which a native run can reach in seconds. Before an UNKNOWN is
+# reported, the program is compiled with the sanitizer of the property and
+# run, with extreme and random values for __VERIFIER_nondet_* and random
+# delays at thread creation and around locks. A run that shows the violation
+# is a concrete execution of the bug, so the answer is FAILED instead.
 GUARD_HARNESS = r"""
 #include <stdio.h>
 #include <stdlib.h>
@@ -674,8 +571,8 @@ int __guard_create(pthread_t *t, const pthread_attr_t *at, void *(*f)(void *), v
 
 # Only the evidence that is the property itself: reach_error() reached, a
 # signed arithmetic overflow, an out-of-bounds or freed access. Not data
-# races: ThreadSanitizer reported races on 40 of 264 no-data-race tasks
-# expected TRUE (the pthread-atomic-qualifier _Atomic accesses, CAS loops).
+# races: ThreadSanitizer reports races on _Atomic accesses and CAS loops that
+# are not data races in the C semantics.
 # Force-included into a .c task: the C11 atomic operations yield like the
 # locks do, so that threads synchronising through atomics alone take turns
 # too. Not a store: a step that loads and then stores would take turns
@@ -705,20 +602,13 @@ GUARD_EVIDENCE = {
     "no-overflow.prp": r"runtime error: signed integer overflow",
     "valid-memsafety.prp": r"ERROR: AddressSanitizer: (heap-buffer-overflow|stack-buffer-overflow|global-buffer-overflow|heap-use-after-free|stack-use-after-return|stack-use-after-scope|dynamic-stack-buffer-overflow)",
 }
-# Measured 2026-11-07, 20 s per task, on the 1378 unreach-call, no-overflow
-# and valid-memsafety answers SUCCESSFUL with expected TRUE: one FAILED,
-# goblint-regression/28-race_reach_07-cond_racing2, whose "if (i+1)" with
-# i = INT_MAX does overflow (label question); on the expected FALSE ones it
-# found deep-asymmetric, deep-fib-mutex, deep-fib-nondet-start,
-# deep-scaled-feedback, sssc12_variant-v1 (and popl20-nonblocking-cntr-v2
-# with more time). DEAGLE_GUARD=0 turns it off.
+# Seconds for the concrete runs. DEAGLE_GUARD=0 turns them off.
 GUARD_BUDGET = float(os.environ.get("DEAGLE_GUARD", "300"))
 
 
 def one_core():
     # On one core each thread runs whole time slices without contending for
-    # its locks: popl20-nonblocking-cntr-v2 overflowed after 106 s on one
-    # core and not in 150 s on several. SV-COMP gives a run one core anyway.
+    # its locks, so long loops progress faster.
     try:
         os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
     except (AttributeError, OSError):
@@ -794,8 +684,8 @@ def concrete_violation(budget):
             # Runs without the delays: a bug after 2^31 iterations of a
             # locked loop is out of reach with a delay at every lock. The
             # first run (largest values, no delays) may take 60% of the budget.
-            # A third kind of run takes turns at every lock: the deep-fib
-            # tasks overflow only when two threads alternate step by step.
+            # A third kind of run takes turns at every lock, for bugs that
+            # appear only when two threads alternate step by step.
             env["GUARD_SEED"] = str(seed // 3)
             env.pop("GUARD_QUIET", None)
             env.pop("GUARD_TURNS", None)
@@ -832,15 +722,13 @@ def report_concrete(evidence):
 
 
 # Without an answer the bounds take the whole budget, and the guard would
-# have none left: it keeps GUARD_RESERVE seconds (120 of SV-COMP 900). Of
-# the 449 FAILED answers of the full run of 2026-11-06 one came later than
-# 700 s.
+# have none left: it keeps GUARD_RESERVE seconds (120 of SV-COMP 900).
 GUARD_RESERVE = (min(120, 0.15 * BUDGET)
                  if GUARD_BUDGET > 0 and any(k in property_path for k in GUARD_EVIDENCE)
                  else 0)
 
-# A TRUE needs a sound argument, not just a bound that found no error (chairs
-# of SV-COMP 2027, November 2026). The bounds above explore a bounded number
+# A TRUE needs a sound argument, not just a bound that found no error. The
+# bounds above explore a bounded number
 # of rounds and cut loops, so their SUCCESSFUL only steers the stop rule and
 # is never reported. A TRUE comes from a proof run instead: every interleaving
 # (the round-robin encoding at a round count that covers every schedule, see
@@ -868,9 +756,9 @@ PROVABLE = True
 # unwound further, so a loop that needs many iterations does not blow up the
 # unrolling of all the others. Every loop is still checked to be fully
 # unrolled. A cut loop goes straight to 4 (the loops after a cut one are
-# reached only in a later run, so small steps cost one run per loop: rwlock
-# took 11), then one iteration more up to 8, then doubling; starting every
-# loop at 4 instead made small programs slower (6 proofs lost on the cluster).
+# reached only in a later run, so small steps cost one run per loop), then one
+# iteration more up to 8, then doubling. Starting every loop at 4 makes small
+# programs slower.
 PROOF_UNWIND_START = 2
 PROOF_UNWIND_MAX = 1024
 # Spin loops (spin_loops.cpp): an iteration that writes no memory and leaves
@@ -886,15 +774,11 @@ PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
 # --max-rounds cap. The encoding without rounds covers every schedule with
 # no round count and is tried first: CBMC's partial-order encoding
 # (--cbmc-memory-model) on the SAT solver. Deagle's ordering-consistency
-# solvers are not used: the closure solver reported a loop fully unwound
-# when it was not (pthread-theta/unwind3-100, expected FALSE: a wrong TRUE)
-# and the segment solver missed the race of
-# goblint-regression/09-regions_18-nested_rc; CBMC's encoding is right on
-# both.
+# solvers are not used for proofs: they are not trusted to be sound.
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
 MEMORY_MODEL_PROOF_FLAGS = "--cbmc-memory-model "
-# Not for races: without rounds --datarace reports races on race-free
-# programs (libvsync ticketlock, mcslock), so it would prove nothing.
+# Not for races: without rounds --datarace ignores locks and reports races on
+# race-free programs, so it would prove nothing.
 PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
                else ["memory-model", "rounds"])
 MAX_PROOF_ROUNDS = 64
@@ -978,31 +862,17 @@ def race_proof_rounds(unwind, left):
     return int(m.group(1)) + 2, []
 
 
-# The tool warns on every --rounds run that context-bounded analysis may be
-# unsound. That is true of a bounded SUCCESSFUL, which is never reported as
-# TRUE; it is false of a violation (a real execution) and of a proof (rounds
-# that cover every schedule). The output printed with an answer drops it.
-CBA_WARNING = re.compile(r"^\*\*\*\* WARNING: Context-bounded analysis may yield "
-                         r"unsound verification results\n", re.M)
-
-
-def without_cba_warning(out):
-    return CBA_WARNING.sub("", out)
-
-
 def report_violation(out):
     """Write the violation witness, print the tool output and FAILED, and end
     the run."""
     if WANTS_WITNESS:
         write_violation_witness()
-    print(without_cba_warning(out))
+    print(out)
     if "valid-memsafety.prp" in property_path and deref_reading(out):
         print(deref_reading(out))
     # The tool-info module recognises a data race only by
     # "nodatarace.assertion." on a FAILURE line; the tool prints
-    # "datarace: FAILURE", read as false(unreach-call). In the SV-COMP 2027
-    # pre-run none of 231 such answers was validated, while answers read
-    # as false(no-data-race) were.
+    # "datarace: FAILURE", which it reads as false(unreach-call).
     if "no-data-race.prp" in property_path:
         print("no-data-race: a data race, a nodatarace.assertion. FAILURE")
     print("FAILED")
@@ -1066,7 +936,7 @@ def prove(mode):
                     write_witness("invariant_set", "2.1", None)
                 except OSError as err:     # the answer stands without it
                     print("no correctness witness: %s" % err)
-            print(without_cba_warning(out))
+            print(out)
             print("SUCCESSFUL")
             sys.exit(0)
         # an unwinding assertion of a loop ([f.unwind.N]) or of a recursion
@@ -1081,11 +951,10 @@ def prove(mode):
                 return
             continue
         if verdict == "FAILED" and mode == "memory-model":
-            # CBMC's encoding of all interleavings has no spurious violations
-            # outside data races (not proved this way): on the 1452
-            # expected-TRUE reach, overflow and memsafety tasks it reported
-            # none. A violation it finds lies within the unwinding, so it is
-            # a bug of the program, reported like one from the bug search.
+            # CBMC's encoding of all interleavings is exact within the
+            # unwinding (data races are not proved this way), so a violation
+            # it finds is a bug of the program, reported like one from the
+            # bug search.
             print("  -> violation in a proof run")
             report_violation(out)
         if verdict == "FAILED":
@@ -1185,10 +1054,9 @@ for unwind, rounds, extra in bounds():
     verdict = verdict_of(out)
     # Not the verdict word itself: the tool-info module of BenchExec that
     # SV-COMP uses (benchexec/tools/iekke.py) answers TRUE if "SUCCESSFUL"
-    # appears on ANY line of the output, before it looks for "FAILED". A
-    # progress line "-> SUCCESSFUL" ahead of a bug found at a later bound would
-    # turn that bug into a wrong TRUE (-32), and an UNKNOWN into a TRUE. Only
-    # the last line of the output may carry a verdict word.
+    # appears on any line of the output, before it looks for "FAILED". A
+    # progress line "-> SUCCESSFUL" would turn a later FALSE or UNKNOWN into a
+    # TRUE. Only the last line of the output may carry a verdict word.
     print("  -> %s" % {"SUCCESSFUL": "safe at this bound",
                        "FAILED": "violation at this bound"}.get(verdict, "no verdict"))
 
@@ -1202,12 +1070,8 @@ for unwind, rounds, extra in bounds():
     # bound. It says nothing about the program, so it is not kept as a bounded
     # answer. Without a cut loop, no VCC means symbolic execution discharged
     # every assertion itself, which is a real bounded answer and is kept.
-    # Measured on ciuccio on the 27 unreach-call tasks whose answer was such a
-    # SUCCESSFUL: 3 wrong trues become unknown (+96), 10 right answers become
-    # unknown (-20), the other 14 are unchanged. For the other properties no
-    # VCC is not a sign of vacuity -- data races are not VCCs at all -- and on
-    # the 14 October arm every such answer was right (memsafety 53, overflow
-    # 5), so the rule would only lose answers there.
+    # For the other properties no VCC is not a sign of vacuity: data races
+    # are not VCCs at all.
     vacuous = ("unreach-call.prp" in property_path
                and generated_vccs(out) == 0 and "Not unwinding" in out)
     if vacuous:
