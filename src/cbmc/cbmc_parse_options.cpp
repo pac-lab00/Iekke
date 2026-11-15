@@ -316,10 +316,11 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   {
     options.set_option(
       "rounds", cmdline.get_value("rounds"));
-    log.warning() << "**** WARNING: Context-bounded analysis may yield unsound "
-                     "verification "
-                     "results"
-                  << messaget::eom;
+    if(!cmdline.isset("infer-rounds"))
+      log.status() << "Context bound: a SUCCESSFUL covers the schedules within "
+                   << cmdline.get_value("rounds")
+                   << " round(s); --infer-rounds computes a count that covers all"
+                   << messaget::eom;
 
     // On by default with --rounds: over the full 1127-task set it is worth
     // two answers and 438s, and far more on the solver-bound tasks

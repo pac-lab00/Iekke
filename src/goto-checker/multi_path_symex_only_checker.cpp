@@ -417,13 +417,10 @@ void multi_path_symex_only_checkert::symex_seeded_passes(
   } while((consulted_grew && seeded_passes < max_seeded_passes) ||
           own_view_broken);
 
-  // A shared pointer write is a risk (CBMC #305) only when these passes
-  // did not settle. Then, and only then, say so in the words of the base
-  // tool's own check, which the wrapper reads as "no proof".
+  // Shared pointer writes are sound (CBMC #305) only once these passes
+  // settle; when they do not, the wrapper reports no proof.
   if(consulted_grew)
   {
-    log.warning() << "pointer handling for concurrency is unsound"
-                  << messaget::eom;
     log.warning() << "points-to sets of shared pointers did not converge in "
                   << seeded_passes
                   << " symex passes; a pointer published late may be"

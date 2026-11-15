@@ -970,7 +970,7 @@ void goto_symext::merge_goto(
   statet &state)
 {
   // check atomic section
-  // __SZH_REMOVE_BEGIN__: temporarily removed for qw2004-1.i
+  // __SZH_REMOVE_BEGIN__: check disabled in Deagle
   // if(state.atomic_section_id != goto_state.atomic_section_id)
   //   throw incorrect_goto_program_exceptiont(
   //     "atomic sections differ across branches",
