@@ -23,7 +23,6 @@ Author: Daniel Kroening, Peter Schrammel
 #include <goto-symex/show_program.h>
 #include <goto-symex/show_vcc.h>
 #include <goto-symex/thread_exclusivity.h>
-#include <goto-symex/symmetric_arrays.h>
 #include <goto-symex/thread_spawn_loops.h>
 
 #include <chrono>
@@ -32,7 +31,6 @@ Author: Daniel Kroening, Peter Schrammel
 #include <unordered_map>
 
 #include "bmc_util.h"
-#include "cp2_probe.h"
 
 #include <goto-symex/guard_bdd.h>
 
@@ -46,14 +44,12 @@ Author: Daniel Kroening, Peter Schrammel
 /// part in a data race. Removing it shortens the write chains and the
 /// context-switch points of the lazy encoding. The formula itself keeps the
 /// usual guards; the BDDs only decide what to remove.
-/// BDDs can grow large: the walk stops after LAZYPO_BDD_PRUNE_CAP seconds
-/// (default 5) and keeps the remaining events. LAZYPO_NO_BDD_PRUNE turns the
-/// removal off.
+/// BDDs can grow large: the walk stops after 5 seconds and keeps the
+/// remaining events.
 static std::size_t
 bdd_prune_dead_accesses(symex_target_equationt &equation, messaget &log)
 {
-  const char *cap_env = getenv("LAZYPO_BDD_PRUNE_CAP");
-  const double cap = cap_env && atof(cap_env) > 0 ? atof(cap_env) : 5.0;
+  const double cap = 5.0;
   const auto t0 = std::chrono::steady_clock::now();
   guard_bdd_convertert bdd;
   std::size_t removed = 0;
@@ -190,11 +186,7 @@ void multi_path_symex_only_checkert::generate_equation()
   report_truncation();
   // __SZH_ADD_END__
 
-  if(getenv("CP2PROBE") != nullptr)
-    cp2_constant_probe(equation, ns);
-
-  if(getenv("LAZYPO_NO_BDD_PRUNE") == nullptr)
-    bdd_prune_dead_accesses(equation, log);
+  bdd_prune_dead_accesses(equation, log);
 
   symex.remove_dummy_accesses();
 
@@ -249,23 +241,6 @@ void multi_path_symex_only_checkert::setup_thread_analyses()
       bound > 0 && options.get_unsigned_int_option("rounds") > 0 &&
       !options.get_bool_option("symex-driven-lazy-loading"))
     {
-      // Report recognised symmetric array families. No consumer yet: the
-      // reduction itself has to rewrite array types in the symbol table, not
-      // just constants in the goto program, because leaving the declarations
-      // at their original size still times out (measured). Gated on an
-      // environment variable so it costs nothing until then.
-      if(getenv("LAZYPO_SHOW_SYMMETRIC_ARRAYS") != nullptr)
-      {
-        for(const auto &fam : compute_symmetric_array_families(
-              goto_model.get_goto_functions(), ns))
-        {
-          std::cout << "symmetric-array-family size=" << fam.size;
-          for(const auto &a : fam.arrays)
-            std::cout << " " << a;
-          std::cout << "\n";
-        }
-      }
-
       std::vector<std::size_t> handle_array_sizes;
       symex.thread_management_loops = compute_thread_management_loops(
         goto_model.get_goto_functions(), ns, &handle_array_sizes);
@@ -494,13 +469,6 @@ void multi_path_symex_only_checkert::symex_refined_pointer_passes()
 
     if(!symex.overall_value_set_changed)
       break;   // fixpoint: nothing new to learn
-  }
-
-  if(getenv("IEKKE_DUMP_VALUE_SET") != nullptr)
-  {
-    std::cout << "=== overall_value_set after refinement ===\n";
-    symex.overall_value_set.output(std::cout);
-    std::cout << "=== end overall_value_set ===\n";
   }
 
   symex.path_storage.clear();

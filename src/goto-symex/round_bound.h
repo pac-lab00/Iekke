@@ -101,18 +101,4 @@ std::size_t &infer_rounds_bound();
 /// cap: only then does reaching it make a SUCCESSFUL complete.
 bool &infer_rounds_bound_is_static();
 
-/// Experiment (LAZYPO_FIXPOINT=1): Boolean projection of the shared memory at
-/// the end of the last round of the last --infer-rounds formula -- the bits of
-/// the last lazy-chain value of every scalar shared variable, plus, with
-/// LAZYPO_FIXPOINT_POS=1, the thresholds GE(t,B,i) of every thread's final
-/// position. Locals and thread-private objects are not in it.
-struct fixpoint_projectiont
-{
-  std::vector<exprt> bits;
-  std::size_t position_bits = 0;
-  std::size_t variables = 0;
-  std::size_t skipped_variables = 0;
-};
-fixpoint_projectiont &fixpoint_projection();
-
 #endif // CPROVER_GOTO_SYMEX_ROUND_BOUND_H

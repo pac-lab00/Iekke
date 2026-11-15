@@ -20,9 +20,9 @@ Module: Goto Checker that infers the number of round-robin rounds
 /// never pays for a formula with B rounds.
 ///
 /// Reaching B is complete only when B is the static bound itself, not the cap.
-/// LAZYPO_INFER_COMPLETENESS=1 also asks, inside a block, whether some
-/// canonical schedule needs round R+1 (UNSAT: complete at R); on the safe
-/// tasks of the 2026-10-27 campaign it never answered UNSAT before B.
+/// Asking inside a block whether some canonical schedule needs round R+1
+/// (UNSAT: complete at R) was tried: on the safe tasks of the 2026-10-27
+/// campaign it never answered UNSAT before B.
 ///
 /// The loop unwinding is fixed by symex: "complete" is relative to it.
 

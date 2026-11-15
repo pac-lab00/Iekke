@@ -458,9 +458,3 @@ bool &infer_rounds_bound_is_static()
   static bool is_static = false;
   return is_static;
 }
-
-fixpoint_projectiont &fixpoint_projection()
-{
-  static fixpoint_projectiont projection;
-  return projection;
-}

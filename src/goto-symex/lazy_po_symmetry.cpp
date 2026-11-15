@@ -177,20 +177,12 @@ std::string lazy_pot::create_thread_symmetry(symex_target_equationt &equation)
     const auto next = routine.find(j);
     if(next == routine.end() || next->second != entry.second)
       continue;
-    const bool debug = getenv("LAZYPO_SYMMETRY_DEBUG") != nullptr;
     if(labels[i] != labels[j] || shape[i] != shape[j])
     {
-      if(debug)
-        std::cerr << "SYMMETRY T" << i << " T" << j << " differ in shape: labels "
-                  << labels[i] << "/" << labels[j] << " events "
-                  << shape[i].size() << "/" << shape[j].size() << "\n";
       continue;
     }
     if(start[i].empty() || start[i].size() != start[j].size())
     {
-      if(debug)
-        std::cerr << "SYMMETRY T" << i << " T" << j << " differ in start values "
-                  << start[i].size() << "/" << start[j].size() << "\n";
       continue;
     }
 
@@ -241,31 +233,10 @@ std::string lazy_pot::create_thread_symmetry(symex_target_equationt &equation)
         implies_exprt{conjunction(prefix_equal), conjunction(geq)});
       prefix_equal.push_back(conjunction(eq));
     }
-    // Known-answer probe: force the first pair into a schedule the ordering
-    // excludes (j runs in round 1, i never runs). With the ordering the
-    // formula has no model; with LAZYPO_SYMMETRY_PROBE=only it keeps one.
-    const char *probe = getenv("LAZYPO_SYMMETRY_PROBE");
-    // LAZYPO_SYMMETRY_PROBE=share forces instead a schedule where both run
-    // in round 2 after only j ran in round 1: exact keeps it, strong does not.
-    if(probe != nullptr && pairs == 0)
-    {
-      exprt::operandst forced{runs(j, 1), not_exprt{runs(i, 1)}};
-      if(std::string(probe) == "share" && rounds >= 2)
-      {
-        forced.push_back(runs(i, 2));
-        forced.push_back(runs(j, 2));
-      }
-      else
-        for(std::size_t r = 2; r <= rounds; ++r)
-          forced.push_back(not_exprt{runs(i, r)});
-      equation.constraint(
-        conjunction(forced), "thread symmetry probe", steps.begin()->source);
-    }
-    if(probe == nullptr || std::string(probe) != "only")
-      equation.constraint(
-        implies_exprt{conjunction(premise), conjunction(lex)},
-        "thread symmetry",
-        steps.begin()->source);
+    equation.constraint(
+      implies_exprt{conjunction(premise), conjunction(lex)},
+      "thread symmetry",
+      steps.begin()->source);
     ++pairs;
   }
   return std::to_string(pairs) + (pairs == 1 ? " pair" : " pairs") + " of " +

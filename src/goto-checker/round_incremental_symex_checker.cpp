@@ -21,7 +21,6 @@ Module: Goto Checker that infers the number of round-robin rounds
 #include "bmc_util.h"
 
 #include <chrono>
-#include <cstdlib>
 #include <iostream>
 
 round_incremental_symex_checkert::round_incremental_symex_checkert(
@@ -61,18 +60,13 @@ operator()(propertiest &properties)
     return result;
   }
   const bool bound_is_static = infer_rounds_bound_is_static();
-  // Question (b) never stopped the search before the static bound in the
-  // 146-task safe campaign of 2026-10-27, so it is opt-in.
-  const bool ask_completeness =
-    getenv("LAZYPO_INFER_COMPLETENESS") != nullptr;
 
   // The equation as symex left it (postprocess_equation applied no lazy_po
   // under --infer-rounds). Each block of rounds rebuilds the encoding from it,
   // so a bug at round 1 never pays for a formula with B rounds.
   const symex_target_equationt raw_equation = equation;
 
-  std::size_t done = 0;        // rounds already shown violation-free
-  std::size_t complete_at = 0; // set when (b) proves no more rounds are needed
+  std::size_t done = 0; // rounds already shown violation-free
   // Blocks of rounds, chosen from B alone (known before any solving):
   //   B <= direct : one formula with B rounds;
   //   B >  direct : `first` rounds, then B.
@@ -97,16 +91,10 @@ operator()(propertiest &properties)
     // ---- build the block: lazy_po with k rounds, a fresh solver ----------
     equation = raw_equation;
     apply_lazy_po(equation, options, ns, ui_message_handler, k, true);
-    // The slicer follows assertions, not constraints: a value only the chain
-    // carries would be left free, and the fixpoint projection would see
-    // states that are not there.
-    if(getenv("LAZYPO_FIXPOINT") == nullptr)
-      slice(symex, equation, ns, options, ui_message_handler);
+    slice(symex, equation, ns, options, ui_message_handler);
     property_decider.reset_solver(ns);
-    // The property may only enter through the goal literal of question (a):
-    // the default conversion would assert "some assertion fails" at the root
-    // (for a single assertion, its negation), and question (b) would then ask
-    // for a *violation* needing another round.
+    // The property enters only through the goal literal that each question
+    // assumes, not as the clause "some assertion fails" at the root.
     equation.assertion_handles_only = true;
     prepare_property_decider(properties);
     std::cout << "Infer rounds: block of " << k << " round(s)" << std::endl;
@@ -116,34 +104,20 @@ operator()(propertiest &properties)
       property_decider.get_stack_decision_procedure();
 
     // Literals of Empty_2..Empty_k (already in the formula: handle() returns
-    // the literal their definition was converted to), their negations, and
-    // "some property fails". Glucose's simplifier eliminates variables during
+    // the literal their definition was converted to) and "some property
+    // fails". Glucose's simplifier eliminates variables during
     // a solve, and adding a clause over an eliminated variable aborts it
     // (SimpSolver::addClause_, !isEliminated): so every one of these is
     // converted before the first solve and frozen, and the questions are
     // asked by assumptions only.
-    std::vector<exprt> empty(k + 1), not_empty(k + 1);
+    std::vector<exprt> empty(k + 1);
     for(std::size_t r = 2; r <= k; ++r)
-    {
       empty[r] = dp.handle(empty_round_symbol(r));
-      not_empty[r] = dp.handle(not_exprt{empty_round_symbol(r)});
-    }
     const exprt violation_literal =
       dp.handle(property_decider.goals_disjunction(
         [&properties](const irep_idt &property_id) {
           return is_property_to_check(properties.at(property_id).status);
         }));
-    // LAZYPO_FIXPOINT experiment: the projection's literals and an
-    // activation literal for the blocking clauses, frozen like the rest.
-    const bool fixpoint = getenv("LAZYPO_FIXPOINT") != nullptr;
-    std::vector<exprt> projection;
-    literalt blocks_on;
-    if(fixpoint)
-    {
-      for(const exprt &bit : fixpoint_projection().bits)
-        projection.push_back(dp.handle(bit));
-      blocks_on = property_decider.get_solver()->prop().new_variable();
-    }
     {
       propt &prop = property_decider.get_solver()->prop();
       const auto freeze = [&prop](const exprt &e) {
@@ -151,15 +125,8 @@ operator()(propertiest &properties)
           prop.set_frozen(to_literal_expr(e).get_literal());
       };
       freeze(violation_literal);
-      for(const exprt &p : projection)
-        freeze(p);
-      if(fixpoint)
-        prop.set_frozen(blocks_on);
       for(std::size_t r = 2; r <= k; ++r)
-      {
         freeze(empty[r]);
-        freeze(not_empty[r]);
-      }
     }
     const auto rounds_above = [&](std::size_t from) {
       std::vector<exprt> off;
@@ -212,7 +179,7 @@ operator()(propertiest &properties)
     // ---- rounds done+1 .. k inside the block -------------------------------
     for(std::size_t rounds = done + 1; rounds <= k; ++rounds)
     {
-      // (a) a violation with `rounds` rounds
+      // a violation with `rounds` rounds
       std::vector<exprt> question_a = rounds_above(rounds + 1);
       question_a.push_back(violation_literal);
       const decision_proceduret::resultt violation =
@@ -237,96 +204,7 @@ operator()(propertiest &properties)
       std::cout << "Infer rounds: no violation with " << rounds
                 << " round(s)" << std::endl;
       done = rounds;
-
-      if(fixpoint && rounds < k)
-      {
-        // Is every shared memory state a run with rounds+1 rounds ends in
-        // also reached by a run with `rounds` rounds? Search a state of the
-        // first kind (blocking clauses on), ask for it with one round less
-        // (blocking clauses off); found: block it and search again. Only
-        // reported: the projection lacks the locals.
-        propt &prop = property_decider.get_solver()->prop();
-        const auto start = std::chrono::steady_clock::now();
-        const std::size_t cap = getenv("LAZYPO_FIXPOINT_MAX") != nullptr
-                                  ? std::stoul(getenv("LAZYPO_FIXPOINT_MAX"))
-                                  : 1000;
-        std::size_t iterations = 0;
-        std::string outcome = "cap";
-        while(iterations < cap)
-        {
-          ++iterations;
-          std::vector<exprt> more = rounds_above(rounds + 2);
-          more.push_back(literal_exprt{blocks_on});
-          const auto a = solve_assuming(more);
-          if(a == decision_proceduret::resultt::D_UNSATISFIABLE)
-          {
-            outcome = "FIXPOINT";
-            break;
-          }
-          if(a != decision_proceduret::resultt::D_SATISFIABLE)
-          {
-            outcome = "error";
-            break;
-          }
-          std::vector<exprt> same = rounds_above(rounds + 1);
-          same.push_back(literal_exprt{!blocks_on});
-          bvt block{!blocks_on};
-          for(const exprt &p : projection)
-          {
-            if(p.id() != ID_literal)
-              continue;
-            const literalt l = to_literal_expr(p).get_literal();
-            const bool value = prop.l_get(l).is_true();
-            same.push_back(literal_exprt{value ? l : !l});
-            block.push_back(value ? !l : l);
-          }
-          stack.pop();
-          const auto b = solve_assuming(same);
-          if(b == decision_proceduret::resultt::D_SATISFIABLE)
-          {
-            stack.pop();
-            prop.lcnf(block);
-            if(cnf != nullptr)
-              clauses_after_last_solve = cnf->no_clauses();
-          }
-          else
-          {
-            outcome = b == decision_proceduret::resultt::D_UNSATISFIABLE
-                        ? "grows"
-                        : "error";
-            break;
-          }
-        }
-        const std::chrono::duration<double> t =
-          std::chrono::steady_clock::now() - start;
-        std::cout << "Infer rounds: fixpoint " << rounds << "->" << rounds + 1
-                  << ": " << outcome << " after " << iterations
-                  << " state(s), " << t.count() << "s (projection "
-                  << projection.size() << " bits: "
-                  << fixpoint_projection().position_bits << " position, "
-                  << fixpoint_projection().variables << " variables, "
-                  << fixpoint_projection().skipped_variables << " skipped)"
-                  << std::endl;
-      }
-
-      // (b), opt-in: does some canonical schedule make progress in round
-      // rounds+1? Only inside the block: round k+1 is not in this formula.
-      if(ask_completeness && rounds < k)
-      {
-        std::vector<exprt> next_round = rounds_above(rounds + 2);
-        next_round.push_back(not_empty[rounds + 1]);
-        const decision_proceduret::resultt more = solve_assuming(next_round);
-        if(more == decision_proceduret::resultt::D_SATISFIABLE)
-          stack.pop();
-        else if(more == decision_proceduret::resultt::D_UNSATISFIABLE)
-        {
-          complete_at = rounds;
-          break;
-        }
-      }
     }
-    if(complete_at > 0)
-      break;
   }
 
   // No violation within the rounds explored.
@@ -335,11 +213,7 @@ operator()(propertiest &properties)
     result.updated_properties,
     decision_proceduret::resultt::D_UNSATISFIABLE,
     true);
-  if(complete_at > 0)
-    std::cout << "Infer rounds: complete at " << complete_at
-              << " round(s): no canonical schedule needs another round"
-              << std::endl;
-  else if(bound_is_static)
+  if(bound_is_static)
     std::cout << "Infer rounds: complete at " << bound
               << " round(s): the static round bound" << std::endl;
   else

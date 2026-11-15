@@ -31,20 +31,6 @@ Author: CBMC/lazy_po work
 
 namespace
 {
-bool tml_debug()
-{
-  static const bool on = getenv("LAZYPO_TML_DEBUG") != nullptr;
-  return on;
-}
-
-#define TML_BAIL(msg)                                                          \
-  do                                                                           \
-  {                                                                            \
-    if(tml_debug())                                                            \
-      std::cerr << "TML bail: " << (msg) << "\n";                             \
-    return {};                                                                 \
-  } while(0)
-
 /// One recognised loop: everything the checks below need to know about it.
 struct management_loopt
 {
@@ -132,13 +118,13 @@ optionalt<management_loopt> classify_loop(
   // the back edge must be an unconditional jump: a conditional one would mean
   // the body has control flow we have not accounted for
   if(!back_edge->condition().is_true())
-    TML_BAIL("conditional back edge");
+    return {}; // conditional back edge
 
   result.head = back_edge->get_target();
 
   // the loop head must be the exit test: IF !cond GOTO exit
   if(!result.head->is_goto() || result.head->condition().is_true())
-    TML_BAIL("head is not an exit test");
+    return {}; // head is not an exit test
 
   result.exit = result.head->get_target();
 
@@ -154,7 +140,7 @@ optionalt<management_loopt> classify_loop(
       }
     }
     if(!exit_is_after_back_edge)
-      TML_BAIL("exit is not after the back edge");
+      return {}; // exit is not after the back edge
   }
 
   // walk the body: exactly one pthread_create/pthread_join call, plus
@@ -171,11 +157,11 @@ optionalt<management_loopt> classify_loop(
     {
       const irep_idt lhs = symbol_id(it->assign_lhs());
       if(lhs.empty())
-        TML_BAIL("assignment to a non-symbol");
+        return {}; // assignment to a non-symbol
       if(result.counter.empty())
         result.counter = lhs;
       else if(result.counter != lhs)
-        TML_BAIL("more than one assigned variable");
+        return {}; // more than one assigned variable
       continue;
     }
 
@@ -183,19 +169,19 @@ optionalt<management_loopt> classify_loop(
     {
       const irep_idt callee = symbol_id(it->call_function());
       if(callee != "pthread_create" && callee != "pthread_join")
-        TML_BAIL("call to " + id2string(callee));
+        return {}; // a call to another function
 
       // the return value must be discarded; otherwise later code observes how
       // often the loop ran
       if(it->call_lhs().is_not_nil())
-        TML_BAIL("call return value is used");
+        return {}; // call return value is used
 
       if(it->call_arguments().empty())
-        TML_BAIL("call has no arguments");
+        return {}; // call has no arguments
 
       ++calls;
       if(calls > 1)
-        TML_BAIL("more than one call");
+        return {}; // more than one call
 
       result.is_spawn = (callee == "pthread_create");
       handle_argument = it->call_arguments().front();
@@ -204,22 +190,22 @@ optionalt<management_loopt> classify_loop(
 
     // anything else (a nested goto, an assert, another call, a decl, ...)
     // means the loop does more than manage threads
-    TML_BAIL("unexpected instruction in body");
+    return {}; // unexpected instruction in body
   }
 
   if(calls != 1 || result.counter.empty())
-    TML_BAIL("no call, or no induction variable");
+    return {}; // no call, or no induction variable
 
   // the exit test has to be keyed on the induction variable, otherwise
   // stopping early is not "stopping the loop early" in any meaningful sense
   if(!mentions(result.head->condition(), result.counter))
-    TML_BAIL("exit test not keyed on the induction variable");
+    return {}; // exit test not keyed on the induction variable
 
   // nothing after the loop may observe the induction variable
   if(!result.exit->is_dead() ||
      result.exit->dead_symbol().get_identifier() != result.counter)
   {
-    TML_BAIL("induction variable is live after the loop");
+    return {}; // induction variable is live after the loop
   }
 
   // the loop must start at index 0. Together with the bound being the same for
@@ -241,7 +227,7 @@ optionalt<management_loopt> classify_loop(
       !init->assign_rhs().is_constant() ||
       !init->assign_rhs().is_zero())
     {
-      TML_BAIL("loop does not start at index 0");
+      return {}; // loop does not start at index 0
     }
   }
 
@@ -251,7 +237,7 @@ optionalt<management_loopt> classify_loop(
     // pthread_create(&t_ids[i], ...)
     const exprt &arg = skip_typecasts(handle_argument);
     if(arg.id() != ID_address_of)
-      TML_BAIL("pthread_create handle argument is not &x");
+      return {}; // pthread_create handle argument is not &x
     result.handle_array =
       indexed_array(to_address_of_expr(arg).object(), result.counter);
   }
@@ -262,7 +248,7 @@ optionalt<management_loopt> classify_loop(
   }
 
   if(result.handle_array.empty())
-    TML_BAIL("handle argument is not array[counter]");
+    return {}; // handle argument is not array[counter]
 
   return result;
 }
@@ -343,9 +329,6 @@ std::unordered_set<irep_idt> compute_thread_management_loops(
     }
   }
 
-  if(tml_debug())
-    std::cerr << "TML: " << loops.size() << " candidate loop(s)\n";
-
   if(loops.empty())
     return {};
 
@@ -387,9 +370,6 @@ std::unordered_set<irep_idt> compute_thread_management_loops(
       continue;
     if(array_symbol->is_static_lifetime && !array_symbol->is_thread_local)
     {
-      if(tml_debug())
-        std::cerr << "TML bail: handle array " << array_id
-                  << " is not a local\n";
       continue;
     }
 
@@ -457,9 +437,6 @@ std::unordered_set<irep_idt> compute_thread_management_loops(
 
     if(!array_is_private_to_the_loops)
     {
-      if(tml_debug())
-        std::cerr << "TML bail: array " << array_id
-                  << " is mentioned outside the loops\n";
       continue;
     }
 
@@ -485,9 +462,6 @@ std::unordered_set<irep_idt> compute_thread_management_loops(
 
     if(!joins_are_safe_to_cut)
     {
-      if(tml_debug())
-        std::cerr << "TML bail: code after a join loop over " << array_id
-                  << " could observe the early exit\n";
       continue;
     }
 

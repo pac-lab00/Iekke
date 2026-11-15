@@ -199,14 +199,12 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
   // its chain. Taking an address does not read the value.
   std::set<irep_idt> opaque;
   std::map<irep_idt, std::vector<std::pair<irep_idt, exprt>>> index_uses;
-  const bool why = getenv("LAZYPO_ARRAY_WHY") != nullptr;
   // with --array-rf-bytes, byte reads and byte updates are accepted too; the
   // objects they touch are answered byte by byte
   const bool bytes = array_rf_bytes;
   std::set<irep_idt> byte_used;
   std::map<irep_idt, std::vector<typet>> byte_read_types;
-  std::function<void(const exprt &, const irep_idt &)> scan =
-    [&](const exprt &expr, const irep_idt &parent) {
+  std::function<void(const exprt &)> scan = [&](const exprt &expr) {
     if(expr.id() == ID_address_of)
       return;
 
@@ -230,7 +228,7 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
         if(candidates.count(base) != 0)
         {
           index_uses[base].emplace_back(id, idx.index());
-          scan(idx.index(), expr.id());
+          scan(idx.index());
           return;
         }
       }
@@ -248,7 +246,7 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
         to_symbol_expr(be.op()).get_identifier(), be.offset());
       byte_used.insert(base);
       byte_read_types[base].push_back(be.type());
-      scan(be.offset(), expr.id());
+      scan(be.offset());
       return;
     }
 
@@ -257,21 +255,20 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
        candidates.count(narrowing_base(expr.operands()[0])) != 0)
     {
       for(std::size_t i = 1; i < expr.operands().size(); ++i)
-        scan(expr.operands()[i], expr.id());
+        scan(expr.operands()[i]);
       return;
     }
 
     if(expr.id() == ID_symbol)
     {
       const irep_idt base = narrowing_base(expr);
-      if(candidates.count(base) != 0 && opaque.insert(base).second && why)
-        std::cerr << "ARRAY_WHY_DETAIL " << base << " used bare inside a "
-                  << parent << "\n";
+      if(candidates.count(base) != 0)
+        opaque.insert(base);
       return;
     }
 
     for(const auto &op : expr.operands())
-      scan(op, expr.id());
+      scan(op);
   };
 
   for(const auto &step : equation.SSA_steps)
@@ -297,43 +294,38 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
              step.ssa_rhs, narrowing_base(step.ssa_lhs)))
         {
           byte_used.insert(narrowing_base(step.ssa_lhs));
-          scan(std::get<0>(*bu), "byte update");
-          scan(std::get<1>(*bu), "byte update");
-          scan(std::get<2>(*bu), "byte update");
+          scan(std::get<0>(*bu));
+          scan(std::get<1>(*bu));
+          scan(std::get<2>(*bu));
           if(!step.guard.is_nil())
-            scan(step.guard, "guard");
+            scan(step.guard);
           continue;
         }
       if(own_version_merge(step.ssa_rhs, narrowing_base(step.ssa_lhs)))
       {
-        scan(to_if_expr(step.ssa_rhs).cond(), "merge");
+        scan(to_if_expr(step.ssa_rhs).cond());
         if(!step.guard.is_nil())
-          scan(step.guard, "guard");
+          scan(step.guard);
         continue;
       }
       if(const auto cu = conditional_point_update(
            step.ssa_rhs, narrowing_base(step.ssa_lhs)))
       {
-        scan(std::get<0>(*cu), "conditional update");
-        scan(std::get<1>(*cu).where(), "conditional update");
-        scan(std::get<1>(*cu).new_value(), "conditional update");
+        scan(std::get<0>(*cu));
+        scan(std::get<1>(*cu).where());
+        scan(std::get<1>(*cu).new_value());
         if(!step.guard.is_nil())
-          scan(step.guard, "guard");
+          scan(step.guard);
         continue;
       }
     }
 
     if(!step.ssa_rhs.is_nil() && !own_copy)
-      scan(
-          step.ssa_rhs,
-          step.ssa_lhs.is_nil()
-            ? irep_idt{"assignment-rhs"}
-            : irep_idt{"assignment-rhs, lhs=" +
-                       id2string(to_symbol_expr(step.ssa_lhs).get_identifier())});
+      scan(step.ssa_rhs);
     if(!step.cond_expr.is_nil() && !step.is_assignment() && !step.is_decl())
-      scan(step.cond_expr, "cond_expr");
+      scan(step.cond_expr);
     if(!step.guard.is_nil())
-      scan(step.guard, "guard");
+      scan(step.guard);
   }
 
   // how each write decomposes, by the assignment that produces its symbol
@@ -362,15 +354,11 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     }
   }
 
-  const bool explain = getenv("LAZYPO_ARRAY_WHY") != nullptr;
   const auto copy_of = own_version_copies(equation, candidates);
   for(const auto &variable : candidates)
   {
     if(opaque.count(variable) != 0)
     {
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable
-                  << " declined: used as a whole object somewhere\n";
       continue;
     }
 
@@ -384,16 +372,10 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     for(const auto &use : index_uses[variable])
       if(read_symbols.count(copied_from(copy_of, use.first)) == 0)
       {
-        if(indices_placed && explain)
-          std::cerr << "ARRAY_WHY_INDEX " << variable << " index of "
-                    << use.first << ", not a shared read event\n";
         indices_placed = false;
       }
     if(!indices_placed)
     {
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable
-                  << " declined: an index() does not name a shared read event\n";
       continue;
     }
 
@@ -419,9 +401,6 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       }
       if(it == defining_rhs.end())
       {
-        if(getenv("LAZYPO_ARRAY_WHY") != nullptr)
-          std::cerr << "ARRAY_WHY_NODEF " << variable << " write symbol " << id
-                    << " has no defining assignment in the equation\n";
         ok = false;
         break;
       }
@@ -487,22 +466,11 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
           array_writet{i, true, nil_exprt{}, uniform.value()});
         continue;
       }
-      if(getenv("LAZYPO_ARRAY_WHY") != nullptr)
-        std::cerr << "ARRAY_WHY_WRITE " << variable << " rhs is " << rhs.id()
-                  << (rhs.id() == ID_with && !rhs.operands().empty()
-                        ? " over " + id2string(narrowing_base(rhs.operands()[0]))
-                        : std::string{})
-                  << "\n";
       ok = false; // a havoc, a copy, a non-uniform literal: no single value
       break;
     }
     if(!ok || !initial.has_value())
     {
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable << " declined: "
-                  << (ok ? "no uniform constant initialiser"
-                         : "a write is not a single-index update")
-                  << "\n";
       continue;
     }
 
@@ -529,14 +497,8 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       }
       if(!sized)
       {
-        if(explain)
-          std::cerr << "ARRAY_WHY " << variable
-                    << " declined: byte-wise, a size is unknown\n";
         continue;
       }
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: byte-wise, "
-                  << decomposed.size() << " writes (no cost model)\n";
       array_rf_writes.emplace(variable, std::move(decomposed));
       array_rf_default.emplace(variable, initial.value());
       array_rf_bytewise.insert(variable);
@@ -551,17 +513,12 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
     const auto elem_bits = pointer_offset_bits(to_array_type(t).element_type(), ns);
     if(!elem_bits.has_value() || *elem_bits <= 0)
     {
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable
-                  << " declined: element size unknown\n";
       continue;
     }
     // Of symbolic size, the chain is a chain of whole arrays, which only the
     // array theory can carry: never cheaper than selecting the element.
     if(!array_bits.has_value())
     {
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: symbolic size\n";
       array_rf_writes.emplace(variable, std::move(decomposed));
       array_rf_default.emplace(variable, initial.value());
       continue;
@@ -578,20 +535,9 @@ void lazy_pot::compute_array_rf(const symex_target_equationt &equation)
       Rd * R * (W * R / 2.0) * (static_cast<double>(elem_bits->to_long()) + index_bits);
     if(rf_cost <= 0 || chain_cost < 2.0 * rf_cost)
     {
-      if(explain)
-        std::cerr << "ARRAY_WHY " << variable
-                  << " declined by the cost model: chain=" << chain_cost
-                  << " selection=" << rf_cost << " ratio="
-                  << (rf_cost > 0 ? chain_cost / rf_cost : 0)
-                  << " (W=" << W << " reads=" << Rd << " array_bits="
-                  << array_bits->to_long() << ")\n";
       continue;
     }
 
-    if(explain)
-      std::cerr << "ARRAY_WHY " << variable << " ACCEPTED: chain=" << chain_cost
-                << " selection=" << rf_cost << " ratio=" << chain_cost / rf_cost
-                << "\n";
     array_rf_writes.emplace(variable, std::move(decomposed));
     array_rf_default.emplace(variable, initial.value());
   }

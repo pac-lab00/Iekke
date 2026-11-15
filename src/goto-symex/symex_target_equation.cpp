@@ -11,7 +11,6 @@ Author: Daniel Kroening, kroening@kroening.com
 /// Implementation of functions to build SSA equation.
 
 #include "symex_target_equation.h"
-#include <map>
 
 #include <iostream>
 
@@ -342,60 +341,6 @@ void symex_target_equationt::constraint(
 }
 
 
-/// LAZYPO_VAR_TALLY: how many SAT variables converting each SSA step creates,
-/// summed by the object the step assigns or by constraint kind, plus the
-/// backend's total before the solver's own post-processing (array theory,
-/// pointers), whose share is the final count minus that total. Steps of the
-/// kinds not tallied (declarations, function calls, I/O, assertions) are in
-/// the remainder too. Measurement only; with a decision procedure that is
-/// not a prop_conv_solvert every count reads 0.
-static bool var_tally_on()
-{
-  static const bool on = getenv("LAZYPO_VAR_TALLY") != nullptr;
-  return on;
-}
-
-static std::map<std::string, std::size_t> &var_tally()
-{
-  static std::map<std::string, std::size_t> tally;
-  return tally;
-}
-
-static std::size_t sat_variables(decision_proceduret &decision_procedure)
-{
-  const auto *p = dynamic_cast<prop_conv_solvert *>(&decision_procedure);
-  return p == nullptr ? 0 : p->prop_no_variables();
-}
-
-static void var_tally_add(
-  decision_proceduret &decision_procedure,
-  std::size_t &before,
-  const char *pass,
-  const SSA_stept &step)
-{
-  std::string key = pass;
-  if(step.is_constraint())
-    key += " " + id2string(step.comment);
-  else if(step.ssa_lhs.id() == ID_symbol && is_ssa_expr(step.ssa_lhs))
-    key += " " + id2string(to_ssa_expr(step.ssa_lhs).get_object_name());
-  const std::size_t now = sat_variables(decision_procedure);
-  var_tally()[key] += now - before;
-  before = now;
-}
-
-static void var_tally_print(decision_proceduret &decision_procedure)
-{
-  std::vector<std::pair<std::size_t, std::string>> sorted;
-  for(const auto &e : var_tally())
-    sorted.emplace_back(e.second, e.first);
-  std::sort(sorted.rbegin(), sorted.rend());
-  std::cerr << "VAR_TALLY before post-processing: "
-            << sat_variables(decision_procedure) << " SAT variables\n";
-  for(std::size_t i = 0; i < sorted.size() && i < 60; ++i)
-    std::cerr << "VAR_TALLY " << sorted[i].first << "\t" << sorted[i].second
-              << "\n";
-}
-
 void symex_target_equationt::convert_without_assertions(
   decision_proceduret &decision_procedure)
 {
@@ -413,67 +358,16 @@ void symex_target_equationt::convert_without_assertions(
   convert_constraints(decision_procedure);
 }
 
-/// Categories to skip, from LAZYPO_ABLATE: comma-separated substrings matched
-/// against each constraint's description. Measurement only.
-static bool ablate_constraint(const std::string &comment)
-{
-  static const char *const spec = getenv("LAZYPO_ABLATE");
-  if(spec == nullptr)
-    return false;
-
-  const std::string want(spec);
-  std::size_t pos = 0;
-  while(pos <= want.size())
-  {
-    const std::size_t next = want.find(',', pos);
-    const std::string piece = want.substr(
-      pos, next == std::string::npos ? std::string::npos : next - pos);
-    if(!piece.empty() && comment.find(piece) != std::string::npos)
-      return true;
-    if(next == std::string::npos)
-      break;
-    pos = next + 1;
-  }
-  return false;
-}
-
 void symex_target_equationt::convert(decision_proceduret &decision_procedure)
 {
   // Mark before either conversion pass runs: the POR/canonicality categories
   // are deliberately skipped by convert_constraints and placed by a later
   // pass, and both test !step.ignore.
-  if(getenv("LAZYPO_ABLATE_LIST") != nullptr)
-  {
-    std::map<std::string, std::size_t> tally;
-    for(const auto &step : SSA_steps)
-      if(step.is_constraint())
-        ++tally[id2string(step.comment)];
-    for(const auto &entry : tally)
-      std::cerr << "ABLATE_LIST " << entry.second << "\t" << entry.first
-                << "\n";
-  }
 
-  if(getenv("LAZYPO_ABLATE") != nullptr)
-  {
-    std::size_t n = 0;
-    for(auto &step : SSA_steps)
-    {
-      if(step.is_constraint() && ablate_constraint(id2string(step.comment)))
-      {
-        step.ignore = true;
-        ++n;
-      }
-    }
-    std::cerr << "ABLATE skipped " << n << " constraints matching \""
-              << getenv("LAZYPO_ABLATE") << "\"\n";
-  }
   const auto convert_SSA_start = std::chrono::steady_clock::now();
 
   convert_without_assertions(decision_procedure);
   convert_assertions(decision_procedure, !assertion_handles_only);
-
-  if(var_tally_on())
-    var_tally_print(decision_procedure);
 
   const auto convert_SSA_stop = std::chrono::steady_clock::now();
   std::chrono::duration<double> convert_SSA_runtime =
@@ -486,7 +380,6 @@ void symex_target_equationt::convert_assignments(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
-  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_assignment() && !step.ignore && !step.converted)
@@ -497,8 +390,6 @@ void symex_target_equationt::convert_assignments(
       });
 
       decision_procedure.set_to_true(step.cond_expr);
-      if(var_tally_on())
-        var_tally_add(decision_procedure, tally_before, "assign", step);
       step.converted = true;
       with_solver_hardness(
         decision_procedure, hardness_register_ssa(step_index, step));
@@ -532,7 +423,6 @@ void symex_target_equationt::convert_guards(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
-  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.ignore)
@@ -545,8 +435,6 @@ void symex_target_equationt::convert_guards(
       });
 
       step.guard_handle = decision_procedure.handle(step.guard);
-      if(var_tally_on())
-        var_tally_add(decision_procedure, tally_before, "guard", step);
       with_solver_hardness(
         decision_procedure, hardness_register_ssa(step_index, step));
     }
@@ -558,7 +446,6 @@ void symex_target_equationt::convert_assumptions(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
-  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_assume())
@@ -574,8 +461,6 @@ void symex_target_equationt::convert_assumptions(
           });
 
         step.cond_handle = decision_procedure.handle(step.cond_expr);
-        if(var_tally_on())
-          var_tally_add(decision_procedure, tally_before, "assume", step);
 
         with_solver_hardness(
           decision_procedure, hardness_register_ssa(step_index, step));
@@ -589,7 +474,6 @@ void symex_target_equationt::convert_goto_instructions(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
-  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
     if(step.is_goto())
@@ -605,8 +489,6 @@ void symex_target_equationt::convert_goto_instructions(
           });
 
         step.cond_handle = decision_procedure.handle(step.cond_expr);
-        if(var_tally_on())
-          var_tally_add(decision_procedure, tally_before, "goto", step);
         with_solver_hardness(
           decision_procedure, hardness_register_ssa(step_index, step));
       }
@@ -615,82 +497,32 @@ void symex_target_equationt::convert_goto_instructions(
   }
 }
 
-/// Vero se la costruzione modulare SAT Modulo SAT e attiva. Stesso switch
-/// letto da bmc_util e da solver_factory; qui serve solo a decidere in quale
-/// passo di conversione finiscono i vincoli di supporto della canonicalita,
-/// il che sotto SMS definisce il taglio master/slave e fuori da SMS e solo
-/// ordine di numerazione. Letto una volta: l ambiente non cambia in corsa.
-static bool lazypo_sms_modular()
-{
-  static const bool sms = getenv("LAZYPO_SMS") != nullptr;
-  return sms;
-}
-
 void symex_target_equationt::convert_constraints(
   decision_proceduret &decision_procedure)
 {
   std::size_t step_index = 0;
-  std::size_t tally_before = sat_variables(decision_procedure);
   for(auto &step : SSA_steps)
   {
+    // The canonicality constraints are left to convert_canonical_constraints.
+    // The windowed encoding's support structure ("por range", "por
+    // first-read") is converted here, next to the exec literals it depends
+    // on: the formula is the same either way, but the SAT variable numbering
+    // is not, and Glucose is sensitive to it.
     if(step.is_constraint() && !step.ignore && !step.converted
        && step.comment != "atomic_block_canonical"
        && step.comment != "abr"
        && step.comment != "abw"
        && step.comment != "lw canonical"
        && step.comment != "winr canonical"
-       // Mancavano: le catene NRP/LOW e i simboli OBS finivano nel passo base,
-       // cioe' nel modulo master. Misurato sul taglio della CNF: il 26% delle
-       // clausole POR stava dalla parte sbagliata (tri_longer +19040 su 74170,
-       // fib_unsafe-5 +69483 su 264336).
        && step.comment != "nrp canonical"
        && step.comment != "low canonical"
-       && step.comment != "obs canonical"
-       // La struttura di supporto dell encoding a finestre (i nodi del
-       // range-OR e la catena FR) va tenuta fuori da questo passo SOLO
-       // quando serve davvero, cioe sotto LAZYPO_SMS: li il taglio fra
-       // master e slave e definito da quale passo converte cosa, e senza
-       // queste due esclusioni il master cresceva di 33k variabili e 101k
-       // clausole rispetto all encoding plain (misurato su safestack
-       // --rounds 4 --unwind 3 --por).
-       //
-       // Fuori da SMS il passo non decide nulla di semantico -- la formula
-       // e la stessa in entrambi i casi -- ma decide la NUMERAZIONE delle
-       // variabili SAT, e Glucose ne risente parecchio. Convertire qui,
-       // accanto ai letterali exec da cui questi nodi dipendono, invece che
-       // nel secondo passo: vedi i numeri nel commit che introduce questa
-       // condizione. Quindi: se SMS non e attivo, non escluderli.
-       && (!lazypo_sms_modular() || (step.comment != "por range"
-                                     && step.comment != "por first-read")))
+       && step.comment != "obs canonical")
     {
       log.conditional_output(log.debug(), [&step](messaget::mstreamt &mstream) {
         step.output(mstream);
         mstream << messaget::eom;
       });
 
-      decision_procedure.set_to_true(step.cond_expr);
-      if(var_tally_on())
-        var_tally_add(decision_procedure, tally_before, "constraint", step);
-      step.converted = true;
-
-      with_solver_hardness(
-        decision_procedure, hardness_register_ssa(step_index, step));
-    }
-    ++step_index;
-  }
-}
-
-
-void symex_target_equationt::convert_concurrency_constraints(
-  decision_proceduret &decision_procedure)
-{
-  std::size_t step_index = 0;
-  for(auto &step : SSA_steps)
-  {
-    if(step.is_constraint() && !step.ignore && !step.converted
-       && (step.comment == "cs constraint"
-           || step.comment == "write constraint"))
-    {
       decision_procedure.set_to_true(step.cond_expr);
       step.converted = true;
 

@@ -2,8 +2,8 @@
 /// lazy_po: helpers shared by the lazy_po_*.cpp translation units. Internal
 /// to goto-symex; not part of lazy_po's interface.
 ///
-/// The functions are `inline`, not `static`: tag_stats() and
-/// por_symbol_registry() hold function-local statics, and with internal
+/// The functions are `inline`, not `static`: por_symbol_registry() holds a
+/// function-local static, and with internal
 /// linkage every translation unit would get its own copy -- the POR symbol
 /// registry the SAT backend reads would then miss every symbol registered
 /// outside the file that clears it.
@@ -41,30 +41,6 @@ inline uint64_t chain_key(std::size_t round, unsigned thread, unsigned label, un
   PRECONDITION(round < chain_key_round_max);
   return (uint64_t(round) << 52) | (uint64_t(thread) << 40) |
          (uint64_t(label) << 20) | uint64_t(num);
-}
-
-// ---------------------------------------------------------------------------
-// Diagnostica Fase 1 (LAZYPO_TAG_DEBUG): quantifica quanto della formula
-// nasce dalle catene dei tag (LW/WINR/NRP/LOW/OBS) e dai confronti bitvector
-// contro di esse. Puramente osservativa: non tocca i vincoli emessi.
-// ---------------------------------------------------------------------------
-struct tag_chain_statst
-{
-  std::size_t lw = 0, winr = 0, nrp = 0, low = 0, obs = 0;
-  std::size_t lw_bits = 0, winr_bits = 0, nrp_bits = 0, low_bits = 0,
-              obs_bits = 0;
-  // confronti emessi in create_ABR / create_ABW / create_OBS_symbol
-  std::size_t cmp_rel = 0, cmp_rel_bits = 0;   // <, >= contro costante
-  std::size_t cmp_neq = 0, cmp_neq_bits = 0;   // LW^r != LW^{r-1}
-  std::size_t cmp_eq = 0, cmp_eq_bits = 0;     // OBS: WINR == costante
-  // encoding a finestre
-  std::size_t range_nodes = 0, fr_nodes = 0, window_queries = 0;
-};
-
-inline tag_chain_statst &tag_stats()
-{
-  static tag_chain_statst s;
-  return s;
 }
 
 // Registry della provenance POR: i simboli ausiliari introdotti dalla

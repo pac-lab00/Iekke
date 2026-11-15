@@ -255,16 +255,9 @@ public:
 
   /// Converts only the canonical constraints (atomic_block_canonical, abr,
   /// abw, lw/winr canonical from lazy_po) into the given decision
-  /// procedure. Used to route these
-  /// constraints to a separate slave solver.
-  /// \param decision_procedure: the slave solver destination
+  /// procedure, after convert_constraints has skipped them.
+  /// \param decision_procedure: A handle to a decision procedure interface
   void convert_canonical_constraints(decision_proceduret &decision_procedure);
-
-  /// Converts only the round-robin concurrency constraints ("cs constraint",
-  /// "write constraint"). Used by the inverted SMS split to keep the
-  /// scheduling machinery in the master while the data encoding goes to the
-  /// slave.
-  void convert_concurrency_constraints(decision_proceduret &decision_procedure);
 
   /// Converts goto instructions: convert the expression representing the
   /// condition of this goto.

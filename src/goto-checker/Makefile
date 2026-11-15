@@ -1,5 +1,4 @@
 SRC = bmc_util.cpp \
-      cp2_probe.cpp \
       counterexample_beautification.cpp \
       cover_goals_report_util.cpp \
       incremental_goto_checker.cpp \

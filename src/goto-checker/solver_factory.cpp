@@ -218,7 +218,6 @@ make_satcheck_prop(message_handlert &message_handler, const optionst &options)
 
 #ifdef HAVE_GLUCOSE
 #include "solvers/sat/satcheck_glucose.h"
-#include "solvers/sat/satcheck_glucose_sms.h"
 #include "solvers/sat/satcheck_kissat.h"
 #endif
 
@@ -298,34 +297,16 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
         options.get_bool_option("deagle-icd") ||
         options.get_bool_option("deagle-segment"))))
   {
-    // SAT Modulo SAT (canonicality in a slave module) is a separate backend,
-    // opt-in with LAZYPO_SMS in the environment -- the same switch bmc_util
-    // keys off to route the canonicality clauses. Without it the plain
-    // in-process Glucose backend is used, which knows nothing about SMS.
-    const bool sms = getenv("LAZYPO_SMS") != nullptr;
-
     // Honour --no-sat-preprocessor here too: with the simplifier the freezing
     // that prop_conv_solvert applies to every symbol-bearing literal blocks most
     // of SatELite's work, so being able to switch it off is what makes that cost
     // measurable.
     if(options.get_bool_option("sat-preprocessor"))
-    {
-      if(sms)
-        solver->set_prop(make_satcheck_prop<satcheck_glucose_sms_simplifiert>(
-          message_handler, options));
-      else
-        solver->set_prop(make_satcheck_prop<satcheck_glucose_simplifiert>(
-          message_handler, options));
-    }
+      solver->set_prop(make_satcheck_prop<satcheck_glucose_simplifiert>(
+        message_handler, options));
     else
-    {
-      if(sms)
-        solver->set_prop(make_satcheck_prop<satcheck_glucose_sms_no_simplifiert>(
-          message_handler, options));
-      else
-        solver->set_prop(make_satcheck_prop<satcheck_glucose_no_simplifiert>(
-          message_handler, options));
-    }
+      solver->set_prop(make_satcheck_prop<satcheck_glucose_no_simplifiert>(
+        message_handler, options));
   }
   else
 #endif

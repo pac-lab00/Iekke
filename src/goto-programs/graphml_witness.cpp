@@ -229,18 +229,6 @@ std::string graphml_witnesst::convert_assign_rec(
   return result;
 }
 
-/// Whether the trace violates the data-race property.
-static bool is_datarace_trace(const goto_tracet &goto_trace)
-{
-  for(const auto &step : goto_trace.steps)
-    if(
-      step.type == goto_trace_stept::typet::ASSERT && !step.cond_value &&
-      (id2string(step.property_id).find("datarace") != std::string::npos ||
-       step.comment.find("datarace") != std::string::npos))
-      return true;
-  return false;
-}
-
 static bool is_create_binding(const goto_trace_stept &step)
 {
   const auto lhs_object =
@@ -269,26 +257,10 @@ static bool filter_out(
   if(unused_creations.count(it->step_nr))
     return true;
 
-  // LAZYPO_WITNESS_MINIMAL (option): a data-race witness with only the thread
-  // creations and the violation. Dartagnan turns consecutive edges into
-  // ordering constraints between the events on their lines; at its first loop
-  // unrolling the edges of later loop iterations can fall on the same events
-  // and contradict. Measured over the 222 data-race FALSE answers of the corpus
-  // (2026-11-04): 166 confirmed against 173 with every step (10 only minimal,
-  // 17 only with every step), so every step stays the default.
-  static const bool minimal = getenv("LAZYPO_WITNESS_MINIMAL") != nullptr;
-  if(minimal && is_datarace_trace(goto_trace))
-  {
-    const auto lhs_object =
-      it->is_assignment() ? it->get_lhs_object() : optionalt<symbol_exprt>{};
-    const bool creates =
-      lhs_object.has_value() &&
-      id2string(lhs_object->get_identifier()).find("pthread_create::thread") !=
-        std::string::npos;
-    const bool violation =
-      it->type == goto_trace_stept::typet::ASSERT && !it->cond_value;
-    return !creates && !violation;
-  }
+  // A data-race witness keeps every step. One with only the thread creations
+  // and the violation was measured over the 222 data-race FALSE answers of
+  // the corpus (2026-11-04): 166 confirmed by Dartagnan against 173 with
+  // every step.
 
   if(
     it->hidden &&

@@ -492,8 +492,7 @@ void lazy_pot::collect_reads_and_writes(
   // used to remove the events outright, which thinned the value flow as well
   // and cost a correct unreach-call answer when it applied everywhere; it now
   // only marks them race_exempt.
-  const bool pubfilter_enabled =
-    datarace && getenv("LAZYPO_NO_PUBFILTER") == nullptr;
+  const bool pubfilter_enabled = datarace;
 
   // The thread that allocated each dynamic object, read off malloc's own
   // model: it stores the fresh address into a CPROVER-internal global, and
@@ -596,18 +595,7 @@ void lazy_pot::collect_reads_and_writes(
   // filter -- it came from a pre-pthread_create write that cannot race with
   // anything -- and its real race was lost with the filter until the excused
   // accesses were kept in the value flow (see collect_reads_and_writes).
-  // Turn the filter off with LAZYPO_NO_PUBFILTER.
   const bool pubfilter_off = !pubfilter_enabled;
-  const bool pubfilter_debug = getenv("LAZYPO_PUBFILTER_DEBUG") != nullptr;
-  if(pubfilter_debug)
-  {
-    for(const auto &a : allocator)
-      std::cerr << "PUBFILTER " << a.first << " allocated by thread "
-                << a.second << "\n";
-    for(const auto &p : publication)
-      std::cerr << "PUBFILTER published " << p.first.first << " by thread "
-                << p.first.second << " at its ordinal " << p.second << "\n";
-  }
 
   const auto pre_publication_access =
     [&](const irep_idt &l1_id, std::size_t thread, std::size_t ordinal,
@@ -642,10 +630,6 @@ void lazy_pot::collect_reads_and_writes(
           return false;
       }
       const bool exempt = ordinal < pub->second && is_scalar_data(access_type);
-      if(exempt && pubfilter_debug)
-        std::cerr << "PUBFILTER exempt " << id2string(l1_id) << " thread "
-                  << thread << " ordinal " << ordinal << " < its pub "
-                  << pub->second << "\n";
       return exempt;
     };
 
@@ -731,13 +715,6 @@ void lazy_pot::collect_reads_and_writes(
     if(s_it->is_atomic_begin())
     {
       in_atomic_section[s_it->source.thread_nr] = true;
-      if(getenv("LAZYPO_ACCESS_DEBUG") && s_it->source.thread_nr == 1)
-      {
-        exprt g = s_it->guard;
-        simplify(g, ns);
-        std::cerr << "ATOMIC_BEGIN thread=1 guard_false=" << s_it->guard.is_false()
-                  << " simplified_false=" << g.is_false() << "\n";
-      }
       labels[s_it->source.thread_nr]++;
       // Was not reset here (unlike is_atomic_end below); every new
       // label needs num reset to 0, otherwise num grows unboundedly
@@ -786,9 +763,6 @@ void lazy_pot::collect_reads_and_writes(
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
-        if(getenv("LAZYPO_ACCESS_DEBUG"))
-          std::cerr << "ACCESS_DEBUG W " << s_it->source.thread_nr << " "
-                    << s_it->ssa_lhs.get_l1_object_identifier() << "\n";
         // Was: merged two non-atomic shared accesses into one block
         // whenever they shared source location AND guard -- which two
         // distinct accesses from the SAME GOTO instruction (the common
@@ -895,9 +869,6 @@ void lazy_pot::collect_reads_and_writes(
     }
     if(s_it->is_shared_read())
     {
-      if(getenv("LAZYPO_ACCESS_DEBUG") && can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
-        std::cerr << "ACCESS_DEBUG R " << s_it->source.thread_nr << " "
-                  << s_it->ssa_lhs.get_l1_object_identifier() << "\n";
       // TODO: this may be too restrictive
       if(can_cast_expr<symbol_exprt>(s_it->ssa_lhs))
       {
@@ -1030,18 +1001,6 @@ void lazy_pot::collect_reads_and_writes(
 
   threads_bits = 0 ? 0 : 32 - __builtin_clz(threads + 1);
   rounds_bits = 0 ? 0 : 32 - __builtin_clz(rounds + 1);
-
-  if(getenv("LAZYPO_ACCESS_DEBUG"))
-  {
-    unsigned total_labels = 0;
-    for(const auto &entry : labels)
-    {
-      std::cerr << "LABEL_COUNT thread=" << entry.first
-                << " labels=" << entry.second << "\n";
-      total_labels += entry.second;
-    }
-    std::cerr << "LABEL_COUNT total=" << total_labels << "\n";
-  }
 }
 
 void lazy_pot::annotate_round_robin_trace_event(

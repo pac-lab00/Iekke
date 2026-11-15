@@ -40,36 +40,6 @@
 
 void lazy_pot::compute_private_objects()
 {
-  // LAZYPO_THREAD_TALLY reports the classification itself, independently of
-  // whether the flag then acts on it: how many threads actually touch each
-  // shared object, against the per-program decision goto-symex made.
-  if(getenv("LAZYPO_THREAD_TALLY") != nullptr)
-  {
-    for(const auto &gv : global_variables)
-    {
-      std::set<unsigned> write_threads, read_threads, all;
-      std::size_t nw = 0, nr = 0;
-      if(writes.count(gv))
-        for(const auto &w : writes.at(gv))
-        {
-          write_threads.insert(w.thread);
-          ++nw;
-        }
-      if(reads.count(gv))
-        for(const auto &r : reads.at(gv))
-        {
-          read_threads.insert(r.thread);
-          ++nr;
-        }
-      all = write_threads;
-      all.insert(read_threads.begin(), read_threads.end());
-      std::cerr << "THREAD_TALLY " << gv << " threads=" << all.size()
-                << " write_threads=" << write_threads.size()
-                << " read_threads=" << read_threads.size() << " writes=" << nw
-                << " reads=" << nr << "\n";
-    }
-  }
-
   private_objects.clear();
   if(!thread_private)
     return;

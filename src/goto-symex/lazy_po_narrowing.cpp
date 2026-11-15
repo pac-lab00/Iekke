@@ -301,13 +301,11 @@ typet lazy_pot::narrowed_type(const irep_idt &variable, const typet &type) const
 /// A value enters the chain truncated to the round's width and every read is
 /// stated to fit the widest one (create_write_constraints), so the low bits
 /// the read constraints compare fix the whole value. Thread-local code keeps
-/// its full width. LAZYPO_NO_NARROW_VALUES turns this off.
+/// its full width.
 void lazy_pot::compute_value_narrowings(const symex_target_equationt &equation)
 {
   value_narrowings.clear();
   value_round_types.clear();
-  if(getenv("LAZYPO_NO_NARROW_VALUES") != nullptr)
-    return;
 
   struct intervalt
   {

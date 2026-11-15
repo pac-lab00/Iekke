@@ -13,8 +13,8 @@
 // side_effect_expr_nondett of pointer type yields a fresh abstract object, not
 // a points-to set containing the addresses the asm was given, so the write
 // through p lands somewhere unrelated and t1's assert(g==2) passes. Confirmed
-// with LAZYPO_ACCESS_DEBUG: g was correctly shared, but the write went to
-// p$object. Until that is modelled, refusing beats answering wrongly.
+// by listing the shared accesses: g was correctly shared, but the write went
+// to p$object. Until that is modelled, refusing beats answering wrongly.
 //
 // So this stays a guard in both directions. A verdict of any kind here means
 // the pointer case became analysable and must be rechecked; a SUCCESSFUL in

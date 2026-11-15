@@ -41,9 +41,6 @@
 void lazy_pot::create_write_constraints(
   symex_target_equationt &equation)
 {
-  if(getenv("LAZYPO_DEAD_AUDIT") != nullptr)
-    dead_audit(equation);
-
   // Both this chain and create_read_constraints, which runs straight after,
   // are built from it.
   compute_narrowings(equation);
@@ -461,57 +458,6 @@ void lazy_pot::create_cs_constraint(
 {
   std::set<irep_idt> hoisted_guards;
 
-  if(getenv("LAZYPO_GUARD_STATS") != nullptr)
-  {
-    const auto nodes = [](const exprt &e) {
-      std::size_t n = 0;
-      std::vector<const exprt *> st{&e};
-      while(!st.empty())
-      {
-        const exprt *cur = st.back();
-        st.pop_back();
-        ++n;
-        for(const auto &op : cur->operands())
-          st.push_back(&op);
-      }
-      return n;
-    };
-
-    std::size_t slots = 0, trivial = 0, tree = 0, biggest = 0;
-    std::unordered_set<std::size_t> distinct;
-    std::size_t distinct_tree = 0;
-    for(const auto &per_thread : guards)
-    {
-      for(const auto &per_label : per_thread.second)
-      {
-        for(const auto &g : per_label.second)
-        {
-          ++slots;
-          if(g.is_true() || g.is_false())
-          {
-            ++trivial;
-            continue;
-          }
-          const std::size_t n = nodes(g);
-          tree += n;
-          if(n > biggest)
-            biggest = n;
-          if(distinct.insert(g.hash()).second)
-            distinct_tree += n;
-        }
-      }
-    }
-    std::cerr << "GUARDS slots=" << slots << " trivial=" << trivial
-              << " distinct=" << distinct.size() << " rounds=" << rounds
-              << "\n";
-    std::cerr << "GUARDS nodes_over_slots=" << tree
-              << " nodes_over_distinct=" << distinct_tree
-              << " biggest=" << biggest << "\n";
-    // Each non-trivial guard is conjoined once per round, so this is what the
-    // constraint tree carries for guards before any sharing is accounted for.
-    std::cerr << "GUARDS tree_cost_in_cs=" << (tree * rounds) << "\n";
-  }
-
   for(unsigned thread = 0; thread <= threads; ++thread)
   {
     unsigned max_num = labels[thread];
@@ -645,10 +591,8 @@ void lazy_pot::create_cs_constraint(
         // GE(t,r-1,label) (i.e. cs^{r-1} >= label), needs to be added
         // here -- together they pin cs^{r-1} == label exactly as before.
         // An optional strengthening, not part of the definition of the
-        // schedule: gated so its ~10% of the encoding can be priced.
-        static const bool no_tighten =
-          getenv("LAZYPO_NO_CS_TIGHTEN") != nullptr;
-        if(label != 0 && round > 1 && !no_tighten)
+        // schedule (about 10% of the encoding).
+        if(label != 0 && round > 1)
         {
           exprt witness = false_exprt{};
           for(unsigned num = 0; num < nmax; ++num)

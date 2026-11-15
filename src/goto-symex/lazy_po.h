@@ -51,13 +51,9 @@ public:
 private:
   /// compute_round_bound on the events collect_reads_and_writes gathered
   round_boundt bound_from_events(std::size_t max_rounds) const;
-  /// the same on the events of the property cone (round_bound.h)
-  round_boundt cone_bound_from_events(std::size_t max_rounds) const;
   property_conet property_cone_events() const;
   std::vector<round_bound_eventt> round_bound_events() const;
   void create_empty_round_literals(symex_target_equationt &equation);
-  /// LAZYPO_FIXPOINT experiment: fill fixpoint_projection() (round_bound.h)
-  void collect_fixpoint_projection();
 
   const namespacet &ns;
   const std::size_t rounds;
@@ -218,7 +214,6 @@ private:
   std::unordered_map<irep_idt, std::vector<shared_event>> private_writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> private_reads;
 
-  void dead_audit(const symex_target_equationt &);
   /// One shared write to an array object, decomposed. A point update matches a
   /// read when its index agrees; a whole-array constant initialiser matches
   /// every index, which is also how it serves as the value before it.
@@ -258,7 +253,6 @@ private:
 
   void compute_private_objects();
   void create_private_constraints(symex_target_equationt &);
-  void schema_tally(const symex_target_equationt &) const;
 
   /// objects whose chain carries the index of the last write instead of its
   /// value (--index-chain); a read then selects its value by that index
@@ -278,12 +272,6 @@ private:
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;
   std::unordered_map<irep_idt, unsigned> bit_reads;
-  // memo delle catene: chiave = posizione (round, thread, label, num) impaccata
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> lw_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> winr_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> low_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> obs_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> nrp_variables;
   std::vector<shared_event> blocking_events;
   std::vector<shared_event> shared_events;
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
@@ -320,16 +308,6 @@ private:
     std::unordered_map<uint64_t, exprt> nodes[3];
   };
   std::unordered_map<irep_idt, tag_windowt> tag_windows;
-  // A/B switch during development: LAZYPO_TAG_BV=1 restores the original
-  // bitvector tag chains (create_LW_symbol & co.).
-  bool bv_tags = false;
-  // LAZYPO_TAG_XCHECK=1: emette entrambi gli encoding e asserisce che i
-  // testimoni ABR/ABW coincidano (validazione, non produzione).
-  bool xcheck_tags = false;
-  // coppie (finestre, bitvector) da asserire uguali; emesse a fine
-  // costruzione perche' handling_guards assume che ogni assert nella
-  // equazione abbia un blocking event corrispondente.
-  std::vector<std::pair<exprt, exprt>> xcheck_pairs;
 
   std::vector<cs> cs_vector;
   std::vector<ge> ge_vector;
@@ -450,14 +428,6 @@ private:
 
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
-  void create_lw_tot_symbol(symex_target_equationt &equation);
-
-  void create_winr_tot_symbol(symex_target_equationt &equation);
-
-  void create_low_tot_symbol(symex_target_equationt &equation);
-
-  void create_nrp_tot_symbol(symex_target_equationt &equation);
-
   void create_atomic_canonical(symex_target_equationt &equation);
 
   /// True when an access of \p b conflicts with an access of another
@@ -465,27 +435,6 @@ private:
   /// even when it is invisible to the read-from equivalence that justifies
   /// canonicality. See create_atomic_canonical.
   bool block_can_race(const atomic_block &b) const;
-
-  symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
-
-  symbol_exprt create_ABW(const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation);
-
-  symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
-  symex_target_equationt &equation);
-
-  symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation);
-
-  symbol_exprt create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation);
-
-  symbol_exprt create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation);
-
-  symbol_exprt create_OBS_symbol(irep_idt variable, const lazy_variable &w,
-    symex_target_equationt &equation);
-
-  exprt boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num);
 
   // --- window encoding helpers ---
   tag_windowt &tag_data(irep_idt variable);
@@ -530,9 +479,6 @@ private:
   void enumerate_accesses();
 
   std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
-
-  std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable, bool strict= false);
-
 
   void create_lazy_variable_read();
   void create_active_thread_statements(

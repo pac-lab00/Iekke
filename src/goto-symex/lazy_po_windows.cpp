@@ -142,8 +142,6 @@
 // is an over- or under-approximation, so the canonicality theorem's argument
 // carries over verbatim: create_ABR/create_ABW define the same boolean
 // functions of the exec variables as before.
-//
-// LAZYPO_TAG_BV=1 restores the bitvector path for A/B comparison.
 
 lazy_pot::tag_windowt &lazy_pot::tag_data(irep_idt variable)
 {
@@ -256,7 +254,6 @@ exprt lazy_pot::range_node(
     register_por_symbol(sym);
     equation.constraint(
       equal_exprt{sym, e}, "por range", equation.SSA_steps.begin()->source);
-    tag_stats().range_nodes++;
     result = sym;
   }
   tag_data(variable).nodes[kind].emplace((uint64_t(a) << 32) | uint64_t(b), result);
@@ -299,7 +296,6 @@ exprt lazy_pot::window_exec(
 
   exprt e = range_query(variable, kind, 0, ids.size(), lo, hi, equation);
   simplify(e, ns);
-  tag_stats().window_queries++;
   return e;
 }
 
@@ -339,7 +335,6 @@ void lazy_pot::build_first_read_chain(
       symbol_exprt sym{name, bool_typet{}};
       register_por_symbol(sym);
       equation.constraint(equal_exprt{sym, e}, "por first-read", src);
-      tag_stats().fr_nodes++;
       e = sym;
     }
     fr[k] = e;
@@ -395,7 +390,6 @@ void lazy_pot::build_obs_literals(
       symbol_exprt sym{obs_id, bool_typet{}};
       register_por_symbol(sym);
       equation.constraint(equal_exprt{sym, e}, "obs canonical", src);
-      tag_stats().obs++;
       obs.push_back(sym);
     }
   }

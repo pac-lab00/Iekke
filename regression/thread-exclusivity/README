@@ -5,9 +5,8 @@ Each adv_* program is constructed so that a naive version of the analysis
 would wrongly call a global thread-exclusive, which would let goto-symex
 constant-propagate it and silently miss the injected bug. Every one of them
 contains a real, reachable bug and must report VERIFICATION FAILED under
---rounds, and LAZYPO_EXCLUSIVITY_DEBUG=1 must show the variable being
-rejected (or the whole analysis bailing out). Each file's header comment
-states the expected verdict and the expected debug line.
+--rounds: the analysis has to reject the variable (or bail out entirely).
+Each file's header comment states the expected verdict.
 
 Root counting / spawn model
   adv_A_function_pointer      t2 writes g only through a function pointer

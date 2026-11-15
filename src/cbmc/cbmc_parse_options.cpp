@@ -1238,8 +1238,7 @@ static void infer_allocation_types(goto_modelt &goto_model, messaget &log)
                    << messaget::eom;
 }
 
-/// Split on a small choice (on by default; LAZYPO_NO_SPLIT_CHOICES turns it
-/// off). A local integer that receives a nondeterministic value
+/// Split on a small choice. A local integer that receives a nondeterministic value
 /// (`x = __VERIFIER_nondet_*()`) and from whose element, in an array of at most
 /// 16 elements, the rest then reads a pointer (`X[x]` or a member of it, of
 /// pointer type) is split by value. Only such a read can fan out: the pointer
@@ -1575,12 +1574,9 @@ bool cbmc_parse_optionst::process_goto_program(
                    << messaget::eom;
   }
 
-  if(getenv("LAZYPO_NO_SPLIT_CHOICES") == nullptr)
-  {
-    const std::size_t splits = split_small_choices(goto_model);
-    if(splits != 0)
-      log.status() << "split small choices: " << splits << messaget::eom;
-  }
+  const std::size_t splits = split_small_choices(goto_model);
+  if(splits != 0)
+    log.status() << "split small choices: " << splits << messaget::eom;
 
   // add failed symbols
   // needs to be done before pointer analysis

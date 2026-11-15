@@ -42,7 +42,6 @@ Author: Daniel Kroening, Peter Schrammel
 
 #include <solvers/decision_procedure.h>
 #include <solvers/flattening/boolbv.h>
-#include <solvers/sat/cnf.h>
 
 #include <cstdlib>
 
@@ -759,135 +758,24 @@ std::chrono::duration<double> prepare_property_decider(
     << property_decider.get_decision_procedure().decision_procedure_text()
     << messaget::eom;
 
-  // Marcatori per il test di separazione SMS. Le clausole vengono emesse in
-  // ordine di conversione, quindi questi tre punti tagliano la CNF in:
-  //   [0, m0]   base            -> modulo master
-  //   (m0, m1]  canonicalita'   -> modulo slave
-  //   (m1, m2]  goal            -> modulo master
-  // Se la separazione e' esatta, il segmento base sotto --por deve coincidere
-  // con quello dell'encoding plain: ogni clausola in piu' e' canonicalita'
-  // colata nel master.
-  // SAT Modulo SAT (opt-in con LAZYPO_SMS=1): la canonicalita' non entra nella
-  // formula del master ma in un modulo a parte, agganciato come teoria
-  // sull'interfaccia condivisa. Il master resta esattamente l'encoding plain --
-  // verificato clausola per clausola dai marcatori qui sotto.
-  const bool sms_modular = getenv("LAZYPO_SMS") != nullptr;
-
-  const auto cnf_mark = [&](const char *name) {
-    if(!sms_modular)
-      return;
-    auto *c = dynamic_cast<cnft *>(&property_decider.get_solver()->prop());
-    if(c != nullptr)
-      log.statistics() << "sms-mark " << name << ": vars " << c->no_variables()
-                       << " clauses " << c->no_clauses() << messaget::eom;
-  };
-  auto &prop_for_sms = property_decider.get_solver()->prop();
-
-  // Which half goes to the slave. By default the canonicality constraints do,
-  // leaving the master with the program encoding -- which makes the master
-  // carry essentially the whole problem and the slave almost nothing.
-  // LAZYPO_SMS_INVERT swaps them: the base encoding becomes the slave and the
-  // master keeps canonicality and the goal, so the master searches over the
-  // scheduling variables and the slave answers "is there data consistent with
-  // this schedule". The interface is the same set either way -- it is the
-  // variables occurring on both sides -- and it is small: 2.3% of variables on
-  // elimination_backoff_stack, 4.2% on fib_unsafe-12.
-  // Which constraint classes go to the slave. See the note on
-  // convert_datarace_assertion: `goal` always stays with the master.
-  std::string slave_spec;
-  if(const char *s = getenv("LAZYPO_SMS_SLAVE"))
-    slave_spec = s;
-  else if(const char *inv = getenv("LAZYPO_SMS_INVERT"))
-    slave_spec = (inv[0] != '\0' && atoi(inv) >= 2) ? "data" : "data,conc";
-  else
-    slave_spec = "canon";
-
-  const auto in_slave = [&slave_spec](const char *cls) {
-    return ("," + slave_spec + ",").find(std::string(",") + cls + ",") !=
-           std::string::npos;
-  };
-  const bool data_slave = sms_modular && in_slave("data");
-  const bool conc_slave = sms_modular && in_slave("conc");
-  const bool canon_slave = sms_modular && in_slave("canon");
-
-  if(sms_modular)
-    log.statistics() << "SMS: slave = {" << slave_spec << "}" << messaget::eom;
-
-  const auto redirect = [&](bool on) {
-    if(sms_modular)
-      prop_for_sms.set_clause_redirect(on);
-  };
-
-  // Order matters even though the formula does not: the sequence fixes SAT
-  // variable numbering, and Glucose is markedly sensitive to it (see the note
-  // in convert_constraints). Reordering unconditionally cost
-  // elimination_backoff_stack 264s -> timeout at 600s under plain monolithic
-  // solving. So a class is pre-converted only when the split actually
-  // separates it from the catch-all; otherwise everything keeps its original
-  // position.
-
-  // Concurrency only needs its own pass when it parts company with the data
-  // encoding.
-  if(conc_slave != data_slave)
-  {
-    redirect(conc_slave);
-    equation.convert_concurrency_constraints(
-      property_decider.get_decision_procedure());
-    redirect(false);
-  }
-
-  // The property must stay with the master. Under --datarace it is an assert
-  // inside the equation, so the catch-all would carry it off to the slave --
-  // but only if the data encoding is going there. Convert the goals early in
-  // that case: goal conversion marks those steps converted, so the catch-all
-  // leaves them where they belong. Asserting the property by hand instead was
-  // wrong in both directions at once -- it removed the property from the goal
-  // set and asserted it -- and produced 43 false alarms on no-data-race.
-  bool goals_converted_early = false;
-  if(data_slave)
-  {
-    property_decider.update_properties_goals_from_symex_target_equation(
-      properties);
-    property_decider.convert_goals();
-    goals_converted_early = true;
-  }
-
   // bv_pointerst reads config.bv_encoding.object_bits while flattening, so
   // sizing it here -- after symex, before conversion -- is what takes effect.
   size_object_bits(equation, log);
 
-  redirect(data_slave);
   convert_symex_target_equation(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
-  redirect(false);
 
-  cnf_mark("m0-base");
-
-  redirect(canon_slave);
   equation.convert_canonical_constraints(
     property_decider.get_decision_procedure());
-  redirect(false);
 
-  cnf_mark("m1-canonicalita");
-
-  if(!goals_converted_early)
-  {
-    property_decider.update_properties_goals_from_symex_target_equation(
-      properties);
-    property_decider.convert_goals();
-  }
-
-  cnf_mark("m2-goal");
+  property_decider.update_properties_goals_from_symex_target_equation(
+    properties);
+  property_decider.convert_goals();
 
   mark_por_variables(
     property_decider.get_decision_procedure(),
     property_decider.get_solver()->prop(),
     ui_message_handler);
-
-  // Tutte le clausole sono caricate: ora si puo' calcolare l'interfaccia
-  // (le variabili presenti in entrambi i moduli) e agganciare lo slave.
-  if(sms_modular)
-    prop_for_sms.finalize_modules();
 
   // __SZH_ADD_BEGIN__
   // This whole block references Deagle-family solver types that only exist

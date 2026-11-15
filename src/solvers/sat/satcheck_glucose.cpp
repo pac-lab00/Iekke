@@ -127,7 +127,11 @@ void satcheck_glucose_baset<T>::lcnf(const bvt &bv)
       }
     }
 
-    add_clause_to_solver(bv);
+    // Note the underscore.
+    // Add a clause to the solver without making a superfluous internal copy.
+    Glucose::vec<Glucose::Lit> c;
+    convert(bv, c);
+    solver->addClause_(c);
 
     if(solver_hardness)
     {
@@ -156,16 +160,6 @@ void satcheck_glucose_baset<T>::lcnf(const bvt &bv)
     status = statust::ERROR;
     throw std::bad_alloc();
   }
-}
-
-template <typename T>
-void satcheck_glucose_baset<T>::add_clause_to_solver(const bvt &bv)
-{
-  // Note the underscore.
-  // Add a clause to the solver without making a superfluous internal copy.
-  Glucose::vec<Glucose::Lit> c;
-  convert(bv, c);
-  solver->addClause_(c);
 }
 
 template <typename T>
@@ -207,11 +201,7 @@ propt::resultt satcheck_glucose_baset<T>::do_prop_solve()
         Glucose::vec<Glucose::Lit> solver_assumptions;
         convert(assumptions, solver_assumptions);
 
-        before_solve();
-
         const bool sat_result = solver->solve(solver_assumptions);
-
-        after_solve(sat_result);
 
         // Split the decision count by tier: the fallback figure is the evidence
         // that POR variables are reachable at all. If it stays zero while POR

@@ -246,7 +246,6 @@ renamedt<exprt, L2> try_evaluate_pointer_comparisons(
 // what removes the leftover branch of a split on a small choice
 // (split_small_choices in cbmc_parse_options.cpp): there the guard says
 // `0 <= j`, `j != 0`, ..., `j != 9`, so `j < 10` is false.
-// On by default; LAZYPO_NO_PATH_BOUNDS turns it off.
 namespace
 {
 /// The conjuncts of \p e (e itself if it is not a conjunction).
@@ -517,8 +516,7 @@ void goto_symext::symex_goto(statet &state)
     renamed_guard.simplify(ns);
   new_guard = renamed_guard.get();
 
-  static const bool path_bounds = getenv("LAZYPO_NO_PATH_BOUNDS") == nullptr;
-  if(path_bounds && !new_guard.is_constant())
+  if(!new_guard.is_constant())
   {
     const auto decided = decide_by_path_bounds(new_guard, state);
     if(decided)

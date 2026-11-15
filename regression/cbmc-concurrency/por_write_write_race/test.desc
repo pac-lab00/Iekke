@@ -39,5 +39,4 @@ reachability, where it is sound, so the reduction unreach-call benefits from
 is untouched.
 
 On the corpus this is `pthread-ext/semaphore-posix-race`, SUCCESSFUL with POR
-and FAILED without, worth -32 as a missed bug against +1 for finding it. The
-companion flag is LAZYPO_POR_RACE_EXEMPT (ww, wide, off) for the ablation.
+and FAILED without, worth -32 as a missed bug against +1 for finding it.

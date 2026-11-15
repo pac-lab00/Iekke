@@ -823,8 +823,6 @@ bool thread_exclusivity_analysist::root_spawned_at_most_once(
 
 std::unordered_set<irep_idt> thread_exclusivity_analysist::operator()()
 {
-  const bool debug = getenv("LAZYPO_EXCLUSIVITY_DEBUG") != nullptr;
-
   for(const auto &entry : goto_functions.function_map)
   {
     if(!entry.second.body_available())
@@ -832,9 +830,6 @@ std::unordered_set<irep_idt> thread_exclusivity_analysist::operator()()
     build_function_info(entry.first, entry.second.body);
     if(bailed)
     {
-      if(debug)
-        std::cerr << "EXCLUSIVITY bail: unsupported thread spawn in "
-                  << entry.first << "\n";
       return {};
     }
   }
@@ -842,22 +837,16 @@ std::unordered_set<irep_idt> thread_exclusivity_analysist::operator()()
   scan_instructions();
   if(bailed)
   {
-    if(debug)
-      std::cerr << "EXCLUSIVITY bail: unresolved indirect call\n";
     return {};
   }
 
   if(!collect_roots())
   {
-    if(debug)
-      std::cerr << "EXCLUSIVITY bail: no analysable thread entry points\n";
     return {};
   }
 
   if(infos.find(goto_functionst::entry_point()) == infos.end())
   {
-    if(debug)
-      std::cerr << "EXCLUSIVITY bail: no entry point body\n";
     return {};
   }
 
@@ -939,9 +928,6 @@ std::unordered_set<irep_idt> thread_exclusivity_analysist::operator()()
   {
     if(entry.second.size() != 1)
     {
-      if(debug)
-        std::cerr << "EXCLUSIVITY reject " << entry.first << ": "
-                  << entry.second.size() << " roots\n";
       continue;
     }
 
@@ -950,38 +936,15 @@ std::unordered_set<irep_idt> thread_exclusivity_analysist::operator()()
     {
       if(!root_dispatch_is_exclusive(root))
       {
-        if(debug)
-          std::cerr << "EXCLUSIVITY reject " << entry.first
-                    << ": dispatch of root " << root << " not exclusive\n";
         continue;
       }
       if(!root_spawned_at_most_once(root))
       {
-        if(debug)
-          std::cerr << "EXCLUSIVITY reject " << entry.first << ": root "
-                    << root << " may be spawned more than once\n";
         continue;
       }
     }
 
     result.insert(entry.first);
-  }
-
-  if(debug)
-  {
-    std::cerr << "EXCLUSIVITY roots=";
-    for(const auto &root : roots)
-      std::cerr << root << " ";
-    std::cerr << "\nEXCLUSIVITY infra=";
-    for(const auto &function_id : infra)
-      std::cerr << function_id << " ";
-    std::cerr << "\nEXCLUSIVITY prologue=";
-    for(const auto &function_id : prologue)
-      std::cerr << function_id << " ";
-    std::cerr << "\nEXCLUSIVITY exclusive=";
-    for(const auto &identifier : result)
-      std::cerr << identifier << " ";
-    std::cerr << "\nEXCLUSIVITY count=" << result.size() << "\n";
   }
 
   return result;

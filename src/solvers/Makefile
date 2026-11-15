@@ -31,7 +31,7 @@ ifneq ($(IPASIR),)
 endif
 
 ifneq ($(GLUCOSE),)
-  GLUCOSE_SRC=sat/satcheck_glucose.cpp sat/satcheck_glucose_sms.cpp
+  GLUCOSE_SRC=sat/satcheck_glucose.cpp
   GLUCOSE_INCLUDE=-I $(GLUCOSE)
   GLUCOSE_LIB=$(GLUCOSE)/simp/SimpSolver$(OBJEXT) $(GLUCOSE)/core/Solver$(OBJEXT)
   CP_CXXFLAGS += -DHAVE_GLUCOSE -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS

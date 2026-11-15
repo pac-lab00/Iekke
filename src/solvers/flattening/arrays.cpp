@@ -483,42 +483,6 @@ void arrayst::add_array_Ackermann_constraints()
   std::cout << "arrays.size(): " << arrays.size() << '\n';
 #endif
 
-  // CBMC_ARRAY_SIZES: the Ackermann constraints are |index set| squared per
-  // array term, so the cost is driven by two numbers that are otherwise only
-  // visible under #ifdef DEBUG -- how many array terms there are, and how
-  // large their index sets are. Worth having when a run spends minutes in
-  // finish_eager_conversion.
-  if(getenv("CBMC_ARRAY_SIZES") != nullptr)
-  {
-    std::size_t total = 0, biggest = 0, pairs = 0;
-    std::size_t consts = 0, nonconsts = 0, useful_pairs = 0;
-    for(std::size_t i = 0; i < arrays.size(); i++)
-    {
-      const index_sett &is = index_map[arrays.find_number(i)];
-      const std::size_t n = is.size();
-      total += n;
-      if(n > biggest)
-        biggest = n;
-      pairs += n * (n + 1) / 2;
-      std::size_t c = 0;
-      for(const auto &idx : is)
-        if(idx.is_constant())
-          ++c;
-      consts += c;
-      const std::size_t nc = n - c;
-      nonconsts += nc;
-      // pairs the loop does not skip: anything with a non-constant in it
-      useful_pairs += nc * c + nc * (nc + 1) / 2;
-    }
-    std::cerr << "ARRAY_SIZES terms=" << arrays.size()
-              << " total_index_entries=" << total
-              << " biggest_index_set=" << biggest
-              << " ackermann_pairs=" << pairs
-              << " constant_indices=" << consts
-              << " nonconstant_indices=" << nonconsts
-              << " pairs_not_skipped=" << useful_pairs << "\n";
-  }
-
   const std::unordered_set<std::size_t> defined = defined_by_equality();
 
   // iterate over arrays
