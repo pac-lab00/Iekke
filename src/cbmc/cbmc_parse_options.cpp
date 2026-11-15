@@ -317,9 +317,10 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     options.set_option(
       "rounds", cmdline.get_value("rounds"));
     if(!cmdline.isset("infer-rounds"))
-      log.status() << "Context bound: a SUCCESSFUL covers the schedules within "
-                   << cmdline.get_value("rounds")
-                   << " round(s); --infer-rounds computes a count that covers all"
+      log.status() << "Context bound: " << cmdline.get_value("rounds")
+                   << " round(s); a safe result covers only the schedules"
+                      " within them (--infer-rounds computes a count that"
+                      " covers all)"
                    << messaget::eom;
 
     // On by default with --rounds: over the full 1127-task set it is worth
