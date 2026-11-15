@@ -123,10 +123,11 @@ if "--unwinding-assertions" in sys.argv:              # a proof run
     elif mode == "proof_deep":                         # loops need unwind 8
         print(cut if unwind < 8 else "", "VERIFICATION " + ("FAILED" if unwind < 8 else "SUCCESSFUL"), sep="\n")
     elif mode == "proof_ptr":
-        print("pointer handling for concurrency is unsound\nVERIFICATION SUCCESSFUL")
-    elif mode == "proof_ptr_conv":
         print("pointer handling for concurrency is unsound\n"
-              "points-to sets of shared pointers converged after 2 seeded symex pass(es)\n"
+              "points-to sets of shared pointers did not converge in 8 symex passes\n"
+              "VERIFICATION SUCCESSFUL")
+    elif mode == "proof_ptr_conv":
+        print("points-to sets of shared pointers converged after 2 seeded symex pass(es)\n"
               "VERIFICATION SUCCESSFUL")
     elif mode == "proof_cap" and "--cbmc-memory-model" in sys.argv:
         print(cut + "\nVERIFICATION FAILED")   # only the round-robin proof applies

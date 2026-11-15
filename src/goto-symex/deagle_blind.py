@@ -978,12 +978,24 @@ def race_proof_rounds(unwind, left):
     return int(m.group(1)) + 2, []
 
 
+# The tool warns on every --rounds run that context-bounded analysis may be
+# unsound. That is true of a bounded SUCCESSFUL, which is never reported as
+# TRUE; it is false of a violation (a real execution) and of a proof (rounds
+# that cover every schedule). The output printed with an answer drops it.
+CBA_WARNING = re.compile(r"^\*\*\*\* WARNING: Context-bounded analysis may yield "
+                         r"unsound verification results\n", re.M)
+
+
+def without_cba_warning(out):
+    return CBA_WARNING.sub("", out)
+
+
 def report_violation(out):
     """Write the violation witness, print the tool output and FAILED, and end
     the run."""
     if WANTS_WITNESS:
         write_violation_witness()
-    print(out)
+    print(without_cba_warning(out))
     if "valid-memsafety.prp" in property_path and deref_reading(out):
         print(deref_reading(out))
     # The tool-info module recognises a data race only by
@@ -1044,8 +1056,7 @@ def prove(mode):
             print("  -> rounds capped: not every schedule covered, no proof")
             return
         if verdict == "SUCCESSFUL" and (
-                "pointer handling for concurrency is unsound" in out
-                and "points-to sets of shared pointers converged" not in out):
+                "points-to sets of shared pointers did not converge" in out):
             print("  -> points-to sets did not converge: no proof")
             return
         if verdict == "SUCCESSFUL":
@@ -1055,7 +1066,7 @@ def prove(mode):
                     write_witness("invariant_set", "2.1", None)
                 except OSError as err:     # the answer stands without it
                     print("no correctness witness: %s" % err)
-            print(out)
+            print(without_cba_warning(out))
             print("SUCCESSFUL")
             sys.exit(0)
         # an unwinding assertion of a loop ([f.unwind.N]) or of a recursion

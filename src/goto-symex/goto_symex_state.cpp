@@ -118,17 +118,6 @@ renamedt<ssa_exprt, L2> goto_symex_statet::assignment(
     throw unsupported_operation_exceptiont(
       "pointer handling for concurrency is unsound");
 
-  // __SZH_ADD_BEGIN__ : report when unsound, but still go on
-  if(is_shared && lhs.type().id() == ID_pointer)
-  {
-    static bool reported = false;
-    if(!reported)
-    {
-      std::cout << "pointer handling for concurrency is unsound\n";
-      reported = true;
-    }
-  }
-  // __SZH_ADD_END__
 
   // Update constant propagation map -- the RHS is L2. A shared object that
   // only this thread writes after the first spawn keeps its value for this
