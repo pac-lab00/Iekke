@@ -1008,6 +1008,7 @@ def prove(mode):
         if left <= MIN_SLICE:
             return
         unwind = unwind_options(raised)
+        prefix = ""
         if mode == "race":
             bound = race_proof_rounds(unwind, left)
             if bound is None:
@@ -1018,8 +1019,13 @@ def prove(mode):
                     return
                 continue
             extra = "--rounds %d --no-por " % rounds
-        cmd = "./iekke_exe %s %s%s%s--verbosity 8 --glucose" % (
-            program_path, PROOF_FLAGS, extra, unwind)
+            # the bug search showed the same unwinding race-free up to K
+            # rounds: pairs whose later access runs within K are not checked
+            if (unwind == "--unwind %d " % PROOF_UNWIND_START
+                    and 0 < safe_rounds.get(PROOF_UNWIND_START, 0) < rounds):
+                prefix = "LAZYPO_CHECK_AFTER=%d " % safe_rounds[PROOF_UNWIND_START]
+        cmd = "%s./iekke_exe %s %s%s%s--verbosity 8 --glucose" % (
+            prefix, program_path, PROOF_FLAGS, extra, unwind)
         print("proof try %s %s, all interleavings (%.0fs left)"
               % (mode, unwind.strip(), left))
         if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
@@ -1121,10 +1127,7 @@ for unwind, rounds, extra in bounds():
     por = "--por" if rounds >= POR_MIN_ROUNDS else "--no-por"
     cmd = ("./iekke_exe %s %s --unwind %d --rounds %d %s --verbosity 8 --glucose %s%s"
            % (program_path, flags, unwind, rounds, por, bound_flags, extra))
-    # Not for races: on safestack_relacy_racy the race search took 363 s
-    # instead of 102 s with K=2 (61 s with K=3), too erratic to rely on.
-    if (not extra and "no-data-race.prp" not in property_path
-            and 0 < safe_rounds.get(unwind, 0) < rounds):
+    if not extra and 0 < safe_rounds.get(unwind, 0) < rounds:
         cmd = "LAZYPO_CHECK_AFTER=%d %s" % (safe_rounds[unwind], cmd)
     print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"
           % (unwind, rounds, extra + " " if extra else "", slice_, left))

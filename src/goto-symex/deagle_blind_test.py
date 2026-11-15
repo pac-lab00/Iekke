@@ -355,10 +355,7 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
     # first bound of each unwinding checks everything
     plain = [a for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a
              and "--symmetric-instance" not in a and "--unwinding-assertions" not in a]
-    if prop == "no-data-race.prp":
-        if any("CHECK_AFTER" in a for a in plain):
-            bad.append("check after on a race property")
-    elif (len(plain) < 5 or "CHECK_AFTER=3" not in plain[4].split()
+    if (len(plain) < 5 or "CHECK_AFTER=3" not in plain[4].split()
             or any("CHECK_AFTER" in a for a in plain[:4])):
         bad.append("check after: %r" % [a.split()[-1] for a in plain[:5]])
     if len(run.args) < 10:

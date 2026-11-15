@@ -130,7 +130,32 @@ exprt lazy_pot::phase_1(symex_target_equationt &equation, irep_idt v) {
   return phase_1_symbl;
 }
 
+// LAZYPO_CHECK_AFTER=K (see handling_guards): a race whose later access
+// runs within the first K rounds lies in an execution prefix of K rounds,
+// already shown race-free at the same unwinding. The later access of a
+// race (phase 2: same round as the earlier one or the next) is therefore
+// encoded only for the rounds after K; rounds 1..K drop out of the formula.
+static std::size_t race_check_after()
+{
+  static const std::size_t k = [] {
+    const char *e = getenv("LAZYPO_CHECK_AFTER");
+    return e ? std::stoul(e) : std::size_t{0};
+  }();
+  return k;
+}
+
 exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
+  const std::size_t first_round =
+    race_check_after() < rounds ? race_check_after() + 1 : 1;
+  const auto exec_after = [this, &equation](
+    unsigned label, unsigned num, std::size_t thread, std::size_t from) -> exprt {
+    if(from == 1)
+      return create_exec_tot_symbol(equation, label, num, thread);
+    exprt::operandst execs;
+    for(std::size_t round = from; round <= rounds; ++round)
+      execs.push_back(create_exec_symbol(label, num, thread, round));
+    return disjunction(execs);
+  };
   irep_idt phase_2_name = as_string(v) + "_phase_2";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
@@ -163,7 +188,7 @@ exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
           and_exprt{
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
-              create_exec_tot_symbol(/*log,*/ equation, write.label, write.num, thread),
+              exec_after(write.label, write.num, thread, first_round),
               and_exprt{
                 equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})},
                 equal_exprt{create_dr_loc_symbol(2), typecast_exprt(write.where, size_type())}
@@ -172,7 +197,7 @@ exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
           };
 
         exprt exp2 = true_exprt{};
-        for (std::size_t round = 1; round <= rounds; round++) {
+        for (std::size_t round = first_round; round <= rounds; round++) {
           exprt enabled_exp = true_exprt{};
           if (write.label > 1) {
             enabled_exp = not_exprt{create_enabled_symbol(write.label-1,thread,round)};
@@ -212,7 +237,7 @@ exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
           and_exprt{
             equal_exprt{create_dr_thread_symbol(2), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
-              create_exec_tot_symbol(/*log,*/ equation, read.label, read.num, thread),
+              exec_after(read.label, read.num, thread, first_round),
               and_exprt{
                 equal_exprt{create_dr_atom_symbol(2), from_integer({atom}, bool_typet{})},
                 equal_exprt{create_dr_loc_symbol(2), typecast_exprt(read.where, size_type())}
@@ -221,7 +246,7 @@ exprt lazy_pot::phase_2(symex_target_equationt &equation, irep_idt v) {
           };
 
         exprt exp2 = true_exprt{};
-        for (std::size_t round = 1; round <= rounds; round++) {
+        for (std::size_t round = first_round; round <= rounds; round++) {
           exprt enabled_exp = true_exprt{};
           if (read.label > 1) {
             enabled_exp = not_exprt{create_enabled_symbol(read.label-1,thread,round)};
@@ -498,6 +523,17 @@ exprt lazy_pot::phase_1_swap(symex_target_equationt &equation, irep_idt v) {
 // dropped, since role 3 already covers the read side for this pairing;
 // a race needs at least one write, and role 3 = read here), using role 4.
 exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v) {
+  const std::size_t first_round =
+    race_check_after() < rounds ? race_check_after() + 1 : 1;
+  const auto exec_after = [this, &equation](
+    unsigned label, unsigned num, std::size_t thread, std::size_t from) -> exprt {
+    if(from == 1)
+      return create_exec_tot_symbol(equation, label, num, thread);
+    exprt::operandst execs;
+    for(std::size_t round = from; round <= rounds; ++round)
+      execs.push_back(create_exec_symbol(label, num, thread, round));
+    return disjunction(execs);
+  };
   irep_idt phase_2_name = as_string(v) + "_phase_2_swap";
   symbol_exprt phase_2_symbl{phase_2_name, bool_typet{}};
 
@@ -530,7 +566,7 @@ exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v) {
           and_exprt{
             equal_exprt{create_dr_thread_symbol(4), from_integer({thread}, unsignedbv_typet{threads_bits})},
             and_exprt{
-              create_exec_tot_symbol(/*log,*/ equation, write.label, write.num, thread),
+              exec_after(write.label, write.num, thread, first_round),
               and_exprt{
                 equal_exprt{create_dr_atom_symbol(4), from_integer({atom}, bool_typet{})},
                 equal_exprt{create_dr_loc_symbol(4), typecast_exprt(write.where, size_type())}
@@ -539,7 +575,7 @@ exprt lazy_pot::phase_2_swap(symex_target_equationt &equation, irep_idt v) {
           };
 
         exprt exp2 = true_exprt{};
-        for (std::size_t round = 1; round <= rounds; round++) {
+        for (std::size_t round = first_round; round <= rounds; round++) {
           exprt enabled_exp = true_exprt{};
           if (write.label > 1) {
             enabled_exp = not_exprt{create_enabled_symbol(write.label-1,thread,round)};
