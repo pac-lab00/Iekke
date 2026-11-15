@@ -767,7 +767,17 @@ void lazy_pot::handling_guards(
 
       exprt constraint = false_exprt{};
 
-      for(std::size_t round = 1; round <= rounds; round++)
+      // LAZYPO_CHECK_AFTER=K (experiment): the executions within K rounds
+      // were shown free of violations at the same unwinding, and an
+      // assertion reached within the first K rounds ends such an execution
+      // prefix, so it is checked only when it runs after round K.
+      static const std::size_t check_after = [] {
+        const char *k = getenv("LAZYPO_CHECK_AFTER");
+        return k ? std::stoul(k) : std::size_t{0};
+      }();
+      const std::size_t first_round =
+        it->is_assert() && check_after < rounds ? check_after + 1 : 1;
+      for(std::size_t round = first_round; round <= rounds; round++)
       {
         symbol_exprt enabled = create_enabled_symbol(
           blocking_event.label, blocking_event.thread, round);

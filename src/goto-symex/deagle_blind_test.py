@@ -33,6 +33,8 @@
 # seconds, cutting the running bound, and reports it; without one it goes on.
 # Case "stop cut": a bound running at DEAGLE_STOP may go on until
 # DEAGLE_STOP_CUT, and is cut there.
+# Case "flags" also checks that a bound with the same unwinding as an earlier
+# safe one checks only what runs after that one's rounds (LAZYPO_CHECK_AFTER).
 # Case "official": the output read the way SV-COMP's tool-info module reads
 # it (TRUE if "SUCCESSFUL" is on any line, else FALSE if "FAILED" is) must
 # give the wrapper's answer: a bug found after a safe bound is FALSE, and an
@@ -78,7 +80,9 @@ if "--static-race-check" in sys.argv:              # the race-freedom check
                                    else "UNKNOWN (fake)"))
     sys.exit(0)
 with open(os.path.join(here, "args"), "a") as f:
-    f.write(" ".join(sys.argv[1:]) + "\n")
+    f.write(" ".join(sys.argv[1:])
+            + (" CHECK_AFTER=" + os.environ["LAZYPO_CHECK_AFTER"]
+               if "LAZYPO_CHECK_AFTER" in os.environ else "") + "\n")
 calls = len([l for l in open(os.path.join(here, "args")).read().splitlines()
              if "--unwind-suggest" not in l])          # bounds, not the limit request
 def loop_unwind(loop):
@@ -345,6 +349,16 @@ for prop in ("no-data-race.prp", "valid-memsafety.prp"):
               and "--unwinding-assertions" not in a]
     if ladder[:5] != [(2, 2), (3, 4), (4, 3), (8, 3), (8, 4)]:
         bad.append("ladder starts %s" % ladder[:5])
+    # after (8, 3) is safe, (8, 4) checks only what runs after round 3; the
+    # first bound of each unwinding checks everything
+    plain = [a for a in run.args if "--unwind-suggest" not in a and "--unwindset" not in a
+             and "--symmetric-instance" not in a and "--unwinding-assertions" not in a]
+    if prop == "no-data-race.prp":
+        if any("CHECK_AFTER" in a for a in plain):
+            bad.append("check after on a race property")
+    elif (len(plain) < 5 or "CHECK_AFTER=3" not in plain[4].split()
+            or any("CHECK_AFTER" in a for a in plain[:4])):
+        bad.append("check after: %r" % [a.split()[-1] for a in plain[:5]])
     if len(run.args) < 10:
         print("FAIL flags %s: only %d bounds ran" % (prop, len(run.args)))
         ok = False

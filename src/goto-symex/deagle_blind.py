@@ -499,6 +499,12 @@ print("memory cap per bound: %s"
 
 started = time.time()
 bounded_safe = None
+# Rounds shown free of violations, per unwinding (plain bounds only): a later
+# bound with the same unwinding and more rounds checks only assertions and
+# races that run after them (LAZYPO_CHECK_AFTER, lazy_po). An assertion or a
+# race within the first K rounds ends an execution prefix of K rounds, which
+# the earlier bound already covered.
+safe_rounds = {}
 
 def bounds():
     """The bounds in the order they are tried. The loop limits are asked for
@@ -1109,6 +1115,11 @@ for unwind, rounds, extra in bounds():
     por = "--por" if rounds >= POR_MIN_ROUNDS else "--no-por"
     cmd = ("./iekke_exe %s %s --unwind %d --rounds %d %s --verbosity 8 --glucose %s%s"
            % (program_path, flags, unwind, rounds, por, bound_flags, extra))
+    # Not for races: on safestack_relacy_racy the race search took 363 s
+    # instead of 102 s with K=2 (61 s with K=3), too erratic to rely on.
+    if (not extra and "no-data-race.prp" not in property_path
+            and 0 < safe_rounds.get(unwind, 0) < rounds):
+        cmd = "LAZYPO_CHECK_AFTER=%d %s" % (safe_rounds[unwind], cmd)
     print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"
           % (unwind, rounds, extra + " " if extra else "", slice_, left))
     # Merged, not concatenated: the verdict is the last line of the run,
@@ -1184,6 +1195,8 @@ for unwind, rounds, extra in bounds():
     if (verdict == "SUCCESSFUL" and not vacuous
             and (not extra or extra.startswith("--unwindset"))):
         bounded_safe = out
+    if verdict == "SUCCESSFUL" and not extra:
+        safe_rounds[unwind] = max(safe_rounds.get(unwind, 0), rounds)
     # No verdict means a refusal or a crash at *this* bound -- most often
     # --object-bits exhaustion, which only the very large unwinds provoke. It
     # says nothing about a bound that is smaller on that axis and deeper on
