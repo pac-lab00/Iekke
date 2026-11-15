@@ -972,6 +972,25 @@ def race_proof_rounds(unwind, left):
     return int(m.group(1)) + 2, []
 
 
+def report_violation(out):
+    """Write the violation witness, print the tool output and FAILED, and end
+    the run."""
+    if WANTS_WITNESS:
+        write_violation_witness()
+    print(out)
+    if "valid-memsafety.prp" in property_path and deref_reading(out):
+        print(deref_reading(out))
+    # The tool-info module recognises a data race only by
+    # "nodatarace.assertion." on a FAILURE line; the tool prints
+    # "datarace: FAILURE", read as false(unreach-call). In the SV-COMP 2027
+    # pre-run none of 231 such answers was validated, while answers read
+    # as false(no-data-race) were.
+    if "no-data-race.prp" in property_path:
+        print("no-data-race: a data race, a nodatarace.assertion. FAILURE")
+    print("FAILED")
+    sys.exit(0)
+
+
 def prove(mode):
     """Proof runs at growing unwinds; returns only when no proof was found."""
     global current
@@ -1032,10 +1051,18 @@ def prove(mode):
             if not raise_loops(raised, cut_loops(out)):
                 return
             continue
+        if verdict == "FAILED" and mode == "memory-model":
+            # CBMC's encoding of all interleavings has no spurious violations
+            # outside data races (not proved this way): on the 1452
+            # expected-TRUE reach, overflow and memsafety tasks it reported
+            # none. A violation it finds lies within the unwinding, so it is
+            # a bug of the program, reported like one from the bug search.
+            print("  -> violation in a proof run")
+            report_violation(out)
         if verdict == "FAILED":
-            # Not reported: FALSE answers come from the bug search, whose
-            # encoding and witnesses are validated; the encoding without
-            # rounds reports violations on race-free programs.
+            # Not reported: the round-robin proof runs prove race freedom or
+            # take over from a failed memory-model run; their violations
+            # are left to the bug search.
             print("  -> violation in a proof run: no answer from it")
             return
         # a refusal (unsound pointer handling, unsupported feature): no proof
@@ -1135,22 +1162,9 @@ for unwind, rounds, extra in bounds():
                        "FAILED": "violation at this bound"}.get(verdict, "no verdict"))
 
     if verdict == "FAILED":
-        if WANTS_WITNESS:
-            if rounds > SHORT_ROUNDS and "no-data-race.prp" in property_path:
-                shorter_witness(cmd, rounds)
-            write_violation_witness()
-        print(out)
-        if "valid-memsafety.prp" in property_path and deref_reading(out):
-            print(deref_reading(out))
-        # The tool-info module recognises a data race only by
-        # "nodatarace.assertion." on a FAILURE line; the tool prints
-        # "datarace: FAILURE", read as false(unreach-call). In the SV-COMP 2027
-        # pre-run none of 231 such answers was validated, while answers read
-        # as false(no-data-race) were.
-        if "no-data-race.prp" in property_path:
-            print("no-data-race: a data race, a nodatarace.assertion. FAILURE")
-        print("FAILED")
-        sys.exit(0)
+        if WANTS_WITNESS and rounds > SHORT_ROUNDS and "no-data-race.prp" in property_path:
+            shorter_witness(cmd, rounds)
+        report_violation(out)
     # For unreach-call a SUCCESSFUL from a bound that generated no verification
     # condition and cut a loop reached no reach_error() call at all: every path
     # to one was cut by the unwinding, typically a setup loop longer than the

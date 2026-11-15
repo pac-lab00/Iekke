@@ -565,7 +565,10 @@ for mode, prop, env, want in (
         ("proof_ptr", "unreach-call.prp", {}, "unknown"),
         ("proof_ptr_conv", "unreach-call.prp", {}, "true"),
         ("proof_cap", "unreach-call.prp", {}, "unknown"),
-        ("proof_bug", "unreach-call.prp", {}, "unknown"),
+        # a violation in a proof run without rounds is a bug (FALSE); in a
+        # round-robin proof run (races) it gives no answer
+        ("proof_bug", "unreach-call.prp", {}, "false"),
+        ("proof_bug", "no-data-race.prp", {}, "unknown"),
         ("proof_ok", "valid-memsafety.prp", {}, "true"),
         ("race_static", "no-data-race.prp", {}, "true"),
         ("race_static", "unreach-call.prp", {}, "unknown")):
