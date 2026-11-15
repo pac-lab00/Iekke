@@ -1052,8 +1052,14 @@ def prove(mode):
             print(out)
             print("SUCCESSFUL")
             sys.exit(0)
-        if verdict == "FAILED" and failed and all(".unwind." in l for l in failed):
-            print("  -> not fully unrolled: %s" % " ".join(cut_loops(out)))
+        # an unwinding assertion of a loop ([f.unwind.N]) or of a recursion
+        # ([f.recursion]) says the program was cut, not that it has a bug
+        cut_only = failed and all(
+            ".unwind." in l or ".recursion]" in l for l in failed)
+        if verdict == "FAILED" and cut_only:
+            print("  -> not fully unrolled: %s" % " ".join(
+                cut_loops(out) + (["recursion"] if any(
+                    ".recursion]" in l for l in failed) else [])))
             if not raise_loops(raised, cut_loops(out)):
                 return
             continue

@@ -133,6 +133,8 @@ if "--unwinding-assertions" in sys.argv:              # a proof run
     elif mode == "proof_cap":
         print(("Infer rounds: static round bound 64 (the --max-rounds cap)\n" if "--infer-rounds" in sys.argv else "")
               + "VERIFICATION SUCCESSFUL")
+    elif mode == "proof_recursion":                    # recursion not fully unrolled
+        print("[f.recursion] line 5 recursion unwinding assertion: FAILURE\nVERIFICATION FAILED")
     elif mode == "proof_bug":
         print("[main.assertion.1] line 7 assertion: FAILURE\nVERIFICATION FAILED")
     else:
@@ -583,6 +585,8 @@ for mode, prop, env, want in (
         # round-robin proof run (races) it gives no answer
         ("proof_bug", "unreach-call.prp", {}, "false"),
         ("proof_bug", "no-data-race.prp", {}, "unknown"),
+        # a recursion cut by the unwinding is not a bug (libvsync hmcslock)
+        ("proof_recursion", "unreach-call.prp", {}, "unknown"),
         ("proof_ok", "valid-memsafety.prp", {}, "true"),
         ("race_static", "no-data-race.prp", {}, "true"),
         ("race_static", "unreach-call.prp", {}, "unknown")):
