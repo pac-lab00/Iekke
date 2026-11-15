@@ -1,6 +1,5 @@
 #! /usr/bin/python3
-# SV-COMP wrapper for Iekke. Every decision depends on the property and on
-# the program text; none on the name of the task.
+# SV-COMP wrapper for Iekke.
 #
 # Bug search. A ladder of (unwind, rounds) bounds, the same for every program,
 # is tried in order under the time budget. A violation found at any bound is
