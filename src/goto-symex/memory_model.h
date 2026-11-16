@@ -47,6 +47,12 @@ public:
 
   bool enable_datarace;
   void data_race(symex_target_equationt &equation);
+  void add_adjacency(
+    symex_target_equationt &equation,
+    const symbol_exprt &adj,
+    event_it x,
+    event_it y,
+    const event_listt &shared_events);
   exprt array_find_index(symex_target_equationt &equation, event_it event);
   // __SZH_ADD_END__
 
