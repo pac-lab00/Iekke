@@ -776,10 +776,15 @@ PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
 # solvers are not used for proofs: they are not trusted to be sound.
 ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
 MEMORY_MODEL_PROOF_FLAGS = "--cbmc-memory-model "
-# Not for races: without rounds --datarace ignores locks and reports races on
-# race-free programs, so it would prove nothing.
-PROOF_MODES = (["race"] if "no-data-race.prp" in property_path
+# For data races the encoding of all interleavings counts two accesses as a
+# race when they can be adjacent in some interleaving. It proves small
+# lock-based programs quickly but grows with the number of access pairs, so
+# it gets a short budget before the round-robin proof; a race it reports is
+# not reported (no witness is written for it), the round-robin proof follows.
+RACE = "no-data-race.prp" in property_path
+PROOF_MODES = (["memory-model", "race"] if RACE
                else ["memory-model", "rounds"])
+RACE_MEMORY_MODEL_BUDGET = 180.0
 MAX_PROOF_ROUNDS = 64
 
 
@@ -884,8 +889,12 @@ def prove(mode):
     extra = (MEMORY_MODEL_PROOF_FLAGS if mode == "memory-model"
              else ROUNDS_PROOF_FLAGS)
     raised = {}   # loop -> unwinding, for the loops raised above the start
+    mode_started = time.time()
     while True:
         left = BUDGET - (time.time() - started) - GUARD_RESERVE
+        if RACE and mode == "memory-model":
+            left = min(left, RACE_MEMORY_MODEL_BUDGET
+                       - (time.time() - mode_started))
         if left <= MIN_SLICE:
             return
         unwind = unwind_options(raised)
@@ -949,9 +958,12 @@ def prove(mode):
             if not raise_loops(raised, cut_loops(out)):
                 return
             continue
+        if verdict == "FAILED" and mode == "memory-model" and RACE:
+            print("  -> a race in the encoding of all interleavings")
+            return
         if verdict == "FAILED" and mode == "memory-model":
             # CBMC's encoding of all interleavings is exact within the
-            # unwinding (data races are not proved this way), so a violation
+            # unwinding, so a violation
             # it finds is a bug of the program, reported like one from the
             # bug search.
             print("  -> violation in a proof run")

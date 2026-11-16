@@ -598,9 +598,14 @@ for mode, prop, env, want in (
                if re.search(r"main\.0:(\d+)", a)
                else int(a.split()[a.split().index("--unwind") + 1]) for a in proofs]
     bad = got != want
+    # races: the encoding of all interleavings first, then round-robin proofs
+    # at the round count that covers every schedule
+    rr = [a for a in proofs if "--cbmc-memory-model" not in a.split()]
     if prop == "no-data-race.prp" and (
-            any("--rounds 7 --no-por" not in a for a in proofs)
-            or (mode in ("proof_race_cap", "race_static")) != (not proofs)):
+            any("--rounds 7 --no-por" not in a for a in rr)
+            or (mode in ("proof_race_cap", "race_static") and rr)
+            or (proofs and mode != "race_static"
+                and "--cbmc-memory-model" not in proofs[0].split())):
         bad = True
     # only the loop that was cut is unwound further, one iteration at a time,
     # and every other loop stays at the start
