@@ -5,55 +5,39 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from benchexec.tools.sv_benchmarks_util import get_data_model_from_task, ILP32, LP64
-import benchexec.result as result
 import benchexec.tools.template
+from benchexec import result
+from benchexec.tools.sv_benchmarks_util import ILP32, LP64, get_data_model_from_task
 
 
 class Tool(benchexec.tools.template.BaseTool2):
     """
-    Tool info for Deagle, an SMT-based concurrent program verification tool.
+    Tool info for iekke, a SAT-based concurrent program verification tool.
     """
 
     def version(self, executable):
         return self._version_from_tool(executable, arg="--version")
 
     def executable(self, tool_locator):
-        exe = tool_locator.find_executable("deagle")
-        self.ver = self.version(exe)
+        exe = tool_locator.find_executable("iekke")
         return exe
 
     def name(self):
-        return "Deagle"
+        return "iekke"
 
     def project_url(self):
-        return "https://github.com/thufv/Deagle"
-
-    def version_geq(self, version_str1, version_str2):
-        version1 = version_str1.split(".")
-        version2 = version_str2.split(".")
-        for i in range(len(version1)):
-            if int(version1[i]) > int(version2[i]):
-                return True
-            if int(version1[i]) < int(version2[i]):
-                return False
-        return True
+        return "https://github.com/pac-lab00/Iekke"
 
     def cmdline(self, executable, options, task, rlimits):
         data_model_param = get_data_model_from_task(task, {ILP32: "--32", LP64: "--64"})
         if not data_model_param:
             data_model_param = "--32"
-        if self.version_geq(self.ver, "2.2"):
-            return (
-                [executable]
-                + [task.property_file]
-                + [task.single_input_file]
-                + [data_model_param]
-            )
-        else:
-            if data_model_param not in options:
-                options += [data_model_param]
-            return [executable] + options + [task.single_input_file]
+        return (
+            [executable]
+            + [task.property_file]
+            + [task.single_input_file]
+            + [data_model_param]
+        )
 
     def determine_result(self, run):
         if run.output.any_line_contains("SUCCESSFUL"):

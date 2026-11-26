@@ -1,4 +1,4 @@
-# Iekke V1.0
+# Iekke V2.0
 
 ## Introduction
 Iekke is SAT-based concurrent program verification tool. It is built on top of Deagle (front-end) and MiniSAT-2.2.1 (back-end). The basic idea of Iekke is to simulate sequentialization using partial order constraints, establishing a number of rounds.
