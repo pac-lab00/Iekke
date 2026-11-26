@@ -1,9 +1,10 @@
 #!/bin/bash
-
-./iekke_exe examples/lazy01.i --allow-pointer-unsoundness --graphml-witness error-witness.graphml  --unwind 2 --rounds 1 --verbosity 8 --minisat
-
-./iekke_exe examples/queue.i --allow-pointer-unsoundness --graphml-witness error-witness.graphml  --unwind 2 --rounds 2 --verbosity 8 --minisat
-
-./iekke_exe examples/singleton.i --allow-pointer-unsoundness --graphml-witness error-witness.graphml  --unwind 2 --rounds 3 --verbosity 8 --minisat
-
-exit 0
+# Runs the wrapper on the bundled examples; each run must end with a verdict line.
+cd "$(dirname "$0")"
+fail=0
+for f in examples/*.i; do
+  v=$(DEAGLE_BUDGET=60 ./iekke examples/unreach-call.prp "$f" --32 2>&1 | grep -v '^\s*$' | tail -1)
+  echo "$f: $v"
+  case "$v" in SUCCESSFUL|FAILED) ;; *) fail=1;; esac
+done
+exit $fail
