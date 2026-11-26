@@ -1,0 +1,18 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Narrowing is sound only because nothing observes the bits it drops, so the
+analysis bails on any use of a shared object outside a byte_extract or
+byte_update. Here the mutex is copied whole into `snapshot`, which is exactly
+such a use.
+
+The bail is observable: this program produces 24071 variables and 83845 clauses
+both with narrowing on and with --no-narrow-shared, i.e. the narrowed path
+leaves it completely alone, whereas narrow_shared_mutex -- the same program
+without the copy -- drops from 63131 clauses to 26427.

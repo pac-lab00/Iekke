@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --little-endian --unwind 5
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A byte update at a non-constant offset into an array of non-constant size
+used to move the bytes of the element it did not update and to write the
+update value into the following element as well.

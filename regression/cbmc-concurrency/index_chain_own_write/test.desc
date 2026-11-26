@@ -1,0 +1,15 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 3 --index-chain --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^index chain: [1-9][0-9]* of
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+The read of x is decoded by index over the writes it can see: index 0 (the
+value before the first write), the writes of other threads, and the reading
+thread's own earlier writes. Verified by mutation: leaving the reading thread's
+own earlier writes out of that set leaves the read unconstrained when the chain
+holds main's write, and this test then reports VERIFICATION FAILED.

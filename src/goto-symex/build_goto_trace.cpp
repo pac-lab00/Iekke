@@ -12,6 +12,11 @@ Author: Daniel Kroening
 /// Traces of GOTO Programs
 
 #include "build_goto_trace.h"
+#include <cstdlib>
+#include <iostream>
+#include <set>
+#include <util/prefix.h>
+#include <util/cprover_prefix.h>
 
 #include <util/arith_tools.h>
 #include <util/byte_operators.h>
@@ -252,6 +257,122 @@ void build_goto_trace(
 
   ssa_step_iteratort last_step_to_keep = target.SSA_steps.end();
   bool last_step_was_kept = false;
+  ssa_step_iteratort deferred_last_step = target.SSA_steps.end();
+
+  // The two accesses the datarace constraint blamed. The encoding names them
+  // per event, so they can be identified exactly instead of inferred; without
+  // this they never reach the trace, because a shared access only carries the
+  // clock, and a race witnessed on the read side leaves no edge at all.
+  std::set<const SSA_stept *> blamed_accesses;
+  for(const auto &step : target.SSA_steps)
+  {
+    if(!(step.is_shared_read() || step.is_shared_write()))
+      continue;
+    if(!can_cast_expr<symbol_exprt>(step.ssa_lhs))
+      continue;
+    const std::string v =
+      id2string(step.ssa_lhs.get_l1_object_identifier());
+    const std::string suffix = "_T" + std::to_string(step.round_robin_thread) +
+                               "_L" + std::to_string(step.round_robin_label) +
+                               "_N" + std::to_string(step.round_robin_num);
+    for(const std::string &role :
+        {std::string("_phase_1"), std::string("_phase_2_w"),
+         std::string("_phase_2_r"), std::string("_phase_1_swap"),
+         std::string("_phase_2_swap_w")})
+    {
+      const symbol_exprt candidate(v + role + suffix, bool_typet());
+      if(decision_procedure.get(candidate).is_true())
+      {
+        blamed_accesses.insert(&step);
+        break;
+      }
+    }
+  }
+  // Only the race constraint that failed ties its phase symbols down; those
+  // of other accesses are free and the solver may leave some true. A race is
+  // two accesses of one object from different threads, one of them a write:
+  // drop blamed accesses of objects with no such pair, or the witness takes
+  // a lone access for the race.
+  {
+    std::map<irep_idt, std::vector<const SSA_stept *>> by_object;
+    for(const auto *step : blamed_accesses)
+      by_object[step->ssa_lhs.get_l1_object_identifier()].push_back(step);
+    for(const auto &object : by_object)
+    {
+      bool pair = false;
+      for(const auto *a : object.second)
+        for(const auto *b : object.second)
+          if(
+            a->round_robin_thread != b->round_robin_thread &&
+            (a->is_shared_write() || b->is_shared_write()))
+          {
+            pair = true;
+          }
+      if(!pair)
+        for(const auto *step : object.second)
+          blamed_accesses.erase(step);
+    }
+  }
+  // Phase symbols of accesses outside the pairing that failed are left free,
+  // so the set above can hold accesses of several objects, and of the
+  // pairing that did not fail. The race is the pairing whose conjunction
+  // holds (lazy_pot::handling_datarace: phases, same_round and no_interf, or
+  // their _swap versions), on an object whose two phases hold for it; of that
+  // object, the first access in each of the two roles. Only those two stay:
+  // on thread-join-counter-outer-race-4 the witness otherwise paired the read
+  // of `data` with a write of `threads_alive` in another thread.
+  {
+    const auto holds = [&](const std::string &name) {
+      return decision_procedure.get(symbol_exprt(name, bool_typet())).is_true();
+    };
+    const bool normal =
+      holds("phases") && holds("same_round") && holds("no_interf");
+    const bool swap = !normal && holds("phases_swap") &&
+                      holds("same_round_swap") && holds("no_interf_swap");
+    if(normal || swap)
+    {
+      const std::string pairing = normal ? "" : "_swap";
+      const std::vector<std::string> first_roles =
+        normal ? std::vector<std::string>{"_phase_1"}
+               : std::vector<std::string>{"_phase_1_swap"};
+      const std::vector<std::string> second_roles =
+        normal ? std::vector<std::string>{"_phase_2_w", "_phase_2_r"}
+               : std::vector<std::string>{"_phase_2_swap_w"};
+      std::map<irep_idt, std::pair<const SSA_stept *, const SSA_stept *>>
+        by_object;
+      const SSA_stept *race_first = nullptr, *race_second = nullptr;
+      for(const auto &step : target.SSA_steps)
+      {
+        if(blamed_accesses.count(&step) == 0)
+          continue;
+        const irep_idt object = step.ssa_lhs.get_l1_object_identifier();
+        const std::string v = id2string(object);
+        if(!holds(v + "_phase_1" + pairing) || !holds(v + "_phase_2" + pairing))
+          continue;
+        const std::string suffix =
+          "_T" + std::to_string(step.round_robin_thread) + "_L" +
+          std::to_string(step.round_robin_label) + "_N" +
+          std::to_string(step.round_robin_num);
+        auto &found = by_object[object];
+        for(const auto &role : first_roles)
+          if(found.first == nullptr && holds(v + role + suffix))
+            found.first = &step;
+        for(const auto &role : second_roles)
+          if(found.second == nullptr && holds(v + role + suffix))
+            found.second = &step;
+        if(
+          found.first != nullptr && found.second != nullptr &&
+          found.first->round_robin_thread != found.second->round_robin_thread)
+        {
+          race_first = found.first;
+          race_second = found.second;
+          break;
+        }
+      }
+      if(race_first != nullptr)
+        blamed_accesses = {race_first, race_second};
+    }
+  }
 
   // First sort the SSA steps by time, in the process dropping steps
   // we definitely don't want to retain in the final trace:
@@ -278,8 +399,9 @@ void build_goto_trace(
     if(!SSA_step.round_robin_exec_symbols.empty() && !has_round_robin_time)
       continue;
 
-    if(it->is_constraint() ||
-       it->is_spawn())
+    // A spawn is a step of the trace: a YAML witness registers the thread
+    // it starts at the point of the schedule where it happens.
+    if(it->is_constraint())
       continue;
     else if(it->is_atomic_begin())
     {
@@ -352,6 +474,15 @@ void build_goto_trace(
         }
       }
 
+      // Keep the accesses that constitute the race, so the witness actually
+      // exhibits it. Every other shared access stays out, as before.
+      if(
+        (it->is_shared_read() || it->is_shared_write()) &&
+        blamed_accesses.count(&*it) != 0)
+      {
+        time_map[current_time].push_back(it);
+      }
+
       continue;
     }
 
@@ -368,6 +499,18 @@ void build_goto_trace(
     if(it == last_step_to_keep)
     {
       last_step_was_kept = true;
+
+      // A property assert that carries no scheduling symbols belongs to no
+      // thread and no round; the clock it would inherit here is simply
+      // whatever the last shared access left behind. Since the output loop
+      // stops at this step, letting it sort mid-schedule truncates the
+      // counterexample -- for a data race, typically before the second
+      // thread appears at all. Defer it and append it after everything.
+      if(SSA_step.round_robin_exec_symbols.empty())
+      {
+        deferred_last_step = it;
+        continue;
+      }
     }
 
     if(has_round_robin_time)
@@ -380,6 +523,38 @@ void build_goto_trace(
     last_step_to_keep == target.SSA_steps.end() || last_step_was_kept,
     "last step in SSA trace to keep must not be filtered out as a sync "
     "instruction, not-taken branch, PHI node, or similar");
+
+  // Fold away any leftover atomic-section placeholder slots. A negative key
+  // is the temporary slot atomic_begin creates by negating current_time; it
+  // normally disappears when the section ends, but if the equation finishes
+  // inside one, both the gathered steps and anything placed at current_time
+  // afterwards keep it. Since real event keys are large positives, such a
+  // step would sort ahead of the whole trace -- and because the output loop
+  // stops at last_step_to_keep, a violation assert stranded there truncates
+  // the trace to nothing.
+  {
+    std::vector<mp_integer> negative_keys;
+    for(const auto &entry : time_map)
+      if(entry.first < 0)
+        negative_keys.push_back(entry.first);
+
+    for(const auto &key : negative_keys)
+    {
+      auto moved = time_map.find(key);
+      INVARIANT(moved != time_map.end(), "key just collected must exist");
+      std::vector<ssa_step_iteratort> &target_slot = time_map[-key];
+      target_slot.insert(
+        target_slot.end(), moved->second.begin(), moved->second.end());
+      time_map.erase(moved);
+    }
+  }
+
+  if(deferred_last_step != target.SSA_steps.end())
+  {
+    const mp_integer after_everything =
+      time_map.empty() ? mp_integer(0) : time_map.rbegin()->first + 1;
+    time_map[after_everything].push_back(deferred_last_step);
+  }
 
   // Now build the GOTO trace, ordered by time, then by SSA trace order.
 
@@ -410,6 +585,12 @@ void build_goto_trace(
       goto_trace_step.io_id = SSA_step.io_id;
       goto_trace_step.formatted = SSA_step.formatted;
       goto_trace_step.called_function = SSA_step.called_function;
+      if(SSA_step.is_spawn())
+      {
+        goto_trace_step.spawned_thread_nr =
+          static_cast<unsigned>(SSA_step.spawned_thread_nr);
+        goto_trace_step.spawn_call_location = SSA_step.spawn_call_location;
+      }
       goto_trace_step.function_arguments = SSA_step.converted_function_arguments;
 
       for(auto &arg : goto_trace_step.function_arguments)

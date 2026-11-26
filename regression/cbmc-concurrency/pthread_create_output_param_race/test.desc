@@ -1,0 +1,29 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+`handling_datarace`'s write-side event collection excludes any write whose
+containing function name starts with "pthread" (`is_pthread`), so that
+`pthread_mutex_lock`/`_unlock`/`_init`'s own internal bookkeeping fields
+(owner/count/recursive) are never misreported as user data races. The filter
+was too broad: it also excluded `pthread_create`'s write to its own
+thread-ID *output parameter* -- memory the caller supplied, not library
+state. A thread reading that thread-ID global with no synchronisation at
+all was reported race-free.
+
+This program has exactly that race: one thread's `pthread_create` writes the
+global `tid`, another thread reads it via `pthread_join(tid, ...)` with no
+lock anywhere. Before the fix: SUCCESSFUL (the write was invisible to the
+race encoding). After: FAILED.
+
+This is also the root cause behind `per-thread-array-join-counter-race{,-2,
+-3,-4}` on the corpus answering wrong/unknown -- `tids[i]` is written only
+through `pthread_create`. Fixing this alone does not flip those four: a
+second, separate bug (asymmetric read-offset computation when the array
+index is read as a function-call argument, e.g. `pthread_join(tids[i], ...)`)
+still hides the race there. See project memory for that part.

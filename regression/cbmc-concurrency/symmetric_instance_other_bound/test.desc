@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 4 --rounds 2 --no-por --allow-pointer-unsoundness --symmetric-instance 2
+^EXIT=6$
+^SIGNAL=0$
+no family could be instantiated
+--
+symmetric arrays: instantiating
+--
+A loop over the first three of six slots does not reach every slot alike, and
+its bound 3 is not the family size, so the reduction would leave it at 3 and
+run past a two-slot array. The family is refused.

@@ -1,0 +1,9 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+--
+Stores to a[i].s.f and a[j].s.g are different locations: no data race; the carried bases of the member chain emit no read events. Fails on a binary without the fix.

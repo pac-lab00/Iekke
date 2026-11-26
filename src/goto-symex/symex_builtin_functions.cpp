@@ -60,6 +60,8 @@ void goto_symext::symex_allocate(
 
   exprt size = to_binary_expr(code).op0();
   optionalt<typet> object_type;
+  // the object is an array of elements of a known type, n * sizeof(T) bytes
+  bool counted_in_elements = false;
   auto function_symbol = outer_symbol_table.lookup(state.source.function_id);
   INVARIANT(function_symbol, "function associated with allocation not found");
   const irep_idt &mode = function_symbol->mode;
@@ -108,6 +110,15 @@ void goto_symext::symex_allocate(
               *c_sizeof_type_rec(to_mult_expr(tmp_size).op1()) == *tmp_type);
 
           object_type = array_typet(*tmp_type, s);
+          // s counts elements only when the constant factor is the element
+          // size itself. n * 2 * sizeof(T) folds to n * (2 * sizeof(T)),
+          // still tagged sizeof(T): that is 2n elements, and the type above
+          // is too small -- which an array of symbolic size tolerates, but an
+          // array bounded by --dynamic-array-bound would not.
+          const exprt &factor = to_mult_expr(tmp_size).op0().is_constant()
+                                  ? to_mult_expr(tmp_size).op0()
+                                  : to_mult_expr(tmp_size).op1();
+          counted_in_elements = numeric_cast<mp_integer>(factor) == elem_size;
         }
         else if(alloc_size.has_value())
         {
@@ -120,6 +131,22 @@ void goto_symext::symex_allocate(
             if(elements * (*elem_size) == *alloc_size)
               object_type =
                 array_typet(*tmp_type, from_integer(elements, tmp_size.type()));
+            else if(symex_config.infer_alloc_types && elements >= 1)
+            {
+              // --infer-alloc-types: a T followed by the bytes left over.
+              // The ldv-linux tasks allocate their structs with LP64 sizes
+              // under ILP32, so every block is larger than its type. As
+              // bytes, the whole block has one points-to entry: each pointer
+              // stored in any member is read back from every member.
+              struct_typet::componentst components;
+              components.emplace_back("object", *tmp_type);
+              components.emplace_back(
+                "tail",
+                array_typet(
+                  unsigned_char_type(),
+                  from_integer(*alloc_size - *elem_size, tmp_size.type())));
+              object_type = struct_typet(std::move(components));
+            }
           }
         }
       }
@@ -130,6 +157,30 @@ void goto_symext::symex_allocate(
 
     // we introduce a fresh symbol for the size
     // to prevent any issues of the size getting ever changed
+
+    if(
+      object_type->id() == ID_array &&
+      !to_array_type(*object_type).size().is_constant() &&
+      counted_in_elements && symex_config.dynamic_array_bound != 0)
+    {
+      // --dynamic-array-bound K: K elements instead of n, so the array has a
+      // constant size and field sensitivity splits it into scalars. An
+      // execution where the program asks for more than K elements is cut, as
+      // an unwinding assumption cuts a loop (--unwinding-assertions is
+      // refused with this option: an allocation step carries no property).
+      // In a spawned thread the assumption stalls that thread only, as an
+      // unwinding assumption inside it would; the others run on.
+      // The array has K elements, not n: accesses between n and K are not out
+      // of bounds, so this is not for memory safety.
+      exprt &array_size = to_array_type(*object_type).size();
+      const binary_relation_exprt within{
+        array_size,
+        ID_le,
+        from_integer(symex_config.dynamic_array_bound, array_size.type())};
+      symex_assume_l2(state, within);
+      array_size =
+        from_integer(symex_config.dynamic_array_bound, array_size.type());
+    }
 
     if(
       object_type->id() == ID_array &&

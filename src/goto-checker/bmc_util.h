@@ -34,6 +34,17 @@ class symex_target_equationt;
 struct trace_optionst;
 class ui_message_handlert;
 
+class propt;
+
+/// Classify the SAT variables that the partial-order reduction introduced, so
+/// that a backend supporting decision tiers can keep them out of the ordinary
+/// branching heuristic. No-op when nothing was recorded or when the backend
+/// ignores the classification.
+void mark_por_variables(
+  decision_proceduret &decision_procedure,
+  propt &prop,
+  message_handlert &message_handler);
+
 void convert_symex_target_equation(
   symex_target_equationt &equation,
   decision_proceduret &decision_procedure,
@@ -61,6 +72,10 @@ void output_error_trace(
   ui_message_handlert &);
 
 void output_graphml(const goto_tracet &, const namespacet &, const optionst &);
+void output_yaml_witness(
+  const goto_tracet &,
+  const namespacet &,
+  const optionst &);
 void output_graphml(
   const symex_target_equationt &,
   const namespacet &,
@@ -89,6 +104,24 @@ void slice(
 void postprocess_equation(
   symex_bmct &symex,
   symex_target_equationt &equation,
+  const optionst &options,
+  const namespacet &ns,
+  ui_message_handlert &ui_message_handler);
+
+/// Apply the round-robin (lazy_po) encoding with `rounds` rounds, and with
+/// the empty-round literals --infer-rounds assumes (goto-symex/round_bound.h).
+void apply_lazy_po(
+  symex_target_equationt &equation,
+  const optionst &options,
+  const namespacet &ns,
+  ui_message_handlert &ui_message_handler,
+  std::size_t rounds,
+  bool empty_round_literals);
+
+/// --infer-rounds: compute the round bound B of `equation` (left untouched)
+/// into infer_rounds_bound() / infer_rounds_bound_is_static().
+void infer_rounds_prepare(
+  const symex_target_equationt &equation,
   const optionst &options,
   const namespacet &ns,
   ui_message_handlert &ui_message_handler);
@@ -179,7 +212,10 @@ void run_property_decider(
   "(show-points-to-sets)" \
   "(slice-formula)" \
   "(rounds):" \
+  "(thread-creation-bound):" \
   "(por)" \
+  "(glucose)" \
+  "(kissat)" \
   "(unwinding-assertions)" \
   "(no-unwinding-assertions)" \
   "(mm-strict-guard)" \
@@ -194,9 +230,15 @@ void run_property_decider(
   "(max-field-sensitivity-array-size):" \
   "(no-array-field-sensitivity)" \
   "(graphml-witness):" \
+  "(yaml-witness):" \
+  "(yaml-witness-values)" \
   "(symex-complexity-limit):" \
   "(symex-complexity-failed-child-loops-limit):" \
   "(incremental-loop):" \
+  "(infer-rounds)" \
+  "(max-rounds):" \
+  "(infer-rounds-first):" \
+  "(infer-rounds-direct):" \
   "(unwind-min):" \
   "(unwind-max):" \
   "(ignore-properties-before-unwind-min)" \
@@ -226,8 +268,30 @@ void run_property_decider(
   " --rounds {unr}               activate Round Robin concurrency encoding with \n" \
   "                              {unr} rounds\n"   \
   " --por                        activate Partial Order Reduction when --round \n" \
+  " --thread-creation-bound k    unwind a loop whose body does nothing but\n" \
+  "                              pthread_create (or pthread_join) over a\n" \
+  "                              thread-handle array at most k times, leaving\n" \
+  "                              it without the usual infeasibility\n" \
+  "                              assumption, so a program that spawns N\n" \
+  "                              threads is explored with k of them created.\n" \
+  "                              A counterexample found this way is real; the\n" \
+  "                              absence of one only means no violation with\n" \
+  "                              k threads. 0 disables (default 2)\n" \
   "                              is given\n"   \
   HELP_UNWINDSET \
+  " --infer-rounds               choose the number of rounds instead of\n" \
+  "                              taking --rounds: build the formula once\n" \
+  "                              with the static round bound, then try\n" \
+  "                              1, 2, ... rounds by assumptions, stopping\n" \
+  "                              at the first violation or when no\n" \
+  "                              canonical schedule needs another round\n" \
+  "                              (needs partial-order reduction)\n" \
+  " --max-rounds N               cap of --infer-rounds (default 25); above\n" \
+  "                              it a SUCCESSFUL is bounded\n" \
+  " --infer-rounds-direct N      --infer-rounds: when the round bound B is at\n" \
+  "                              most N (default 6), build one formula with B\n" \
+  "                              rounds; otherwise first a block of\n" \
+  " --infer-rounds-first N       rounds (default 3), then B\n" \
   " --incremental-loop L         check properties after each unwinding\n" \
   "                              of loop L\n" \
   "                              (use --show-loops to get the loop IDs)\n" \
@@ -257,6 +321,11 @@ void run_property_decider(
   "                              complexity violations before the loop\n" \
   "                              gets blacklisted\n" \
   " --graphml-witness filename   write the witness in GraphML format to filename\n" /* NOLINT(*) */ \
+ " --yaml-witness filename      write the content of a YAML violation witness\n" /* NOLINT(*) */ \
+ "                              (sv-witnesses 2.2) to filename\n" /* NOLINT(*) */ \
+  " --yaml-witness-values       with --yaml-witness, the values read from\n" /* NOLINT(*) */ \
+  "                              __VERIFIER_nondet_* functions as\n" /* NOLINT(*) */ \
+  "                              function_return waypoints\n" /* NOLINT(*) */ \
   " --symex-cache-dereferences   enable caching of repeated dereferences" \
 // clang-format on
 

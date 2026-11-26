@@ -18,6 +18,10 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/pointer_expr.h>
 #include <util/pointer_offset_size.h>
 #include <util/pointer_predicates.h>
+#include <util/replace_expr.h>
+
+#include <solvers/prop/bdd_expr.h>
+#include <solvers/prop/literal_expr.h>
 
 /// Map bytes according to the configured endianness. The key difference to
 /// endianness_mapt is that bv_endianness_mapt is aware of the bit-level
@@ -391,6 +395,13 @@ bvt bv_pointerst::convert_pointer_type(const exprt &expr)
   {
     return SUB::convert_if(to_if_expr(expr));
   }
+  else if(expr.id() == ID_let)
+  {
+    // The byte-update lowering binds an update value once by a let, which can
+    // stand at a pointer-typed member of the struct it rebuilds. Falling
+    // through to conversion_failed gave such a member free bits.
+    return SUB::convert_let(to_let_expr(expr));
+  }
   else if(expr.id()==ID_index)
   {
     return SUB::convert_index(to_index_expr(expr));
@@ -624,11 +635,6 @@ bvt bv_pointerst::convert_bitvector(const exprt &expr)
     const exprt same_object = ::same_object(minus_expr.lhs(), minus_expr.rhs());
     const literalt same_object_lit = convert(same_object);
 
-    // compute the object size (again, possibly using cached results)
-    const exprt object_size = ::object_size(minus_expr.lhs());
-    const bvt object_size_bv =
-      bv_utils.zero_extension(convert_bv(object_size), width);
-
     bvt bv = prop.new_variables(width);
 
     if(!same_object_lit.is_false())
@@ -638,26 +644,10 @@ bvt bv_pointerst::convert_bitvector(const exprt &expr)
       const bvt lhs_offset =
         bv_utils.sign_extension(offset_literals(lhs, lhs_pt), width);
 
-      const literalt lhs_in_bounds = prop.land(
-        !bv_utils.sign_bit(lhs_offset),
-        bv_utils.rel(
-          lhs_offset,
-          ID_le,
-          object_size_bv,
-          bv_utilst::representationt::UNSIGNED));
-
       const pointer_typet &rhs_pt = to_pointer_type(minus_expr.rhs().type());
       const bvt &rhs = convert_bv(minus_expr.rhs());
       const bvt rhs_offset =
         bv_utils.sign_extension(offset_literals(rhs, rhs_pt), width);
-
-      const literalt rhs_in_bounds = prop.land(
-        !bv_utils.sign_bit(rhs_offset),
-        bv_utils.rel(
-          rhs_offset,
-          ID_le,
-          object_size_bv,
-          bv_utilst::representationt::UNSIGNED));
 
       bvt difference = bv_utils.sub(lhs_offset, rhs_offset);
 
@@ -678,9 +668,39 @@ bvt bv_pointerst::convert_bitvector(const exprt &expr)
         }
       }
 
+      // test for null object (integer constants)
+      const exprt null_object = ::null_object(minus_expr.lhs());
+      literalt in_bounds = convert(null_object);
+
+      if(!in_bounds.is_true())
+      {
+        // compute the object size (again, possibly using cached results)
+        const exprt object_size = ::object_size(minus_expr.lhs());
+        const bvt object_size_bv =
+          bv_utils.zero_extension(convert_bv(object_size), width);
+
+        const literalt lhs_in_bounds = prop.land(
+          !bv_utils.sign_bit(lhs_offset),
+          bv_utils.rel(
+            lhs_offset,
+            ID_le,
+            object_size_bv,
+            bv_utilst::representationt::UNSIGNED));
+
+        const literalt rhs_in_bounds = prop.land(
+          !bv_utils.sign_bit(rhs_offset),
+          bv_utils.rel(
+            rhs_offset,
+            ID_le,
+            object_size_bv,
+            bv_utilst::representationt::UNSIGNED));
+
+        in_bounds =
+          prop.lor(in_bounds, prop.land(lhs_in_bounds, rhs_in_bounds));
+      }
+
       prop.l_set_to_true(prop.limplies(
-        prop.land(same_object_lit, prop.land(lhs_in_bounds, rhs_in_bounds)),
-        bv_utils.equal(difference, bv)));
+        prop.land(same_object_lit, in_bounds), bv_utils.equal(difference, bv)));
     }
 
     return bv;
@@ -732,7 +752,7 @@ bvt bv_pointerst::convert_bitvector(const exprt &expr)
     to_typecast_expr(expr).op().type().id() == ID_pointer)
   {
     // pointer to int
-    bvt op0 = convert_pointer_type(to_typecast_expr(expr).op());
+    bvt op0 = convert_bv(to_typecast_expr(expr).op());
 
     // squeeze it in!
     std::size_t width=boolbv_width(expr.type());
@@ -888,100 +908,112 @@ bvt bv_pointerst::add_addr(const exprt &expr)
   return encode(a, type);
 }
 
-void bv_pointerst::do_postponed(
-  const postponedt &postponed)
+std::pair<exprt, exprt> bv_pointerst::prepare_postponed_is_dynamic_object(
+  std::vector<symbol_exprt> &placeholders) const
 {
-  if(postponed.expr.id() == ID_is_dynamic_object)
+  PRECONDITION(placeholders.empty());
+
+  const auto &objects = pointer_logic.objects;
+  std::size_t number = 0;
+
+  exprt::operandst dynamic_objects_ops, not_dynamic_objects_ops;
+  dynamic_objects_ops.reserve(objects.size());
+  not_dynamic_objects_ops.reserve(objects.size());
+
+  for(auto it = objects.cbegin(); it != objects.cend(); ++it, ++number)
   {
-    const auto &type =
-      to_pointer_type(to_unary_expr(postponed.expr).op().type());
-    const auto &objects = pointer_logic.objects;
-    std::size_t number=0;
+    const exprt &expr = *it;
 
-    for(auto it = objects.cbegin(); it != objects.cend(); ++it, ++number)
+    // only compare object part
+    pointer_typet pt = pointer_type(expr.type());
+    bvt bv = object_literals(encode(number, pt), pt);
+
+    exprt::operandst conjuncts;
+    conjuncts.reserve(bv.size());
+    placeholders.reserve(bv.size());
+    for(std::size_t i = 0; i < bv.size(); ++i)
     {
-      const exprt &expr=*it;
+      if(placeholders.size() <= i)
+        placeholders.push_back(symbol_exprt{std::to_string(i), bool_typet{}});
 
-      bool is_dynamic=pointer_logic.is_dynamic_object(expr);
-
-      // only compare object part
-      pointer_typet pt = pointer_type(expr.type());
-      bvt bv = object_literals(encode(number, pt), type);
-
-      bvt saved_bv = object_literals(postponed.op, type);
-
-      POSTCONDITION(bv.size()==saved_bv.size());
-      PRECONDITION(postponed.bv.size()==1);
-
-      literalt l1=bv_utils.equal(bv, saved_bv);
-      literalt l2=postponed.bv.front();
-
-      if(!is_dynamic)
-        l2=!l2;
-
-      prop.l_set_to_true(prop.limplies(l1, l2));
+      POSTCONDITION(bv[i].is_constant());
+      if(bv[i].is_true())
+        conjuncts.emplace_back(placeholders[i]);
+      else
+        conjuncts.emplace_back(not_exprt{placeholders[i]});
     }
+
+    if(pointer_logic.is_dynamic_object(expr))
+      dynamic_objects_ops.push_back(conjunction(conjuncts));
+    else
+      not_dynamic_objects_ops.push_back(conjunction(conjuncts));
   }
-  else if(
-    const auto postponed_object_size =
-      expr_try_dynamic_cast<object_size_exprt>(postponed.expr))
+
+  exprt dynamic_objects = disjunction(dynamic_objects_ops);
+  exprt not_dynamic_objects = disjunction(not_dynamic_objects_ops);
+
+  bdd_exprt bdd_converter;
+  bddt dyn_bdd = bdd_converter.from_expr(dynamic_objects);
+  bddt not_dyn_bdd = bdd_converter.from_expr(not_dynamic_objects);
+
+  return {bdd_converter.as_expr(dyn_bdd), bdd_converter.as_expr(not_dyn_bdd)};
+}
+
+std::unordered_map<exprt, exprt, irep_hash>
+bv_pointerst::prepare_postponed_object_size(
+  std::vector<symbol_exprt> &placeholders) const
+{
+  PRECONDITION(placeholders.empty());
+
+  const auto &objects = pointer_logic.objects;
+  std::size_t number = 0;
+
+  std::unordered_map<exprt, exprt::operandst, irep_hash> per_size_object_ops;
+
+  for(auto it = objects.cbegin(); it != objects.cend(); ++it, ++number)
   {
-    const auto &type = to_pointer_type(postponed_object_size->pointer().type());
-    const auto &objects = pointer_logic.objects;
-    std::size_t number=0;
+    const exprt &expr = *it;
 
-    for(auto it = objects.cbegin(); it != objects.cend(); ++it, ++number)
+    if(expr.id() != ID_symbol && expr.id() != ID_string_constant)
+      continue;
+
+    const auto size_expr = size_of_expr(expr.type(), ns);
+    if(!size_expr.has_value())
+      continue;
+
+    // only compare object part
+    pointer_typet pt = pointer_type(expr.type());
+    bvt bv = object_literals(encode(number, pt), pt);
+
+    exprt::operandst conjuncts;
+    conjuncts.reserve(bv.size());
+    placeholders.reserve(bv.size());
+    for(std::size_t i = 0; i < bv.size(); ++i)
     {
-      const exprt &expr=*it;
+      if(placeholders.size() <= i)
+        placeholders.push_back(symbol_exprt{std::to_string(i), bool_typet{}});
 
-      if(expr.id() != ID_symbol && expr.id() != ID_string_constant)
-        continue;
-
-      const auto size_expr = size_of_expr(expr.type(), ns);
-
-      if(!size_expr.has_value())
-        continue;
-
-      const exprt object_size = typecast_exprt::conditional_cast(
-        size_expr.value(), postponed_object_size->type());
-
-      // only compare object part
-      pointer_typet pt = pointer_type(expr.type());
-      bvt bv = object_literals(encode(number, pt), type);
-
-      bvt saved_bv = object_literals(postponed.op, type);
-
-      bvt size_bv = convert_bv(object_size);
-
-      POSTCONDITION(bv.size()==saved_bv.size());
-      PRECONDITION(postponed.bv.size()>=1);
-      PRECONDITION(size_bv.size() == postponed.bv.size());
-
-      literalt l1=bv_utils.equal(bv, saved_bv);
-      if(l1.is_true())
-      {
-        for(std::size_t i = 0; i < postponed.bv.size(); ++i)
-          prop.set_equal(postponed.bv[i], size_bv[i]);
-        break;
-      }
-      else if(l1.is_false())
-        continue;
-#define COMPACT_OBJECT_SIZE_EQ
-#ifndef COMPACT_OBJECT_SIZE_EQ
-      literalt l2=bv_utils.equal(postponed.bv, size_bv);
-
-      prop.l_set_to_true(prop.limplies(l1, l2));
-#else
-      for(std::size_t i = 0; i < postponed.bv.size(); ++i)
-      {
-        prop.lcnf({!l1, !postponed.bv[i], size_bv[i]});
-        prop.lcnf({!l1, postponed.bv[i], !size_bv[i]});
-      }
-#endif
+      POSTCONDITION(bv[i].is_constant());
+      if(bv[i].is_true())
+        conjuncts.emplace_back(placeholders[i]);
+      else
+        conjuncts.emplace_back(not_exprt{placeholders[i]});
     }
+
+    per_size_object_ops[size_expr.value()].push_back(conjunction(conjuncts));
   }
-  else
-    UNREACHABLE;
+
+  std::unordered_map<exprt, exprt, irep_hash> result;
+  for(const auto &size_entry : per_size_object_ops)
+  {
+    exprt all_objects_this_size = disjunction(size_entry.second);
+    bdd_exprt bdd_converter;
+    bddt bdd = bdd_converter.from_expr(all_objects_this_size);
+
+    result.emplace(size_entry.first, bdd_converter.as_expr(bdd));
+  }
+
+  return result;
 }
 
 void bv_pointerst::finish_eager_conversion()
@@ -989,11 +1021,101 @@ void bv_pointerst::finish_eager_conversion()
   // post-processing arrays may yield further objects, do this first
   SUB::finish_eager_conversion();
 
-  for(postponed_listt::const_iterator
-      it=postponed_list.begin();
-      it!=postponed_list.end();
-      it++)
-    do_postponed(*it);
+  // it would seem nicer to use `optionalt` here, but GCC >= 12 produces
+  // spurious warnings about accessing uninitialized objects
+  std::pair<exprt, exprt> is_dynamic_expr = {nil_exprt{}, nil_exprt{}};
+  std::vector<symbol_exprt> is_dynamic_placeholders;
+
+  std::unordered_map<exprt, exprt, irep_hash> object_sizes;
+  std::vector<symbol_exprt> object_size_placeholders;
+
+  for(const postponedt &postponed : postponed_list)
+  {
+    if(postponed.expr.id() == ID_is_dynamic_object)
+    {
+      if(is_dynamic_expr.first.is_nil())
+        is_dynamic_expr =
+          prepare_postponed_is_dynamic_object(is_dynamic_placeholders);
+
+      const auto &type =
+        to_pointer_type(to_unary_expr(postponed.expr).op().type());
+      bvt saved_bv = object_literals(postponed.op, type);
+      POSTCONDITION(saved_bv.size() == is_dynamic_placeholders.size());
+      replace_mapt replacements;
+      for(std::size_t i = 0; i < saved_bv.size(); ++i)
+      {
+        replacements.emplace(
+          is_dynamic_placeholders[i], literal_exprt{saved_bv[i]});
+      }
+      exprt is_dyn = is_dynamic_expr.first;
+      replace_expr(replacements, is_dyn);
+      exprt is_not_dyn = is_dynamic_expr.second;
+      replace_expr(replacements, is_not_dyn);
+
+      PRECONDITION(postponed.bv.size() == 1);
+      prop.l_set_to_true(
+        prop.limplies(convert_bv(is_dyn)[0], postponed.bv.front()));
+      prop.l_set_to_true(
+        prop.limplies(convert_bv(is_not_dyn)[0], !postponed.bv.front()));
+    }
+    else if(
+      const auto postponed_object_size =
+        expr_try_dynamic_cast<object_size_exprt>(postponed.expr))
+    {
+      if(object_sizes.empty())
+        object_sizes = prepare_postponed_object_size(object_size_placeholders);
+
+      // we might not have any usable objects
+      if(object_size_placeholders.empty())
+        continue;
+
+      const auto &type =
+        to_pointer_type(postponed_object_size->pointer().type());
+      bvt saved_bv = object_literals(postponed.op, type);
+      POSTCONDITION(saved_bv.size() == object_size_placeholders.size());
+      replace_mapt replacements;
+      for(std::size_t i = 0; i < saved_bv.size(); ++i)
+      {
+        replacements.emplace(
+          object_size_placeholders[i], literal_exprt{saved_bv[i]});
+      }
+
+      for(const auto &object_size_entry : object_sizes)
+      {
+        const exprt object_size = typecast_exprt::conditional_cast(
+          object_size_entry.first, postponed_object_size->type());
+        bvt size_bv = convert_bv(object_size);
+        POSTCONDITION(size_bv.size() == postponed.bv.size());
+
+        exprt all_objects_this_size = object_size_entry.second;
+        replace_expr(replacements, all_objects_this_size);
+
+        literalt l1 = convert_bv(all_objects_this_size)[0];
+        if(l1.is_true())
+        {
+          for(std::size_t i = 0; i < postponed.bv.size(); ++i)
+            prop.set_equal(postponed.bv[i], size_bv[i]);
+          break;
+        }
+        else if(l1.is_false())
+          continue;
+#define COMPACT_OBJECT_SIZE_EQ
+#ifndef COMPACT_OBJECT_SIZE_EQ
+        literalt l2 = bv_utils.equal(postponed.bv, size_bv);
+
+        prop.l_set_to_true(prop.limplies(l1, l2));
+#else
+        for(std::size_t i = 0; i < postponed.bv.size(); ++i)
+        {
+          prop.lcnf({!l1, !postponed.bv[i], size_bv[i]});
+          prop.lcnf({!l1, postponed.bv[i], !size_bv[i]});
+        }
+#endif
+      }
+    }
+    else
+      UNREACHABLE;
+  }
 
   // Clear the list to avoid re-doing in case of incremental usage.
   postponed_list.clear();

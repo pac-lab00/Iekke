@@ -1,0 +1,16 @@
+CORE
+main.c
+--32
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+memset through a pointer with two struct targets must leave the other one
+alone. The store to each possible target is guarded, and on the branch where
+it is not taken the old value is framed back; for an object split into
+members that old value was renamed as the bare whole-struct symbol, which
+nothing assigns once the members are separate, so it was unconstrained and
+the struct the memset did not reach came back with arbitrary members. Fails
+on a binary without the fix; stock CBMC 5.95 passes.

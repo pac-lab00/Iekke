@@ -11,10 +11,15 @@ Author: Daniel Kroening
 
 #include "graphml_witness.h"
 
+#include <cstdlib>
+#include <map>
+#include <set>
+
 #include <util/arith_tools.h>
 #include <util/byte_operators.h>
 #include <util/c_types.h>
 #include <util/cprover_prefix.h>
+#include <util/find_symbols.h>
 #include <util/pointer_predicates.h>
 #include <util/prefix.h>
 #include <util/ssa_expr.h>
@@ -224,26 +229,90 @@ std::string graphml_witnesst::convert_assign_rec(
   return result;
 }
 
+static bool is_create_binding(const goto_trace_stept &step)
+{
+  const auto lhs_object =
+    step.is_assignment() ? step.get_lhs_object() : optionalt<symbol_exprt>{};
+  return lhs_object.has_value() &&
+         has_prefix(id2string(lhs_object->get_identifier()), "pthread_create::");
+}
+
+static bool is_create(const goto_trace_stept &step)
+{
+  const auto lhs_object =
+    step.is_assignment() ? step.get_lhs_object() : optionalt<symbol_exprt>{};
+  return lhs_object.has_value() &&
+         id2string(lhs_object->get_identifier()).find(
+           "pthread_create::thread") != std::string::npos;
+}
+
 static bool filter_out(
   const goto_tracet &goto_trace,
   const goto_tracet::stepst::const_iterator &prev_it,
-  goto_tracet::stepst::const_iterator &it)
+  goto_tracet::stepst::const_iterator &it,
+  const std::set<std::size_t> &unused_creations)
 {
+  // creations of threads that never run, after the creator's last step that
+  // matters (see unused_creations in operator())
+  if(unused_creations.count(it->step_nr))
+    return true;
+
+  // A data-race witness keeps every step. One with only the thread creations
+  // and the violation was measured over the 222 data-race FALSE answers of
+  // the corpus (2026-11-04): 166 confirmed by Dartagnan against 173 with
+  // every step.
+
   if(
     it->hidden &&
     (!it->pc->is_assign() || it->pc->assign_rhs().id() != ID_side_effect ||
      it->pc->assign_rhs().get(ID_statement) != ID_nondet))
     return true;
 
-  if(!it->is_assignment() && !it->is_goto() && !it->is_assert())
+  // A shared access reaches the trace only as one of the two accesses a
+  // datarace counterexample blames, and that is precisely what the witness
+  // has to exhibit, so it belongs here alongside the rest.
+  if(
+    !it->is_assignment() && !it->is_goto() && !it->is_assert() &&
+    !it->is_shared_read() && !it->is_shared_write())
     return true;
+
+  // The arguments of a blocking synchronisation call (pthread_join,
+  // pthread_mutex_lock, a condition or barrier wait, ...) are bound at the
+  // call site, and a context switch may come between that binding and the
+  // call taking effect: the joined thread has not run yet, the mutex is still
+  // free. A validator reads an edge on the line of the call as the call having
+  // happened, so the edge made the witness infeasible: pthread/lazy01 at
+  // --no-por, rejected by CPAchecker (pthread_join); per-thread-index-bitmask-
+  // race-2, rejected by Dartagnan, which found the race without the witness
+  // (main's lock "taken" while thread 1 ran inside the same lock). What the
+  // call does is in the steps after it; its argument binding is not needed.
+  if(it->is_assignment())
+  {
+    static const char *const blocking[] = {
+      "pthread_join::", "pthread_mutex_lock::", "pthread_mutex_trylock::",
+      "pthread_cond_wait::", "pthread_cond_timedwait::",
+      "pthread_rwlock_rdlock::", "pthread_rwlock_wrlock::",
+      "pthread_spin_lock::", "pthread_barrier_wait::", "sem_wait::"};
+    const auto lhs_object = it->get_lhs_object();
+    if(lhs_object.has_value())
+    {
+      const std::string &id = id2string(lhs_object->get_identifier());
+      for(const char *prefix : blocking)
+        if(has_prefix(id, prefix))
+          return true;
+    }
+  }
 
   // we filter out steps with the same source location
   // TODO: if these are assignments we should accumulate them into
   //       a single edge
+  // Thread creations are exempt: a loop creating threads repeats the same
+  // line, and merging them left one createThread edge while the threads it
+  // started all ran (41_FreeBSD_abd_kbd_sliced: thread 2 ran, never created).
   if(
     prev_it != goto_trace.steps.end() &&
-    prev_it->pc->source_location() == it->pc->source_location())
+    prev_it->pc->source_location() == it->pc->source_location() &&
+    !is_create(*it))
     return true;
 
   if(it->is_goto() && it->pc->condition().is_true())
@@ -267,6 +336,45 @@ static bool filter_out(
   return false;
 }
 
+/// Is this function built in (CPROVER library), without a body, or not in the
+/// symbol table? Its locals mean nothing to a validator.
+static bool is_function_built_in_or_extern(
+  const namespacet &ns,
+  const irep_idt &function_id)
+{
+  const symbolt *symbol_ptr = nullptr;
+  if(ns.lookup(function_id, symbol_ptr))
+    return true;
+  if(symbol_ptr->type.id() != ID_code)
+    return true;
+  if(symbol_ptr->value.is_nil())
+    return true;
+  return symbol_ptr->location.is_built_in();
+}
+
+/// Are all symbols of an expression visible in a function? Locals are named
+/// "function::N::var" by the C front end; CPROVER symbols are skipped here and
+/// rejected on the left-hand side instead.
+static bool all_symbols_in_scope(const exprt &expr, const irep_idt &function_id)
+{
+  find_symbols_sett symbols;
+  find_symbols(expr, symbols);
+  for(const auto &symbol_id : symbols)
+  {
+    const std::string symbol_str = id2string(symbol_id);
+    if(symbol_str.find(CPROVER_PREFIX) != std::string::npos)
+      continue;
+    const auto scope_sep = symbol_str.find("::");
+    if(
+      scope_sep != std::string::npos &&
+      symbol_str.substr(0, scope_sep) != id2string(function_id))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool contains_symbol_prefix(const exprt &expr, const std::string &prefix)
 {
   if(
@@ -288,23 +396,87 @@ static bool contains_symbol_prefix(const exprt &expr, const std::string &prefix)
 void graphml_witnesst::operator()(const goto_tracet &goto_trace)
 {
   unsigned int max_thread_idx = 0;
-  //bool trace_has_violation = false;
   for(goto_tracet::stepst::const_iterator it = goto_trace.steps.begin();
       it != goto_trace.steps.end();
       ++it)
   {
     if(it->thread_nr > max_thread_idx)
       max_thread_idx = it->thread_nr;
-    // if(it->is_assert() && !it->cond_value)
-    //   trace_has_violation = true;
   }
 
   graphml.key_values["sourcecodelang"]="C";
+
+  // Creations of threads that never run: the trace goes on creating threads
+  // up to the loop bound, and the threads past the last one that runs do
+  // nothing in it. Their creation (with its argument bindings) is left out of
+  // the witness, and a thread's path ends at its last step that matters.
+  // Threads are numbered in creation order (thread_id below).
+  std::set<std::size_t> unused_creations;
+  {
+    unsigned created = 0;
+    bool unused = false;
+    for(const auto &step : goto_trace.steps)
+    {
+      if(!is_create_binding(step))
+        continue;
+      if(is_create(step))
+        unused = ++created > max_thread_idx;
+      if(unused)
+        unused_creations.insert(step.step_nr);
+    }
+  }
+
+  // unroll-bound: the fewest loop unrollings that contain this path, which
+  // Dartagnan validates under (without it, one unrolling, and a path through
+  // a second iteration is rejected); taken back edges counted per thread, over
+  // the program's own loops only, not those of the library models, and only
+  // up to the thread's last step that matters: 41_FreeBSD_abd_kbd_sliced is
+  // confirmed in 4 s at 2 and times out at 3, where main's loop went round
+  // once more to create a thread that never runs
+  {
+    std::map<unsigned, std::size_t> last_step;
+    for(const auto &step : goto_trace.steps)
+    {
+      const source_locationt &l = step.pc->source_location();
+      if(
+        (step.is_assignment() || step.is_assert() || step.is_shared_read() ||
+         step.is_shared_write()) &&
+        !step.hidden && !unused_creations.count(step.step_nr) &&
+        !l.get_line().empty() &&
+        !has_prefix(id2string(l.get_file()), "<builtin"))
+        last_step[step.thread_nr] = step.step_nr;
+    }
+    std::map<std::pair<unsigned, unsigned>, std::size_t> iterations;
+    std::size_t max_iterations = 0;
+    for(const auto &step : goto_trace.steps)
+    {
+      if(
+        step.type != goto_trace_stept::typet::GOTO || !step.cond_value ||
+        step.step_nr > last_step[step.thread_nr] ||
+        !step.pc->is_backwards_goto() ||
+        has_prefix(
+          id2string(step.pc->source_location().get_file()), "<builtin"))
+        continue;
+      max_iterations = std::max(
+        max_iterations,
+        ++iterations[{step.thread_nr, step.pc->location_number}]);
+    }
+    graphml.key_values["unroll-bound"] = std::to_string(max_iterations + 1);
+  }
 
   const graphmlt::node_indext sink=graphml.add_node();
   graphml[sink].node_name="sink";
   graphml[sink].is_violation=false;
   graphml[sink].has_invariant=false;
+
+  // A property that is not an assertion -- a data race, an overflow, a
+  // memory-safety violation, all of which the wrapper checks with
+  // --no-assertions -- produces no failing ASSERT step, so the loop below
+  // marks no node as the violation and the path used to run off into the
+  // sink. A sink says "stop exploring here", which is not the claim a
+  // violation witness needs to make. Give such traces a real violation node
+  // to end on; assertion properties keep marking their failing assert.
+  bool marked_a_violation_node = false;
 
   // if(max_thread_idx > 0 && trace_has_violation)
   // {
@@ -351,7 +523,7 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
       it!=goto_trace.steps.end();
       it++) // we cannot replace this by a ranged for
   {
-    if(filter_out(goto_trace, prev_it, it))
+    if(filter_out(goto_trace, prev_it, it, unused_creations))
     {
       step_to_node[it->step_nr]=sink;
 
@@ -383,9 +555,65 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     graphml[node].line=source_location.get_line();
     graphml[node].is_violation=
       it->type==goto_trace_stept::typet::ASSERT && !it->cond_value;
+    if(graphml[node].is_violation)
+      marked_a_violation_node = true;
     graphml[node].has_invariant=false;
 
     step_to_node[it->step_nr]=node;
+  }
+
+  // A property that is not an assertion -- a data race, an overflow -- leaves
+  // the loop above with nothing marked: the failing assert step either does
+  // not exist (--no-assertions) or is filtered out of node creation. Such a
+  // trace used to run off into the sink, which says "stop exploring here"
+  // rather than "the violation is here". Give it a real violation node to end
+  // on. Where the loop did mark one, that node is the violation and this
+  // stays a no-op.
+  // A data race is the state in which its second racing access is about to
+  // happen, the first having happened: that is where a validator expects the
+  // violation node, and how the witnesses it confirms end. The trace goes on
+  // past that state to the end of the schedule, and ending the witness there
+  // put the violation after an unrelated statement (an unlock); validators
+  // rejected such witnesses (pthread-race-challenges/thread-join-*). Make the
+  // node of the second racing access -- the later of the two shared accesses
+  // the trace blames -- the violation, or the last node before it where that
+  // step is filtered out, and cut what follows.
+  if(!marked_a_violation_node)
+  {
+    auto race = goto_trace.steps.end();
+    for(auto s_it = goto_trace.steps.begin(); s_it != goto_trace.steps.end();
+        ++s_it)
+    {
+      if(s_it->is_shared_read() || s_it->is_shared_write())
+        race = s_it;
+    }
+    if(race != goto_trace.steps.end())
+    {
+      graphmlt::node_indext at_race = sink;
+      for(auto s_it = goto_trace.steps.begin();; ++s_it)
+      {
+        if(step_to_node[s_it->step_nr] != sink)
+          at_race = step_to_node[s_it->step_nr];
+        if(s_it == race)
+          break;
+      }
+      if(at_race != sink)
+      {
+        graphml[at_race].is_violation = true;
+        marked_a_violation_node = true;
+        for(auto s_it = std::next(race); s_it != goto_trace.steps.end(); ++s_it)
+          step_to_node[s_it->step_nr] = sink;
+      }
+    }
+  }
+
+  graphmlt::node_indext violation_node = sink;
+  if(!marked_a_violation_node)
+  {
+    violation_node = graphml.add_node();
+    graphml[violation_node].node_name = "violation";
+    graphml[violation_node].is_violation = true;
+    graphml[violation_node].has_invariant = false;
   }
 
   unsigned thread_id = 0;
@@ -408,14 +636,16 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     auto next = std::next(it);
     for(; next != goto_trace.steps.end() &&
           (step_to_node[next->step_nr] == sink ||
-           pointee_address_equalt{}(it->pc, next->pc)); // NOLINT
+           (pointee_address_equalt{}(it->pc, next->pc) &&
+            !is_create(*next))); // NOLINT
         ++next)
     {
       // advance
     }
     const std::size_t to=
       next==goto_trace.steps.end()?
-      sink:step_to_node[next->step_nr];
+      violation_node:
+      step_to_node[next->step_nr];
 
     switch(it->type)
     {
@@ -423,6 +653,11 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     case goto_trace_stept::typet::ASSERT:
     case goto_trace_stept::typet::GOTO:
     case goto_trace_stept::typet::SPAWN:
+    // A shared access reaches the trace only when it is one of the two the
+    // datarace constraint blamed, and then it is precisely what the witness
+    // exists to demonstrate, so give it an edge like any other step.
+    case goto_trace_stept::typet::SHARED_READ:
+    case goto_trace_stept::typet::SHARED_WRITE:
     {
       xmlt edge(
         "edge",
@@ -470,27 +705,37 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
                to_multi_ary_expr(it->full_lhs_value).op0().get(ID_value)),
              "INVALID-")))
         {
-          // __SZH_EDIT_BEGIN__ witnesslint does not know function name, do not generate them
+          // An assumption a validator cannot read makes it give up on the
+          // edge: CPROVER internals (__CPROVER_dead_object), the locals of
+          // library or extern functions, and locals of another function
+          // (upstream CBMC 1b78fa1fc8, issue #5264).
+          irep_idt scope_function = it->function_id;
+          const auto sep = lhs_id.find("::");
+          if(sep != std::string::npos)
+            scope_function = lhs_id.substr(0, sep);
           code_assignt assign{it->full_lhs, it->full_lhs_value};
-          std::string assign_data = convert_assign_rec(lhs_id, assign);
-
-          // xmlt &val_s = edge.new_element("data");
-          // val_s.set_attribute("key", "assumption.scope");
-          // irep_idt function_id = it->function_id;
-          // const symbolt *symbol_ptr = nullptr;
-          // if(!ns.lookup(lhs_id, symbol_ptr) && symbol_ptr->is_parameter)
-          // {
-          //   function_id = lhs_id.substr(0, lhs_id.find("::"));
-          // }
-          // val_s.data = id2string(function_id);
-
-          if(!has_prefix(assign_data, "\\result ="))
+          if(
+            !has_prefix(lhs_id, CPROVER_PREFIX) &&
+            scope_function != CPROVER_PREFIX "initialize" &&
+            !is_function_built_in_or_extern(ns, scope_function) &&
+            all_symbols_in_scope(assign.rhs(), scope_function))
           {
-            xmlt &val = edge.new_element("data");
-            val.set_attribute("key", "assumption");
-            val.data = assign_data;
+            const std::string assign_data = convert_assign_rec(lhs_id, assign);
+            // __SZH_EDIT: witnesslint did not know the function names, so the
+            // scope keys and with them the \result assumptions are left out
+            // (adding them back confirmed no more witnesses, 2026-11-01).
+            // A brace list ({ 15, '%', 's', ... }, a string passed by value)
+            // is not a C expression: CPAchecker rejects the whole witness on
+            // it ("Cannot parse witness", w83977af_ir and nsc-ircc).
+            if(
+              !has_prefix(assign_data, "\\result =") &&
+              assign_data.find('{') == std::string::npos)
+            {
+              xmlt &val = edge.new_element("data");
+              val.set_attribute("key", "assumption");
+              val.data = assign_data;
+            }
           }
-          // __SZH_EDIT_END__
         }
       }
       else if(it->type == goto_trace_stept::typet::GOTO && it->pc->is_goto())
@@ -510,8 +755,6 @@ void graphml_witnesst::operator()(const goto_tracet &goto_trace)
     case goto_trace_stept::typet::ASSUME:
     case goto_trace_stept::typet::INPUT:
     case goto_trace_stept::typet::OUTPUT:
-    case goto_trace_stept::typet::SHARED_READ:
-    case goto_trace_stept::typet::SHARED_WRITE:
     case goto_trace_stept::typet::MEMORY_BARRIER:
     case goto_trace_stept::typet::ATOMIC_BEGIN:
     case goto_trace_stept::typet::ATOMIC_END:

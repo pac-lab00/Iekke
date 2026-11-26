@@ -64,6 +64,24 @@ struct symex_configt final
   /// Number of rounds for the LazyCSeq context-bounded concurrency encoding
   std::size_t lazy_po_rounds;
 
+  /// --dynamic-array-bound K: an array allocated with a non-constant number
+  /// of elements n gets K elements, under the condition n <= K (0: off)
+  std::size_t dynamic_array_bound;
+
+  /// --summarise-guards: in a multi-threaded program, replace the guard
+  /// coming out of a function by the guard at the call and a fresh guard
+  /// symbol defined as the guard coming out (see symex_end_of_function)
+  bool summarise_guards;
+
+  /// --infer-alloc-types: an allocation tagged with sizeof(T) and larger
+  /// than T is typed {T object; unsigned char tail[...]} rather than as bytes
+  bool infer_alloc_types;
+
+  /// --merge-exclusive-threads: a thread created by the same instruction of
+  /// the same parent as a pending thread, on a path that excludes every
+  /// creation of that thread, reuses it (see symex_start_thread); --rounds only
+  bool merge_exclusive_threads;
+
   /// \brief Construct a symex_configt using options specified in an
   /// \ref optionst
   explicit symex_configt(const optionst &options);

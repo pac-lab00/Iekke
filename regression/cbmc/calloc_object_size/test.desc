@@ -1,0 +1,36 @@
+CORE
+main.c
+--pointer-check
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+calloc allocated an object of nondeterministic size.
+
+src/ansi-c/library/stdlib.c declared
+
+    __CPROVER_size_t alloc_size;
+    // if(__builtin_mul_overflow(nmemb, size, &alloc_size))
+    //   return (void *)0;
+
+and nothing else ever assigned it, so the `__CPROVER_allocate(alloc_size, 1)`
+below produced an object whose size was unconstrained. Writing element zero
+of a three-element array then fails its bounds check:
+
+    dereference failure: pointer outside object bounds in buf[0]
+    POINTER_OFFSET(buf) >= 0 && OBJECT_SIZE(buf) >= POINTER_OFFSET(buf) + 4
+
+Seven lines, no threads and no concurrency flags. The same program on stock
+cbmc 5.95.1 is SUCCESSFUL, and `malloc(3 * sizeof(void *))` was correct here
+too, so it was calloc alone.
+
+The computation is restored, with the overflow test the commented-out builtin
+was performing done by division instead, so an overflowing request still
+returns NULL rather than allocating a wrapped size. A genuine out-of-bounds
+write to a calloc'd object still fails, which is the control that matters:
+the fix must not blind the check it repairs.
+
+`pthread-complex/bounded_buffer` is the benchmark this cost -- a safe program
+reported unsafe, -16 under SV-COMP scoring.

@@ -1,0 +1,15 @@
+CORE
+main.c
+--memory-leak-check --pointer-check --graphml-witness -
+^EXIT=10$
+^SIGNAL=0$
+<data key="assumption">p = ((signed int \*)0);</data>
+--
+<data key="assumption">malloc_size
+<data key="assumption">ptr =
+<data key="assumption">e =
+--
+A validator cannot read assumptions about the locals of library functions
+(malloc_size in malloc, ptr in free) or about values set before main by
+__CPROVER_initialize; the witness keeps only the program's own (upstream CBMC
+1b78fa1fc8, issue #5264).

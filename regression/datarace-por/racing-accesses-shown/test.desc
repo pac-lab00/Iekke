@@ -1,0 +1,10 @@
+CORE
+main.c
+--datarace --por --unwind 2 --rounds 3 --trace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^Racing read in thread
+^Racing write in thread
+--
+^warning: ignoring

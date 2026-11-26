@@ -1,0 +1,20 @@
+CORE
+main.c
+--allow-pointer-unsoundness --no-assertions --pointer-check --alloc-check --memory-leak-check --unwind 2 --infer-rounds --glucose
+^EXIT=10$
+^SIGNAL=0$
+^Infer rounds: no violation with 2 round
+^Infer rounds: violation found with 3 round
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+sv-benchmarks pthread-memsafety/list1.c (expected false, valid-deref). Many
+properties (pointer, allocation and leak checks) and a violation that needs 3
+rounds, so the search solves the same formula several times. The first
+version re-added the goal disjunction as a clause at every round; the
+converter returned its cached gate variable, which Glucose's simplifier had
+eliminated during the previous solve, and the run aborted in
+SimpSolver::addClause_ right after round 1. Both questions are now asked by
+frozen assumptions only. The calibration table has 1 round for this task,
+which is why it was answered SUCCESSFUL there.

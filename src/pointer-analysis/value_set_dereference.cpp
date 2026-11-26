@@ -194,6 +194,7 @@ exprt value_set_dereferencet::dereference(
 
     if(
       can_cast_type<pointer_typet>(pointer_expr.type()) &&
+      pointer_expr.id() != ID_typecast &&
       !can_cast_type<pointer_typet>(offset_expr.type()) &&
       !can_cast_expr<constant_exprt>(offset_expr))
     {
@@ -329,6 +330,29 @@ value_set_dereferencet::valuet value_set_dereferencet::get_failure_value(
   {
     // yes!
     failure_value = failed_symbol->symbol_expr();
+    failure_value.set(ID_C_invalid_object, true);
+  }
+  else if(invalid_object_counter != nullptr)
+  {
+    // As get_fresh_aux_symbol below, but resuming from the last name taken:
+    // it searches from $0 every time, so the n-th invalid object cost n
+    // lookups, a fifth of symex on the ldv-linux drivers. The names are the
+    // same as long as no invalid object is ever erased.
+    std::size_t &n = *invalid_object_counter;
+    std::string base_name;
+    do
+      base_name = "invalid_object$" + std::to_string(n++);
+    while(new_symbol_table.has_symbol("symex::" + base_name));
+
+    auxiliary_symbolt new_symbol(base_name, type);
+    new_symbol.name = "symex::" + base_name;
+    new_symbol.location = pointer.source_location();
+    new_symbol.mode = language_mode;
+    new_symbol.is_lvalue = true;
+    auto inserted = new_symbol_table.insert(std::move(new_symbol));
+    CHECK_RETURN(inserted.second);
+
+    failure_value = inserted.first.symbol_expr();
     failure_value.set(ID_C_invalid_object, true);
   }
   else

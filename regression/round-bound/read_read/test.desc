@@ -1,0 +1,11 @@
+CORE
+main.c
+--rounds 2 --unwind 2
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=1 path=1 
+--
+^warning: ignoring
+--
+Both threads only read x after the spawn: two reads do not conflict, so
+there is no backward edge. Counting read/read as a conflict reports count=2.

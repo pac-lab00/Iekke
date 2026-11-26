@@ -1,0 +1,14 @@
+CORE
+main.c
+--signed-overflow-check
+^EXIT=10$
+^SIGNAL=0$
+^\[main.overflow.1\] line 4 arithmetic overflow on signed + in a + b: FAILURE$
+^\[main.overflow.2\] line 5 arithmetic overflow on signed - in a - b: FAILURE$
+^\[main.overflow.3\] line 6 arithmetic overflow on signed \* in a \* b: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Signed operations wider than 32 bits must get an overflow check: the check
+used to be restricted to 32-bit signed operations.

@@ -1,0 +1,14 @@
+CORE
+main.c
+--32 --little-endian --unwind 5
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A copy of non-constant length into an int array used to leave the last
+element unchanged when the copy ended at an element boundary (and so to change
+nothing at all when it ended within the first element), and to fill a partly
+copied last element from the wrong offset of the source when the copy did not
+start at offset 0.

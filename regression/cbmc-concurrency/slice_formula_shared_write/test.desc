@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --slice-formula --verbosity 9
+^EXIT=0$
+^SIGNAL=0$
+^thread-aware slicing removed [1-9][0-9]* assignments$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+The slicer has to fire here (hence the "removed" line: a slicer that gives up
+would pass the verdict check for the wrong reason) and it has to keep the
+assignments feeding a shared write, which no step in the writing thread reads.

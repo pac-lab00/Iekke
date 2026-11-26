@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Negative control for `bool_byte_extract_read_race`: the write happens-before
+the reader thread is even created, and is itself mutex-protected, so there
+is no race. Must stay SUCCESSFUL before and after the fix.

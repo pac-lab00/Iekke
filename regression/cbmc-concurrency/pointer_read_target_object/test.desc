@@ -1,0 +1,25 @@
+CORE
+main.c
+--unwind 3 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+As `pointer_read_target`, but the dereference is `c.slots[j]->next` with `j`
+constrained through a called function. The value set then does not know the
+offset at which `c.slots[j]` points into its object, and
+value_set_dereferencet writes each link of the chain as
+`POINTER_OBJECT(p) == POINTER_OBJECT(&a) ? byte_extract(a, ...) : ...`, not
+`p == &a ? a : ...`. Only the second form was recognised as a link, so both
+heap objects were recorded as read, with only their offset conditions, and
+mains read of slots[0]- under mutex[0] was paired with the threads
+write of slots[1]->next under mutex[1] as a race.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+goblint-regression/09-regions_19-nested_nr (no-data-race, expected true),
+which the name-blind wrapper reported FAILED at u16 r4.
+
+See `pointer_read_target_object_race`: the same dereference, with the thread
+writing slots[1] under the other mutex, really races and must stay FAILED.

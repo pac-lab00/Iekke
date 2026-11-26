@@ -1,0 +1,12 @@
+CORE
+main.c
+--show-goto-functions
+^[[:space:]]*DECL main::$tmp::return_value_foo
+^EXIT=0$
+^SIGNAL=0$
+--
+DECL .*going_to::out
+^[[:space:]]*[0-9]*: DECL main::$tmp::return_value_foo
+--
+No loop back to the declaration of the condition temporary (upstream
+regression/cbmc/declaration-goto/no-duplicate-decl, fixed by 1f5950cd52).

@@ -113,6 +113,13 @@ public:
   // an incremental solver may remove any variables that aren't frozen
   virtual void set_frozen(literalt) { }
 
+  /// Classify a variable as introduced by the partial-order reduction.
+  /// Provenance is known only to the layer that builds the formula: after
+  /// bit-blasting one source symbol becomes several variables and the names are
+  /// gone, so the solver cannot recover this by itself. Backends that do not
+  /// use the classification ignore it.
+  virtual void set_por_variable(literalt) { }
+
   // Resource limits:
   virtual void set_time_limit_seconds(uint32_t)
   {

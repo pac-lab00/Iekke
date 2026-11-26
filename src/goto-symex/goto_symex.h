@@ -15,6 +15,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/message.h>
 
 #include "complexity_limiter.h"
+#include "own_view_writers.h"
 #include "symex_config.h"
 
 class address_of_exprt;
@@ -185,8 +186,108 @@ public:
 
   bool try_finding_value_set = false;
   value_sett overall_value_set;
+
+  /// Keep each state's value set topped up from \ref overall_value_set, at
+  /// the entry point and at every step thereafter.
+  ///
+  /// Needed to reach a fixpoint under --refined-pointer-analysis.  Unioning
+  /// state.value_set into overall_value_set as symex goes repairs the *shared*
+  /// pointer that was published late, but not a thread-local that was assigned
+  /// from it earlier: that local's points-to entry was fixed before the
+  /// publication had been symexed, and nothing revisits it.  The dereference
+  /// then resolves against the stale local and the interleaving is never
+  /// encoded -- a missed bug, CBMC issue #305.  Running further collection
+  /// passes with the union already in place lets the local pick the published
+  /// target up.  Reproduction: ~/bench-minrepro/p305.c.
+  bool seed_value_set_from_overall = false;
+
+  /// Hand \ref overall_value_set to the state so that a *shared read of a
+  /// pointer* can top up that one object's points-to set, and nothing else
+  /// is widened.
+  ///
+  /// This is the precise half of what \ref seed_value_set_from_overall does.
+  /// It exists on its own because the two have opposite risks: topping up a
+  /// shared read repairs CBMC issue #305, where the reading thread was
+  /// symexed before the publishing one and so never learned the target;
+  /// seeding the entry state from the union instead widens every pointer in
+  /// the program, which suppresses real races (measured: it costs
+  /// per-thread-array-join-counter-race-4).
+  bool seed_published_reads = false;
+
+  /// Set whenever a union into \ref overall_value_set actually changed it.
+  /// The caller clears it before a collection pass and stops iterating once
+  /// a whole pass leaves it false, i.e. at the fixpoint.
+  bool overall_value_set_changed = false;
+
+  /// The objects whose collected entry a seeded shared read consulted in the
+  /// current pass (see goto_symex_statet::consulted_published).
+  std::unordered_set<irep_idt> consulted_published;
+
+  /// The state's value set as it was at the last union into
+  /// \ref overall_value_set. Every entry of it is in overall_value_set, which
+  /// only grows, so the next union needs only what changed since.
+  value_sett::valuest value_set_at_last_union;
   std::set<symbol_exprt> dynamic_objects;
+
+  /// See value_set_dereferencet::invalid_object_counter. Reset with
+  /// dynamic_counter at the start of each symex pass.
+  std::size_t invalid_object_counter = 0;
   // __SZH_ADD_END__
+
+  /// Shared variables that a static whole-program analysis has proven to be
+  /// accessed by at most one thread (see thread_exclusivity.h). Populated by
+  /// the goto-checker only when the lazy_po/--rounds encoding is active, and
+  /// handed to each symex state so that goto-symex can treat these variables
+  /// like thread-locals (constant propagation, hence early loop-unwinding
+  /// termination). Empty means "behave exactly as before".
+  std::unordered_set<irep_idt> thread_exclusive_variables;
+
+  /// --own-view-reads: what the passes record and assume, handed to the symex
+  /// state when \ref own_view_reads is set (see own_view_writers.h).
+  own_view_statet own_view;
+  bool own_view_reads = false;
+
+  /// Loop identifiers (\c goto_programt::loop_id form) of loops that a static
+  /// pre-symex analysis has shown to do nothing but spawn or join threads over
+  /// a thread-handle array the rest of the program never mentions.  See
+  /// thread_spawn_loops.h.  Empty means "behave exactly as before".
+  std::unordered_set<irep_idt> thread_management_loops;
+
+  /// Maximum number of iterations of a \ref thread_management_loops loop that
+  /// goto-symex will unwind, independently of --unwind/--unwindset; 0 disables
+  /// the mechanism entirely.  The loop is left at that point *without* the
+  /// usual assume(!loop_guard): the truncated execution is kept as a genuine
+  /// execution of the program with that many threads created, rather than
+  /// pruned as infeasible.
+  unsigned thread_creation_bound = 0;
+
+  /// Set once \ref thread_creation_bound has actually cut a loop short, i.e.
+  /// once the exploration became a k-thread under-approximation.  A
+  /// counterexample found in such a run is still a real counterexample (see
+  /// thread_spawn_loops.h); the absence of one only means "no violation with
+  /// that many threads", which is a bound of the same nature as --unwind and
+  /// not a proof.
+  bool thread_creation_bound_hit = false;
+
+  /// Set once an unwinding assumption has actually cut a loop or a
+  /// recursion short, i.e. once the exploration became an
+  /// under-approximation of the program.  A counterexample found in such a
+  /// run is still real; the absence of one is NOT a proof, because every
+  /// execution that needed another iteration was assumed away.
+  ///
+  /// This exists because nothing downstream could tell those two apart.
+  /// The line printed at the end of symex used to be an unconditional
+  /// "Unwinding successfully", which said only that symex had run -- it
+  /// reported success just as happily when a bound had been hit.  A caller
+  /// that reads it (the SV-COMP wrapper's ensure_successful_unwind() does)
+  /// could therefore never distinguish a proof from "ran out of bound",
+  /// and an under-approximate run that found nothing was reported as
+  /// VERIFICATION SUCCESSFUL.
+  bool unwinding_incomplete = false;
+
+  /// How many times a loop or recursion bound was hit (see
+  /// \ref unwinding_incomplete).
+  std::size_t unwinding_truncated = 0;
 
   // __WP_ADD_BEGIN__ for deadlock
   bool enable_deadlock = false;
@@ -334,6 +435,7 @@ protected:
     statet &state,
     bool write,
     bool is_in_quantifier);
+  void replace_loads_outside_object(exprt &);
   exprt address_arithmetic(
     const exprt &,
     statet &,
@@ -342,6 +444,17 @@ protected:
   /// Symbolically execute a GOTO instruction
   /// \param state: Symbolic execution state for current instruction
   virtual void symex_goto(statet &state);
+
+  /// The value of goto condition \p cond on this path, if the bounds the path
+  /// guard puts on its symbol decide it (symex_goto.cpp).
+  optionalt<bool>
+  decide_by_path_bounds(const exprt &cond, const statet &state) const;
+
+public:
+  /// Branches decided by decide_by_path_bounds in the last symex pass.
+  std::size_t path_bound_decisions = 0;
+
+protected:
   /// Symbolically execute a GOTO instruction in the context of unreachable code
   /// \param state: Symbolic execution state for current instruction
   void symex_unreachable_goto(statet &state);

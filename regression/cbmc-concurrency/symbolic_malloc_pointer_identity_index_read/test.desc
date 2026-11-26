@@ -1,0 +1,37 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+A read through a symbolic-size malloc'd pointer goes through CBMC's own
+pointer-identity resolution (the #305 fix's value-set dereference), which
+wraps a plain indexed access -- not a `with` -- in the same if-chain shape
+that `with_index_under_if` was already handling for writes: `ptr == &obj1 ?
+obj1[k] : (ptr == &obj2 ? obj2[k] : ...)`. Reading `arr[k]` as a
+function-call argument (`pthread_join(tids[0], ...)` here) takes exactly
+this path, even when `k` is a compile-time constant -- it is the *pointer*,
+not the index, that is symbolic. Recognising only `with` left this read at
+the sentinel offset, so a write (which does produce a `with`) and this read
+could never be seen as the same location, and the race between
+`pthread_create`'s write to `tids[0]` and this read via `pthread_join` was
+missed.
+
+`with_index_under_if` now also recognises a bare `ID_index` nested under the
+if-chain, extracting its index the same way the `with` case already did.
+
+This is the second of two defects behind the corpus's
+`per-thread-array-join-counter-race{,-2,-3,-4}` wrong/unknown answers (the
+first, `pthread_create`'s own write being invisible to race detection, is
+commit 6ca9e177). Fixing this one does not by itself flip those four corpus
+benchmarks either: a third, distinct gap remains for `flags`/`datas`-style
+pointer arrays accessed via pointer arithmetic (`ptr + i`) rather than an
+`ID_index` expression at all -- see project memory for that part, still open.
+
+See `symbolic_malloc_pointer_identity_index_read_ordered`, the negative
+control: same structure, but the write happens-before the read is even
+possible (no thread exists yet to race it), and must stay SUCCESSFUL before
+and after this fix.

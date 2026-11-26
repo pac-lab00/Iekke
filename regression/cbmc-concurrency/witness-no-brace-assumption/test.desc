@@ -1,0 +1,12 @@
+CORE
+main.c
+--graphml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+<data key="violation">true</data>
+--
+^warning: ignoring
+assumption">[^<]*{
+--
+The assumption for the string argument of say is left out: a brace list is
+no C expression for a validator.

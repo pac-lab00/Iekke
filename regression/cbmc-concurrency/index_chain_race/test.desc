@@ -1,0 +1,14 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 3 --index-chain --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^index chain: [1-9][0-9]* of
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The race between the two plain writes of x is found with the chain of x
+carrying the index of the last write instead of its value. The index chain only
+applies from three rounds on, hence --rounds 3; the "index chain:" line shows
+it was used.

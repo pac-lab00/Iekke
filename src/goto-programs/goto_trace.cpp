@@ -705,9 +705,20 @@ void show_full_goto_trace(
     case goto_trace_stept::typet::DEAD:
       break;
 
-    case goto_trace_stept::typet::CONSTRAINT:
     case goto_trace_stept::typet::SHARED_READ:
     case goto_trace_stept::typet::SHARED_WRITE:
+      // Reaches a trace only as one of the two accesses a datarace
+      // counterexample blames, i.e. it is the race; show it.
+      out << '\n';
+      out << "Racing "
+          << (step.type == goto_trace_stept::typet::SHARED_READ ? "read"
+                                                                : "write")
+          << " in thread " << step.thread_nr << '\n';
+      if(!step.pc->source_location().is_nil())
+        out << "  " << state_location(step, ns) << '\n';
+      break;
+
+    case goto_trace_stept::typet::CONSTRAINT:
     case goto_trace_stept::typet::NONE:
       UNREACHABLE;
     }

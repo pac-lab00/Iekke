@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `symbolic_size_store_own_element`: both threads store to the
+same element, so one can read the other's value. Must stay FAILED.

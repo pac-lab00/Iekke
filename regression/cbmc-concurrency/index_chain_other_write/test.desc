@@ -1,0 +1,13 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 3 --index-chain --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^index chain: [1-9][0-9]* of
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The write of another thread is among the indices a read can find in the chain,
+so a schedule where the worker writes between main's write and main's read is
+found.

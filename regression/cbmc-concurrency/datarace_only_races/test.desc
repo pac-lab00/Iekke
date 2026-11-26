@@ -1,0 +1,13 @@
+CORE
+main.c
+--allow-pointer-unsoundness --32 --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+precondition_instance.*FAILURE
+--
+No race, but free() of a non-heap pointer: under --datarace only races
+count. The library precondition made the answer FAILED, reported as a race
+(the adutux driver, no-data-race, expected true). Fails without the fix.

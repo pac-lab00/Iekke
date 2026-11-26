@@ -4,26 +4,107 @@
 #ifndef CPROVER_GOTO_SYMEX_lazy_po_H
 #define CPROVER_GOTO_SYMEX_lazy_po_H
 
+#include "round_bound.h"
 #include "symex_target_equation.h"
 
+#include <cstdint>
+#include <map>
+#include <set>
 #include <optional>
 #include <vector>
+
+// Provenance POR per il backend SAT: elenco dei simboli ausiliari creati
+// dall'ultima costruzione (LW, WINR, NRP, LOW, OBS, ABR, ABW). La
+// classificazione delle variabili appartiene al livello che costruisce la
+// formula, non al solver.
+const std::vector<symbol_exprt> &por_auxiliary_symbols();
+void clear_por_auxiliary_symbols();
 
 class lazy_pot
 {
 public:
-  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por)
-    : ns(ns), rounds(rounds), datarace(datarace), por(por)
+  explicit lazy_pot(const namespacet &ns, const std::size_t rounds, const bool datarace, const bool por, const bool read_implication = false, const bool narrow_shared = false, const bool thread_private = false, const bool array_rf = false, const unsigned thread_symmetry = 0, const bool array_rf_bytes = false, const bool index_chain = false)
+    : ns(ns), rounds(rounds), datarace(datarace), por(por),
+      read_implication(read_implication), narrow_shared(narrow_shared),
+      thread_private(thread_private), array_rf(array_rf),
+      thread_symmetry(thread_symmetry), array_rf_bytes(array_rf_bytes),
+      index_chain(index_chain)
   {
   }
 
   void operator()(symex_target_equationt &, message_handlert &);
 
+  /// --infer-rounds: also define the empty-round symbols (round_bound.h), so
+  /// that a checker can choose the round count by assumptions.
+  bool empty_round_literals = false;
+
+  /// The static round bound of `equation`, min(path, max_rounds) (0 = no
+  /// cap), computed with this object's settings. It runs the same event
+  /// collection operator() does, which rewrites the equation's active-thread
+  /// statements and annotates its steps: pass a copy. `at_cap` tells whether
+  /// the cap, rather than the bound itself, was the answer.
+  std::size_t static_round_bound(
+    symex_target_equationt &equation,
+    std::size_t max_rounds,
+    bool &at_cap);
+
 private:
+  /// compute_round_bound on the events collect_reads_and_writes gathered
+  round_boundt bound_from_events(std::size_t max_rounds) const;
+  property_conet property_cone_events() const;
+  std::vector<round_bound_eventt> round_bound_events() const;
+  void create_empty_round_literals(symex_target_equationt &equation);
+
   const namespacet &ns;
   const std::size_t rounds;
   const bool datarace;
+  /// state each read's one-hot round selection directly instead of as a mux
+  /// nested `rounds` deep; see create_read_constraints
+  const bool read_implication = false;
   const bool por;
+  /// carry only the byte range a shared object is read through; see
+  /// compute_narrowings
+  const bool narrow_shared = false;
+
+  /// The byte range of a shared object that the equation ever reads, for
+  /// objects whose chain can safely carry only that range.
+  struct narrowingt
+  {
+    std::size_t offset_bits;
+    std::size_t width_bits;
+  };
+  std::map<irep_idt, narrowingt> narrowings;
+  /// objects whose chain carries only the bits their values take, with the
+  /// widest chain type, and per round (index 1..rounds) the type of that
+  /// round's links; see compute_value_narrowings
+  std::map<irep_idt, typet> value_narrowings;
+  std::map<irep_idt, std::vector<typet>> value_round_types;
+  void compute_value_narrowings(const symex_target_equationt &);
+
+  /// state the read-from of objects only one thread touches once, in program
+  /// order, instead of once per round; see compute_private_objects
+  const bool thread_private = false;
+  /// answer an array element read by matching the writes, instead of carrying
+  /// the whole array through the chain; see compute_array_rf
+  const bool array_rf = false;
+  /// order interchangeable adjacent threads: 0 off, 1 exact, 2 strong; see
+  /// create_thread_symmetry
+  const unsigned thread_symmetry = 0;
+  /// with array_rf, also answer reads of arrays accessed byte-wise (byte_extract
+  /// and byte_update at any offset), byte by byte; see
+  /// create_array_rf_constraints
+  const bool array_rf_bytes = false;
+  /// with three rounds or more, let the chain of an object carry the index of
+  /// the last write instead of its value where that is smaller; see
+  /// choose_index_chains
+  const bool index_chain = false;
+
+  void compute_narrowings(const symex_target_equationt &);
+  /// The value the lazy chain carries for `variable`: the whole value, or the
+  /// slice of it that reads observe.
+  exprt narrowed_value(const irep_idt &variable, const exprt &value) const;
+  /// The type that value has.
+  typet narrowed_type(const irep_idt &variable, const typet &type) const;
 
   struct shared_event
   {
@@ -32,6 +113,9 @@ private:
     unsigned label;
     unsigned num;
     unsigned thread;
+    /// Excused from race pairing by the publication filter. Still part of
+    /// the value flow: see collect_reads_and_writes.
+    bool race_exempt = false;
   };
   struct lazy_variable
   {
@@ -85,6 +169,15 @@ private:
     std::size_t round;
     symbol_exprt symbol;
   };
+  // Order/thermometer encoding of cs: GE(thread,round,i) means
+  // cs(thread,round) >= i. See create_ge_symbol / create_cs_constraint.
+  struct ge
+  {
+    std::size_t thread;
+    std::size_t round;
+    unsigned i;
+    symbol_exprt symbol;
+  };
   struct reach
   {
     unsigned label;
@@ -113,28 +206,118 @@ private:
   std::unordered_map<unsigned, symbol_exprt> dr_atom;
   std::unordered_map<unsigned, symbol_exprt> dr_loc;
   std::unordered_set<irep_idt> global_variables;
+  /// objects moved out of global_variables by compute_private_objects, with
+  /// their accesses moved out of reads/writes as well -- the POR windows and
+  /// the canonicality constraints look those maps up by variable and index
+  /// into a lazy chain these objects no longer have
+  std::set<irep_idt> private_objects;
+  std::unordered_map<irep_idt, std::vector<shared_event>> private_writes;
+  std::unordered_map<irep_idt, std::vector<shared_event>> private_reads;
+
+  /// One shared write to an array object, decomposed. A point update matches a
+  /// read when its index agrees; a whole-array constant initialiser matches
+  /// every index, which is also how it serves as the value before it.
+  struct array_writet
+  {
+    std::size_t event;     ///< index into writes.at(variable)
+    bool whole_array;      ///< a constant initialiser rather than a point update
+    exprt index;
+    exprt value;
+    /// the update happens only where this holds: a write through a pointer
+    /// that may point into the array is `c ? V WITH [i:=v] : V`
+    exprt condition = true_exprt{};
+    /// a whole-array write of a nondeterministic array (fresh heap memory):
+    /// element j then holds value[j], not value
+    bool havoc = false;
+    /// a byte update of the object (--array-rf-bytes): `value` is written at
+    /// byte offset `offset`, and `index` is unused
+    bool bytes = false;
+    exprt offset = nil_exprt{};
+    /// a range write (memset of n bytes, n possibly symbolic): `value` is the
+    /// one byte written at each of the `length` bytes from `offset`
+    exprt length = nil_exprt{};
+  };
+  /// the objects whose reads are answered byte by byte (--array-rf-bytes)
+  std::set<irep_idt> array_rf_bytewise;
+  /// objects whose element reads are resolved by matching writes
+  std::map<irep_idt, std::vector<array_writet>> array_rf_writes;
+  /// the element value before any write, from the constant initialiser
+  std::map<irep_idt, exprt> array_rf_default;
+  /// each element read already resolved, by (array version, index), and the
+  /// counter naming them: kept across the two rewriting passes
+  std::map<std::pair<irep_idt, std::string>, ssa_exprt> array_rf_replacement;
+  std::size_t array_rf_fresh = 0;
+
+  void compute_array_rf(const symex_target_equationt &);
+  void create_array_rf_constraints(symex_target_equationt &);
+
+  void compute_private_objects();
+  void create_private_constraints(symex_target_equationt &);
+
+  /// objects whose chain carries the index of the last write instead of its
+  /// value (--index-chain); a read then selects its value by that index
+  std::set<irep_idt> index_chain_vars;
+  std::map<irep_idt, std::size_t> index_chain_bits;
+  /// per index-chain object: element 0 the value before the first write,
+  /// element k the value written by the k-th write
+  std::map<irep_idt, std::vector<exprt>> index_chain_values;
+  /// returns a one-line summary for the log
+  std::string choose_index_chains();
+  std::string index_chain_summary;
+  /// the indices a read of `v` can find in the chain at its position
+  std::vector<std::size_t>
+  index_candidates(const irep_idt &v, const shared_event &read) const;
+  exprt happens_in_any_round(const shared_event &);
   std::unordered_map<irep_idt, std::vector<shared_event>> writes;
   std::unordered_map<irep_idt, std::vector<shared_event>> reads;
   std::unordered_map<irep_idt, unsigned> bit_writes;
   std::unordered_map<irep_idt, unsigned> bit_reads;
-  // memo delle catene: chiave = posizione (round, thread, label, num) impaccata
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> lw_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> winr_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> low_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> obs_variables;
-  std::unordered_map<irep_idt, std::unordered_map<uint64_t, symbol_exprt>> nrp_variables;
   std::vector<shared_event> blocking_events;
   std::vector<shared_event> shared_events;
   std::unordered_map<irep_idt, std::vector<lazy_variable>> lazy_variables;
   std::unordered_map<irep_idt, std::vector<lazy_variable_read>> lazy_variables_read;
   std::unordered_map<unsigned, active_thread> active_threads_vector;
+  std::size_t skipped_writes = 0, skipped_reads = 0;
   std::vector<exec> exec_vector;
   std::unordered_map<uint64_t, symbol_exprt> exec_map;
   std::vector<atomic_block_round> atomic_block_rounds;
   std::vector<exec_tot> exec_tot_vector;
   std::vector<enabled> enabled_vector;
+  // --- Window encoding of the canonicality tags ------------------------
+  // Per shared variable: the accesses (writes and reads) in id order, the
+  // exec literal of each, the OBS literal of each write, and the FR chain
+  // ("the first executed access with id >= k is a read"). Every comparison
+  // the canonicality clauses make on LW/WINR/NRP/LOW is equivalent to a
+  // disjunction of exec literals over a contiguous id window (see the
+  // soundness argument above create_ABW_windows in lazy_po.cpp); the
+  // windows are materialised through a shared balanced range-OR tree so a
+  // query costs O(log n) literals instead of an n-bit comparator.
+  struct tag_windowt
+  {
+    bool init = false;
+    bool obs_built = false;
+    bool fr_built = false;
+    std::size_t n = 0;                 // |writes| + |reads| for this variable
+    std::vector<unsigned> write_ids;   // ascending
+    std::vector<exprt> write_exec;     // parallel to write_ids
+    std::vector<unsigned> read_ids;    // ascending
+    std::vector<exprt> read_exec;      // parallel to read_ids
+    std::vector<exprt> obs;            // parallel to write_ids
+    std::vector<exprt> fr;             // size n+1, fr[k] = FR(k)
+    // memo dei nodi del range-OR: kind 0 = writes, 1 = reads, 2 = OBS
+    std::unordered_map<uint64_t, exprt> nodes[3];
+  };
+  std::unordered_map<irep_idt, tag_windowt> tag_windows;
+
   std::vector<cs> cs_vector;
+  std::vector<ge> ge_vector;
   std::vector<reach> reach_vector;
+
+  std::unordered_map<uint64_t, symbol_exprt> exec_tot_map;
+  std::unordered_map<uint64_t, symbol_exprt> enabled_map;
+  std::unordered_map<uint64_t, symbol_exprt> cs_map;
+  std::unordered_map<uint64_t, symbol_exprt> ge_map;
+  std::unordered_map<uint64_t, symbol_exprt> reach_map;
   std::vector<std::pair<unsigned, std::pair<std::size_t, std::size_t>>>
     atomic_sections;
   std::map<std::pair<unsigned, unsigned>, atomic_block>
@@ -144,20 +327,16 @@ private:
   std::unordered_map<unsigned,std::unordered_map<unsigned, std::vector<exprt>>> guards; // < thread, < label, < num, guard > > >
 
   void handling_active_threads(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void check_shared_event(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void handling_atomic_sections(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void collect_reads_and_writes(
-    symex_target_equationt::SSA_stepst &ssa_steps/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt::SSA_stepst &ssa_steps);
 
   void annotate_round_robin_trace_event(
     SSA_stept &step,
@@ -168,13 +347,18 @@ private:
 
   void build_atomic_blocks();
 
+  // Recorded by collect_reads_and_writes for compute_round_bound
+  // (round_bound.h); nothing else reads them.
+  spawn_pointst spawn_points;
+  unsigned spawns_seen = 0;
+
+  void validate_access_order() const;
+
   void create_write_constraints(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void create_read_constraints(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   std::optional<symbol_exprt> previous_shared(
     irep_idt variable,
@@ -183,26 +367,32 @@ private:
     unsigned thread,
     std::size_t round);
 
+  exprt active_at_turn(unsigned thread, unsigned label, std::size_t round);
+
+  /// returns what it did, for the status line
+  std::string create_thread_symmetry(symex_target_equationt &);
   void create_cs_constraint(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void create_reach_constraint(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void handling_guards(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
   void handling_datarace(
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/);
+    symex_target_equationt &equation);
 
-  symbol_exprt phase_1(/*messaget log,*/ symex_target_equationt &equation, irep_idt v);
-  symbol_exprt phase_2(/*messaget log,*/ symex_target_equationt &equation, irep_idt v);
-  symbol_exprt same_round(/*messaget log,*/ symex_target_equationt &equation);
-  symbol_exprt no_interf(/*messaget log,*/ symex_target_equationt &equation);
+  exprt phase_1(symex_target_equationt &equation, irep_idt v);
+  exprt phase_2(symex_target_equationt &equation, irep_idt v);
+  symbol_exprt same_round(symex_target_equationt &equation);
+  symbol_exprt no_interf(symex_target_equationt &equation);
+  // __SZH_DR_ADD_BEGIN__
+  exprt phase_1_swap(symex_target_equationt &equation, irep_idt v);
+  exprt phase_2_swap(symex_target_equationt &equation, irep_idt v);
+  symbol_exprt same_round_swap(symex_target_equationt &equation);
+  symbol_exprt no_interf_swap(symex_target_equationt &equation);
+  // __SZH_DR_ADD_END__
 
   symbol_exprt create_lazy_symbol(
     unsigned label,
@@ -218,12 +408,13 @@ private:
   create_exec_symbol_fast(unsigned label, unsigned num, unsigned thread, std::size_t round);
 
   symbol_exprt
-  create_exec_tot_symbol(/*messaget log,*/ symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
+  create_exec_tot_symbol(symex_target_equationt &equation, unsigned label, unsigned num, unsigned thread);
 
   symbol_exprt
   create_enabled_symbol(unsigned label, unsigned thread, std::size_t round);
 
   symbol_exprt create_cs_symbol(std::size_t thread, std::size_t round);
+  symbol_exprt create_ge_symbol(std::size_t thread, std::size_t round, unsigned i);
 
   symbol_exprt create_reach_symbol(unsigned label, std::size_t thread);
 
@@ -237,44 +428,57 @@ private:
 
   symbol_exprt create_dr_loc_symbol(unsigned num);
 
-  void create_lw_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void create_atomic_canonical(symex_target_equationt &equation);
 
-  void create_winr_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  /// True when an access of \p b conflicts with an access of another
+  /// thread, so the block's position is observable to data-race detection
+  /// even when it is invisible to the read-from equivalence that justifies
+  /// canonicality. See create_atomic_canonical.
+  bool block_can_race(const atomic_block &b) const;
 
-  void create_low_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  // --- window encoding helpers ---
+  tag_windowt &tag_data(irep_idt variable);
 
-  void create_nrp_tot_symbol(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  // Integer twin of boundary_id: id of the first access of `variable` at or
+  // after (round, thread, label, num), or n if there is none.
+  std::size_t boundary_index(
+    irep_idt variable, std::size_t round, unsigned thread, unsigned label,
+    unsigned num);
 
-  void create_atomic_canonical(symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  exprt range_node(
+    irep_idt variable, unsigned kind, std::size_t a, std::size_t b,
+    symex_target_equationt &equation);
 
-  symbol_exprt create_ABR(const std::map<irep_idt, std::vector<shared_event>> &reads, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  exprt range_query(
+    irep_idt variable, unsigned kind, std::size_t a, std::size_t b,
+    std::size_t lo, std::size_t hi, symex_target_equationt &equation);
 
-  symbol_exprt create_ABW(const std::map<irep_idt, std::vector<shared_event>> &writes, std::size_t round, unsigned label, unsigned thread, symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  // OR of the kind-literals of the accesses whose id lies in [id_lo, id_hi).
+  exprt window_exec(
+    irep_idt variable, unsigned kind, std::size_t id_lo, std::size_t id_hi,
+    symex_target_equationt &equation);
 
-  symbol_exprt create_LW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num,size_t round,
-  symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  exprt first_read_atom(
+    irep_idt variable, std::size_t k, symex_target_equationt &equation);
 
-  symbol_exprt create_WINR_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,  symex_target_equationt &equation
-    /*,message_handlert &message_handler*/);
+  void build_first_read_chain(
+    irep_idt variable, symex_target_equationt &equation);
 
-  symbol_exprt create_LOW_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  void build_obs_literals(irep_idt variable, symex_target_equationt &equation);
 
-  symbol_exprt create_NRP_symbol(irep_idt variable, unsigned thread, unsigned label, unsigned num, size_t round,
-    symex_target_equationt &equation/*,message_handlert &message_handler*/);
+  symbol_exprt create_ABR_windows(
+    const std::map<irep_idt, std::vector<shared_event>> &reads,
+    std::size_t round, unsigned label, unsigned thread,
+    symex_target_equationt &equation);
 
-  symbol_exprt create_OBS_symbol(irep_idt variable, const lazy_variable &w,
-    symex_target_equationt &equation/*,message_handlert &message_handler*/);
-
-  exprt boundary_id(irep_idt variable, std::size_t round, unsigned thread, unsigned label, unsigned num);
+  symbol_exprt create_ABW_windows(
+    const std::map<irep_idt, std::vector<shared_event>> &writes,
+    std::size_t round, unsigned label, unsigned thread,
+    symex_target_equationt &equation);
 
   void enumerate_accesses();
 
   std::optional<lazy_variable> get_previous_write(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable);
-
-  std::optional<lazy_variable_read>get_next_read(unsigned thread, unsigned label, unsigned num, std::size_t round, irep_idt variable, bool strict= false);
-
-
 
   void create_lazy_variable_read();
   void create_active_thread_statements(
@@ -282,8 +486,7 @@ private:
     exprt &guard,
     unsigned int atomic_section_id,
     unsigned &thread,
-    symex_target_equationt &equation/*,
-    message_handlert &message_handler*/,
+    symex_target_equationt &equation,
     const exprt &value);
 };
 

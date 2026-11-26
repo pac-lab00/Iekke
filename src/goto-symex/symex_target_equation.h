@@ -29,6 +29,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 class decision_proceduret;
 class namespacet;
+class symbolt;
 
 // __SZH_ADD_BEGIN__
 struct oc_edget
@@ -190,7 +191,8 @@ public:
   /// \copydoc symex_targett::spawn()
   virtual void spawn(
     const exprt &guard,
-    const sourcet &source);
+    const sourcet &source,
+    std::size_t thread_nr);
 
   /// \copydoc symex_targett::memory_barrier()
   virtual void memory_barrier(
@@ -253,9 +255,8 @@ public:
 
   /// Converts only the canonical constraints (atomic_block_canonical, abr,
   /// abw, lw/winr canonical from lazy_po) into the given decision
-  /// procedure. Used to route these
-  /// constraints to a separate slave solver.
-  /// \param decision_procedure: the slave solver destination
+  /// procedure, after convert_constraints has skipped them.
+  /// \param decision_procedure: A handle to a decision procedure interface
   void convert_canonical_constraints(decision_proceduret &decision_procedure);
 
   /// Converts goto instructions: convert the expression representing the
@@ -344,6 +345,14 @@ public:
   std::map<event_it, exprt> read_dirties;
   // __SZH_ADD_END__
 
+  /// \return \p expr with every subtree equal to one already stored in the
+  ///   equation replaced by the stored one: the same value, sharing nodes
+  exprt merged(exprt expr)
+  {
+    merge_irep(expr);
+    return expr;
+  }
+
 protected:
   messaget log;
 
@@ -375,6 +384,8 @@ public:
   std::set<std::string> atomic_dynamic_objects;
   void dynamic_object_atomicity(const namespacet& ns);
   bool symbol_is_atomic(const namespacet& ns, irep_idt symbol_name);
+  std::map<irep_idt, bool> union_atomicity;
+  bool union_accessed_atomically(const namespacet &ns, const symbolt &symbol);
 
   void remove_dummy_accesses();
 
@@ -421,6 +432,12 @@ public:
   // __SZH_ADD_BEGIN__
   bool use_cat = false;
   cat_modulet cat;
+  /// --infer-rounds: convert() gives every assertion its handle (cond_handle,
+  /// which the goals are built on) but asserts no "some assertion fails"
+  /// disjunction, so the formula says nothing about the property until a
+  /// checker adds the goal constraint in a context of its own -- the
+  /// completeness question it also asks must be free of the property.
+  bool assertion_handles_only = false;
   bool use_deagle_closure = false;
   bool use_deagle_icd = false;
   bool use_deagle_segment = false;

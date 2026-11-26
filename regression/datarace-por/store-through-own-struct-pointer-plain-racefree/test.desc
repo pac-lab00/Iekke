@@ -1,0 +1,12 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+The same with plain stores to different members of one node: the base of
+the byte_update must be read only on the members the stored bytes meet,
+or each thread "reads" the member the other one writes.

@@ -1,0 +1,9 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+Two unlocked increments of a[i].s.f: a real lost update, still found.

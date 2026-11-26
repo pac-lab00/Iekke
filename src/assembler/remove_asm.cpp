@@ -16,6 +16,7 @@ Date:   December 2014
 #include "remove_asm.h"
 
 #include <util/c_types.h>
+#include <util/exception_utils.h>
 #include <util/pointer_expr.h>
 #include <util/prefix.h>
 #include <util/range.h>
@@ -47,14 +48,17 @@ protected:
 
   void process_function(const irep_idt &, goto_functionst::goto_functiont &);
 
-  void process_instruction(
+  /// \return true if the asm was fully translated into goto instructions, so
+  /// the original may be removed; false if it was not, in which case the
+  /// caller must keep it (see process_function).
+  bool process_instruction(
     const irep_idt &function_id,
     goto_programt::instructiont &instruction,
     goto_programt &dest);
 
-  void process_instruction_gcc(const code_asm_gcct &, goto_programt &dest);
+  bool process_instruction_gcc(const code_asm_gcct &, goto_programt &dest);
 
-  void process_instruction_msc(
+  bool process_instruction_msc(
     const irep_idt &,
     const code_asmt &,
     goto_programt &dest);
@@ -209,7 +213,7 @@ void remove_asmt::msc_asm_function_call(
 /// \param instruction: The goto program instruction containing the inline
 ///   assembly statements
 /// \param dest: The goto program to append the new instructions to
-void remove_asmt::process_instruction(
+bool remove_asmt::process_instruction(
   const irep_idt &function_id,
   goto_programt::instructiont &instruction,
   goto_programt &dest)
@@ -219,11 +223,14 @@ void remove_asmt::process_instruction(
   const irep_idt &flavor = code.get_flavor();
 
   if(flavor == ID_gcc)
-    process_instruction_gcc(to_code_asm_gcc(code), dest);
+    return process_instruction_gcc(to_code_asm_gcc(code), dest);
   else if(flavor == ID_msc)
-    process_instruction_msc(function_id, code, dest);
+    return process_instruction_msc(function_id, code, dest);
   else
+  {
     DATA_INVARIANT(false, "unexpected assembler flavor");
+    return false;
+  }
 }
 
 /// Translates the given inline assembly code (in gcc style) to non-assembly
@@ -231,11 +238,52 @@ void remove_asmt::process_instruction(
 ///
 /// \param code: The inline assembly code statement to translate
 /// \param dest: The goto program to append the new instructions to
-void remove_asmt::process_instruction_gcc(
+/// Is this the template of a per-CPU read: one `mov` (any width suffix) from
+/// `%gs:` or `%fs:` at input operand 1 into output operand 0? GCC templates
+/// write the register `%%gs`; both spellings are accepted.
+static bool is_percpu_read(const std::string &text)
+{
+  std::string t;
+  for(char c : text)
+    if(c != ' ' && c != '\t' && c != '\n')
+      t += c;
+  for(const char *mov : {"mov", "movb", "movw", "movl", "movq"})
+    for(const char *seg : {"%%gs:", "%%fs:", "%gs:", "%fs:"})
+      if(t == std::string(mov) + seg + "%P1,%0")
+        return true;
+  return false;
+}
+
+bool remove_asmt::process_instruction_gcc(
   const code_asm_gcct &code,
   goto_programt &dest)
 {
   const irep_idt &i_str = to_string_constant(code.asm_text()).get_value();
+
+  // Linux's per-CPU read, this_cpu_read and get_current():
+  //   asm("movq %%gs:%P1,%0" : "=r"(ret) : "p"(&current_task));
+  // loads the per-CPU variable whose address is the only input. One CPU is
+  // modelled, so the output is that variable. Without this the output, a
+  // pointer for get_current(), could only be havocked -- which loses what it
+  // points to -- and the whole file was refused below.
+  if(
+    is_percpu_read(id2string(i_str)) && code.outputs().operands().size() == 1 &&
+    code.inputs().operands().size() == 1 &&
+    code.outputs().operands()[0].operands().size() == 2 &&
+    code.inputs().operands()[0].operands().size() == 2)
+  {
+    const exprt &out = to_binary_expr(code.outputs().operands()[0]).op1();
+    const exprt &in = to_binary_expr(code.inputs().operands()[0]).op1();
+    if(in.type().id() == ID_pointer)
+    {
+      dest.add(goto_programt::make_assignment(
+        code_assignt{
+          out,
+          typecast_exprt::conditional_cast(dereference_exprt{in}, out.type())},
+        code.source_location()));
+      return true;
+    }
+  }
 
   std::istringstream str(id2string(i_str));
   assembler_parser.clear();
@@ -389,10 +437,52 @@ void remove_asmt::process_instruction_gcc(
 
   if(unknown)
   {
-    // we give up; we should perhaps print a warning
+    // Was: "we give up", i.e. the statement was dropped and its output operands
+    // kept whatever value they held before. That asserts the instruction did
+    // nothing, which is unsound for any asm that computes something -- Linux's
+    // this_cpu_read (`movl %%gs:%P1,%0`) exists precisely to write its output.
+    //
+    // An asm we cannot translate may leave its declared outputs holding
+    // anything, so havoc them: that admits every value the real instruction
+    // could produce and so cannot hide a violation, where dropping it could.
+    // Memory the asm might reach through a clobber is still not modelled --
+    // unchanged from before, and the reason this over-approximates the declared
+    // outputs only.
+    // A pointer output cannot be havocked soundly. side_effect_expr_nondett
+    // of pointer type yields a fresh abstract object, not a points-to set
+    // containing the addresses this asm was given as inputs -- so a later
+    // dereference writes somewhere unrelated and a genuine race is missed.
+    // Refuse the file instead, which is what this front end did for all asm
+    // until now and what adv_Z_asm_addr.c documents as the expected outcome.
+    for(const auto &output : code.outputs().operands())
+    {
+      if(
+        output.operands().size() == 2 &&
+        to_binary_expr(output).op1().type().id() == ID_pointer)
+      {
+        throw unsupported_operation_exceptiont(
+          "inline asm writing a pointer operand: havocking it would lose the "
+          "addresses the asm was given, so a later dereference could miss a "
+          "genuine race");
+      }
+    }
+
+    for(const auto &output : code.outputs().operands())
+    {
+      if(output.operands().size() == 2)
+      {
+        const exprt &lhs = to_binary_expr(output).op1();
+        side_effect_expr_nondett rhs{lhs.type(), code.source_location()};
+        dest.add(goto_programt::make_assignment(
+          code_assignt{lhs, std::move(rhs)}, code.source_location()));
+      }
+    }
+    return false;
   }
   else
     dest.destructive_append(tmp_dest);
+
+  return true;
 }
 
 /// Translates the given inline assembly code (in msc style) to non-assembly
@@ -401,7 +491,7 @@ void remove_asmt::process_instruction_gcc(
 /// \param function_id: Name of function being processed
 /// \param code: The inline assembly code statement to translate
 /// \param dest: The goto program to append the new instructions to
-void remove_asmt::process_instruction_msc(
+bool remove_asmt::process_instruction_msc(
   const irep_idt &function_id,
   const code_asmt &code,
   goto_programt &dest)
@@ -517,10 +607,16 @@ void remove_asmt::process_instruction_msc(
 
   if(unknown)
   {
-    // we give up; we should perhaps print a warning
+    // As in the gcc case: report that nothing was translated, so process_function
+    // leaves the instruction in place rather than skipping it. code_asmt has no
+    // declared output operands to havoc here, so this is no weaker than the
+    // previous behaviour, which dropped the statement outright.
+    return false;
   }
   else
     dest.destructive_append(tmp_dest);
+
+  return true;
 }
 
 /// Replaces inline assembly instructions in the goto function by non-assembly
@@ -539,8 +635,17 @@ void remove_asmt::process_function(
     if(it->is_other() && it->get_other().get_statement() == ID_asm)
     {
       goto_programt tmp_dest;
-      process_instruction(function_id, *it, tmp_dest);
-      it->turn_into_skip();
+      const bool translated = process_instruction(function_id, *it, tmp_dest);
+
+      // Only remove the asm if it was actually translated. An untranslated one
+      // must stay: dirtyt has not run yet (symex_main.cpp), and turning this
+      // into a SKIP would destroy the operands and with them any address-of
+      // they contain, silently making an address-taken object look
+      // thread-exclusive. symex ignores ID_asm, so keeping it is inert.
+      // Do NOT instead re-emit the asm into tmp_dest -- destructive_insert
+      // splices after `it`, which this loop would then visit again.
+      if(translated)
+        it->turn_into_skip();
       did_something = true;
 
       goto_programt::targett next = it;

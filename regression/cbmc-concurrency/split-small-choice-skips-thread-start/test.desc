@@ -1,0 +1,14 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^split small choices
+^warning: ignoring
+--
+The rest of main after the choice of j starts a thread (through
+pthread_create): a split would start one thread per copy, so main is not
+split. j == 0 lets the thread overwrite slot[0] after the store of main, failing
+the assertion.

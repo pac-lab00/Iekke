@@ -2083,18 +2083,19 @@ simplify_exprt::simplify_byte_update(const byte_update_exprt &expr)
     const struct_typet::componentst &components=
       struct_type.components();
 
+    // The offset of each member is accumulated here. Was: member_offset per
+    // member, which sums the sizes of all members before it, making this loop
+    // quadratic in the members, each size computed through every nested type;
+    // on the ldv-linux irda drivers most of symex went there. The two agree:
+    // the loop stops at the first member that is not a whole number of
+    // bytes, and up to there member_offset is exactly that sum.
+    mp_integer next_offset = 0;
+
     for(const auto &component : components)
     {
-      auto m_offset = member_offset(struct_type, component.get_name(), ns);
+      const mp_integer m_offset = next_offset;
 
       auto m_size_bits = pointer_offset_bits(component.type(), ns);
-
-      // can we determine the current offset?
-      if(!m_offset.has_value())
-      {
-        result_expr.make_nil();
-        break;
-      }
 
       // is it a byte-sized member?
       if(!m_size_bits.has_value() || *m_size_bits == 0 || (*m_size_bits) % 8 != 0)
@@ -2104,14 +2105,15 @@ simplify_exprt::simplify_byte_update(const byte_update_exprt &expr)
       }
 
       mp_integer m_size_bytes = (*m_size_bits) / 8;
+      next_offset += m_size_bytes;
 
       // is that member part of the update?
-      if(*m_offset + m_size_bytes <= *offset_int)
+      if(m_offset + m_size_bytes <= *offset_int)
         continue;
       // are we done updating?
       else if(
         update_size.has_value() && *update_size > 0 &&
-        *m_offset >= *offset_int + *update_size)
+        m_offset >= *offset_int + *update_size)
       {
         break;
       }
@@ -2125,21 +2127,21 @@ simplify_exprt::simplify_byte_update(const byte_update_exprt &expr)
 
       // are we updating on member boundaries?
       if(
-        *m_offset < *offset_int ||
-        (*m_offset == *offset_int && update_size.has_value() &&
+        m_offset < *offset_int ||
+        (m_offset == *offset_int && update_size.has_value() &&
          *update_size > 0 && m_size_bytes > *update_size))
       {
         byte_update_exprt v(
           ID_byte_update_little_endian,
           member_exprt(root, component.get_name(), component.type()),
-          from_integer(*offset_int - *m_offset, offset.type()),
+          from_integer(*offset_int - m_offset, offset.type()),
           value);
 
         to_with_expr(result_expr).new_value().swap(v);
       }
       else if(
         update_size.has_value() && *update_size > 0 &&
-        *m_offset + m_size_bytes > *offset_int + *update_size)
+        m_offset + m_size_bytes > *offset_int + *update_size)
       {
         // we don't handle this for the moment
         result_expr.make_nil();
@@ -2150,7 +2152,7 @@ simplify_exprt::simplify_byte_update(const byte_update_exprt &expr)
         byte_extract_exprt v(
           ID_byte_extract_little_endian,
           value,
-          from_integer(*m_offset - *offset_int, offset.type()),
+          from_integer(m_offset - *offset_int, offset.type()),
           component.type());
 
         to_with_expr(result_expr).new_value().swap(v);

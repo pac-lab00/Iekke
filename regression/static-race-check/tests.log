@@ -1,0 +1,931 @@
+Test 'address-taken-fresh-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'address-taken-pointer-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'alias-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'arg-copied-to-local-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'arg-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'arg-stored-global-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'atomic-function-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'atomic-function-vs-plain-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'atomic-pointee-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'atomic-pointer-plain-pointee-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'atomic-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'atomic1-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'conditional-join-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'condvar-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'fresh2-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'global-target-alias-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'global-target-locked-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'global-target-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'heap-publication-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'heapwr-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'helper-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'integer-arg-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'join-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'join-then-create-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'lockbranch-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'locked-loop-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'main-heap-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'mainafter-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'mainjoined-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'multi-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'nested-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-distinct-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'param-inc-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-incr-lock-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-lock-elements-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'param-lock-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'plain-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'read-first-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'reassignG-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'seq-sites-racefree'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: RACE-FREE$
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: RACE-FREE\r\\?$ [OK]
+
+Test 'spin-handshake-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'static-init-target-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'static-local-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'tidrace-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'tidreassign-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'tmp2-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'two-locks-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'twosites-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+
+Test 'unlockloop-racy'
+  Level: CORE
+  Input: main.c
+  Output: main.out
+  Options: --static-race-check
+  Results:
+    ^EXIT=0$
+    ^SIGNAL=0$
+    ^STATIC RACE CHECK: UNKNOWN
+    --
+Running /home/gennaro/tie-sound/src/cbmc/iekke_exe --static-race-check main.c >main.out 2>&1
+  Exit: 0
+  Signal: 0
+  Core: 0
+Execution [OK]
+^EXIT=0\r\\?$ [OK]
+^SIGNAL=0\r\\?$ [OK]
+^STATIC RACE CHECK: UNKNOWN [OK]
+

@@ -1,11 +1,12 @@
 SRC = allocate_objects.cpp \
+      spin_loops.cpp \
+      static_race_check.cpp \
       adjust_float_expressions.cpp \
       builtin_functions.cpp \
       class_hierarchy.cpp \
       class_identifier.cpp \
       compute_called_functions.cpp \
       destructor.cpp \
-      destructor_tree.cpp \
       elf_reader.cpp \
       ensure_one_backedge_per_target.cpp \
       format_strings.cpp \
@@ -25,6 +26,7 @@ SRC = allocate_objects.cpp \
       goto_program.cpp \
       goto_trace.cpp \
       graphml_witness.cpp \
+      yaml_witness.cpp \
       initialize_goto_model.cpp \
       instrument_preconditions.cpp \
       interpreter.cpp \
@@ -59,6 +61,7 @@ SRC = allocate_objects.cpp \
       rewrite_union.cpp \
       resolve_inherited_component.cpp \
       safety_checker.cpp \
+      scope_tree.cpp \
       set_properties.cpp \
       show_goto_functions.cpp \
       show_goto_functions_json.cpp \

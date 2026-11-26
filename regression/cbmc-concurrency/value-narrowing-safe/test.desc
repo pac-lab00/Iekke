@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --glucose
+^EXIT=0$
+^SIGNAL=0$
+^Value narrowing: [0-9][0-9]* objects$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+flag (0..1) and cnt (0..2) are narrowed; any takes a nondeterministic value
+and keeps its full width.

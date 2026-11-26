@@ -316,6 +316,14 @@ public:
     return make_union(new_values.values);
   }
 
+  /// Merges into this set the entries of \p now that are not in a subtree
+  /// shared with \p before. When every entry of \p before is already in this
+  /// set, the result is the same as make_union(now), at the cost of what
+  /// changed between the two rather than of everything that differs from this
+  /// set.
+  /// \return true if anything changed.
+  bool make_union_delta(const valuest &now, const valuest &before);
+
   /// Transforms this value-set by assuming an expression holds.
   /// Currently this can only mark dynamic objects valid; all other
   /// assumptions are ignored.

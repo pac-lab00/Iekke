@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+SUCCESSFUL
+--
+The SV-COMP tool-info module reads TRUE when any output line contains
+SUCCESSFUL, so a run that finds a violation must not print the word
+anywhere, not even in a status message.

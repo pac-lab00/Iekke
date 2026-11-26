@@ -1,0 +1,21 @@
+CORE
+main.c
+--32 --big-endian -DTEST_BIG_ENDIAN --unwind 13 -DCHECK_REACHABLE
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] line 45 assertion 0: FAILURE$
+^\[main.assertion.2\] line 49 assertion a\[0\] == 0 && a\[1\] == 0x00111213 && a\[2\] == 0x14151617: SUCCESS$
+^\[main.assertion.3\] line 50 assertion a\[3\] == 0x18191a1b && a\[4\] == 0x1c000000 && a\[5\] == 0: SUCCESS$
+^\[main.assertion.4\] line 59 assertion 0: FAILURE$
+^\[main.assertion.5\] line 63 assertion a\[0\] == 0x11 && a\[1\] == 0x12131415 && a\[2\] == 0x16171819: SUCCESS$
+^\[main.assertion.6\] line 64 assertion a\[3\] == 0x1a1b1c00 && a\[4\] == 0: SUCCESS$
+^\[main.assertion.7\] line 72 assertion b\[0\] == 0x21 && b\[1\] == 0x22242326 && b\[2\] == 0x25000000: SUCCESS$
+^\[main.assertion.8\] line 77 assertion b\[3\] == 0: SUCCESS$
+^\[main.assertion.9\] line 82 assertion 0: FAILURE$
+^\[main.assertion.10\] line 86 assertion b\[0\] == 0x2122 && b\[1\] == 0x24232625 && b\[2\] == 0: SUCCESS$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+All checked branches of byte_update_nonconst_window-big-endian are reached, so
+its SUCCESSFUL is not vacuous.

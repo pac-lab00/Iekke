@@ -1,0 +1,22 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Two threads store to their own element of an array whose size is symbolic,
+which field sensitivity cannot split into elements. The store was
+`data#new == with(data#old, i, v)` built from the thread's last view of the
+whole array and published as a whole, so it put back the element the other
+thread had just stored: each thread could read its own element back as 0.
+The store now reads the old value and writes the new one in an atomic
+section of its own.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+pthread-lit/sssc12_variant and weaver/popl20-more-vector-add (unreach-call).
+
+See `symbolic_size_store_shared_element` (a real failure, must stay FAILED)
+and `symbolic_size_store_shared_element_race`.

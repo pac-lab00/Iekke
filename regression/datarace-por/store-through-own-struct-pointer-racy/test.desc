@@ -1,0 +1,11 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Both threads store to the same member through such pointers: a real race,
+which the conditions must not hide.

@@ -1,0 +1,1113 @@
+#! /usr/bin/python3
+# SV-COMP wrapper for Iekke.
+#
+# Bug search. A ladder of (unwind, rounds) bounds, the same for every program,
+# is tried in order under the time budget. A violation found at any bound is
+# reported as FALSE: it is a real execution of the program.
+#
+# Proof. TRUE comes only from a proof run: every loop fully unwound, checked
+# by unwinding assertions, and every interleaving covered, either by CBMC's
+# partial-order encoding or by the round-robin encoding at a round count that
+# covers every schedule. For data races a static lockset and creation-order
+# check is tried first. A SUCCESSFUL at a bound of the ladder is not a proof
+# and is never reported.
+#
+# Otherwise the answer is UNKNOWN. Before it, for unreach-call, no-overflow
+# and memory safety, the program is compiled with a sanitizer and run
+# concretely; a violation observed there is reported as FALSE.
+import datetime
+import hashlib
+import os
+import re
+import signal
+import shutil
+import subprocess
+import tempfile
+import sys
+import time
+import uuid
+
+# Line by line, not in blocks. Under BenchExec stdout is a file, and a run
+# killed from outside loses whatever was still in the buffer -- every
+# "try ..." line included, so the log cannot say which bound it died in.
+sys.stdout.reconfigure(line_buffering=True)
+
+# Below the 900 s CPU limit: the budget is measured in wall time, and the
+# wrapper needs a margin to report before the limit is reached.
+BUDGET = float(os.environ.get("DEAGLE_BUDGET", "870"))
+# The bug search starts no new bound after STOP_AFTER seconds; the rest of
+# the budget goes to the proof runs. Most violations are found well before
+# this point.
+STOP_AFTER = float(os.environ.get("DEAGLE_STOP", "200"))
+# A bound already running at STOP_AFTER may finish, up to STOP_CUT, so that a
+# slow bound started early is not lost. The proofs get the time from STOP_CUT
+# at the latest.
+STOP_CUT = max(STOP_AFTER, float(os.environ.get("DEAGLE_STOP_CUT", "360")))
+MIN_SLICE = 3.0
+# No single bound may eat the whole budget. The schedule deliberately mixes two
+# regimes -- deep unwind at few rounds, and deep rounds at modest unwind -- and
+# one slow attempt in the first regime must not starve the second.
+SLICE = BUDGET / 3.0
+# How often a running bound's memory is checked, in seconds.
+POLL = 0.25
+
+# Declared up front, identical for every program, roughly in order of rising
+# cost. Two regimes are covered: bounds with many rounds and a small unwind
+# find bugs that need many context switches but few loop iterations; bounds
+# with a large unwind and few rounds find bugs behind long loops.
+#
+# The deep-rounds entries come before the deep-unwind ones: a very large
+# unwind can exhaust --object-bits and give no verdict, and must not delay the
+# bounds with more rounds. A bound with 4 rounds comes early, at a small
+# unwind, where it is cheap.
+SCHEDULE = [
+    (2, 2), (3, 4), (4, 3), (8, 3), (8, 4), (16, 4), (32, 4), (8, 7), (16, 9),
+    (32, 13), (32, 21), (64, 4), (256, 3), (1024, 3), (4096, 3),
+    (16384, 3),
+]
+
+# Tried before the schedule: the program with its symmetric array families
+# instantiated at two slots (--symmetric-instance, which recognises them from
+# the program and refuses when it finds none). A setup loop over all slots is
+# then two iterations long and runs to completion at a small unwind. The
+# reduced program is an under-approximation, so only its FAILED is believed;
+# its SUCCESSFUL is ignored.
+REDUCED = (4, 2, "--symmetric-instance 2")
+REDUCED_SLICE = 30.0
+
+# Tried next: every loop at the limit the tool suggests for it
+# (--unwind-suggest, an analysis of the loop's text: counter, bound, step,
+# assumed upper bounds), the others at UNSUGGESTED. One bound for all loops
+# unrolls short loops as far as the longest needs, and symex cannot always see
+# where they exit, so per-loop limits give a much smaller formula. The
+# suggestion is a heuristic (a body that also changes the counter makes it too
+# small), so a SUCCESSFUL from this step is a bounded answer like any other.
+UNSUGGESTED = 3
+SUGGEST_ROUNDS = 3
+# Bounds with at least this many rounds run with --por, the others without:
+# partial-order reduction pays off when there are many rounds; at few rounds
+# it only adds constraints. One setting per bound: the CPU limit counts all
+# cores, so running both settings in parallel spends the budget twice as fast.
+POR_MIN_ROUNDS = 7
+SUGGEST_CAP = 1024
+SUGGEST_SLICE = 60.0
+SUGGEST_TIMEOUT = 30.0
+
+# An array allocated with a non-constant number of elements n gets a constant
+# number K, under the condition n <= K (--dynamic-array-bound): field
+# sensitivity then splits it into scalars, where an array of symbolic size goes
+# to the array theory whole. It cuts the executions that ask for more than K, as the unwinding
+# bound cuts loops, so K climbs with the unwind: a loop over the array is cut
+# there anyway. Field sensitivity splits arrays of up to 64 elements. Not for
+# memory safety: the array has K elements, so an access between n and K would
+# not be out of bounds.
+def array_bound(unwind):
+    return min(max(unwind, 4), 64)
+
+
+# Arrays read byte-wise (through a pointer to an element's member, by memcpy)
+# are answered byte by byte from the writes in schedule order
+# (--array-rf-bytes) instead of carrying the whole array on every access,
+# which keeps large arrays read at a computed index small in the formula.
+ARRAY_RF_BYTES = "--array-rf-bytes "
+
+# Encoding options that change only how the program is written into the
+# formula. --summarise-guards: after a call, the path condition is "condition
+# at the call AND one fresh symbol" instead of the whole exit condition, so it
+# stops growing with the call depth.
+# --infer-alloc-types: a block allocated with a constant size and cast at once
+# is typed by the cast, so pointer analysis keeps one entry per member.
+# --merge-exclusive-threads: thread creations on paths that exclude each other
+# share one thread.
+# --own-view-reads: a shared read of an object no other thread writes after
+# the first spawn is read from the thread's own view, so constants propagate
+# through it.
+# --index-chain is not passed: it gives fewer clauses, but the solver can be
+# much slower on them.
+ENCODING_FLAGS = ("--summarise-guards --infer-alloc-types --merge-exclusive-threads "
+                  "--own-view-reads ")
+
+# --thread-symmetry is not passed: it can make the solver much slower.
+
+# The version alone: BenchExec shows it next to the name of the tool.
+if len(sys.argv) < 2 or sys.argv[1] in ("-v", "--version"):
+    print("2.0")
+    sys.exit(0)
+
+if sys.argv[1] == "--witness":
+    print("Iekke is not a validator!")
+    sys.exit(0)
+
+if len(sys.argv) < 3:
+    print("Usage: ./deagle property_path program_path [--32|--64]")
+    sys.exit(0)
+
+property_path = sys.argv[1]
+program_path = sys.argv[2]
+
+# The data model comes from the task's yml, and BenchExec passes it as the
+# third argument. Dropping it runs every task in the tool's default model,
+# which is ILP32 (config.cpp, "default --32"): an LP64 task would be analysed
+# with 4-byte longs and pointers, which changes overflows, offsets and sizes.
+data_model = sys.argv[3] if len(sys.argv) > 3 else ""
+if data_model not in ("", "--32", "--64"):
+    print("Unknown data model: %s" % data_model)
+    sys.exit(0)
+
+flags = "--allow-pointer-unsoundness --graphml-witness error-witness.graphml "
+flags += data_model + " "
+# SV-COMP conventions since 2026: malloc, calloc and realloc may return NULL
+# (sv-benchmarks c/CONVENTIONS.md); CBMC assumes they succeed unless told
+# otherwise.
+flags += "--malloc-may-fail --malloc-fail-null "
+if "unreach-call.prp" in property_path:
+    flags += ""
+elif "no-data-race.prp" in property_path:
+    flags += "--no-assertions --datarace "
+elif "no-overflow.prp" in property_path:
+    flags += "--no-assertions --signed-overflow-check --unsigned-overflow-check "
+    # the values read from __VERIFIER_nondet_* in the violation witness, which
+    # helps validators replay an overflow; not used for unreach-call, where
+    # validators accept the witness without them
+    flags += "--yaml-witness-values "
+elif "valid-memsafety.prp" in property_path:
+    flags += "--no-assertions --pointer-check --bounds-check --alloc-check --memory-leak-check "
+else:
+    print("Unknown property: %s" % property_path)
+    sys.exit(0)
+
+
+# Witnesses in the YAML format of sv-witnesses: since 2027 a TRUE or FALSE
+# answer for unreach-call and no-overflow without one scores nothing ("witness
+# missing"), and the validators look for witness.yml in the working
+# directory. A TRUE gets a correctness witness without invariants; a FALSE
+# gets the violation sequence the tool writes from its counterexample
+# (--yaml-witness: thread creations and the violation), wrapped here in the
+# metadata only the wrapper knows. Memory safety is scored without witnesses,
+# so none is written there. No-data-race scores a TRUE without a witness and a
+# FALSE only with a confirmed one, so only the violation witness is written.
+WITNESS = "witness.yml"
+WITNESS_CONTENT = "witness-content.yml"
+WANTS_CORRECTNESS_WITNESS = ("unreach-call.prp" in property_path
+                             or "no-overflow.prp" in property_path)
+WANTS_WITNESS = (WANTS_CORRECTNESS_WITNESS
+                 or "no-data-race.prp" in property_path)
+if WANTS_WITNESS:
+    flags += "--yaml-witness %s " % WITNESS_CONTENT
+
+
+def quoted(s):
+    return "'" + s.replace("'", "''") + "'"
+
+
+def write_witness(entry_type, format_version, content):
+    """Write witness.yml: one entry of entry_type around the given content
+    (YAML list lines, or None for an empty list)."""
+    with open(program_path, "rb") as f:
+        sha256 = hashlib.sha256(f.read()).hexdigest()
+    with open(property_path) as f:
+        specification = " ".join(l.strip() for l in f if l.strip())
+    lines = [
+        "- entry_type: %s" % quoted(entry_type),
+        "  metadata:",
+        "    format_version: %s" % quoted(format_version),
+        "    uuid: %s" % quoted(str(uuid.uuid4())),
+        "    creation_time: %s" % quoted(datetime.datetime.now(
+            datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        "    producer:",
+        "      name: 'Iëkke'",
+        "      version: '2.0'",
+        "    task:",
+        "      input_files:",
+        "      - %s" % quoted(os.path.basename(program_path)),
+        "      input_file_hashes:",
+        "        %s: %s" % (quoted(program_path), quoted(sha256)),
+        "      specification: %s" % quoted(specification),
+        "      data_model: %s" % quoted("LP64" if data_model == "--64" else "ILP32"),
+        "      language: 'C'",
+    ]
+    if content:
+        lines.append("  content:")
+        lines += ["  " + l for l in content.splitlines()]
+    else:
+        lines.append("  content: []")
+    with open(WITNESS, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_violation_witness():
+    """The violation witness of the last run, if the tool wrote one."""
+    try:
+        with open(WITNESS_CONTENT, encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return
+    if content.strip():
+        write_witness("violation_sequence", "2.2", content)
+
+
+def verdict_of(text):
+    """The verdict on the run's last line, or None if it produced none.
+
+    Only the last line counts: the tool prints its own verdict vocabulary
+    inside diagnostics, and a crashed or killed run that emitted a warning
+    containing "VERIFICATION SUCCESSFUL" must not read as a successful
+    verification.
+    """
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines:
+        return None
+    last = lines[-1]
+    if "VERIFICATION FAILED" in last:
+        return "FAILED"
+    if "VERIFICATION SUCCESSFUL" in last:
+        return "SUCCESSFUL"
+    return None
+
+
+def generated_vccs(text):
+    """The number of verification conditions the run generated, or None."""
+    m = re.findall(r"Generated (\d+) VCC\(s\)", text)
+    return int(m[-1]) if m else None
+
+
+def kill_bound(proc):
+    """Kill everything one bound started: the shell, the tool, its solver.
+
+    Killing only the shell -- what subprocess.run does on a timeout -- leaves
+    the tool and the external glucose it spawned running. They then overlap
+    the next bound and outlive the wrapper, spending CPU that SV-COMP charges
+    to this run. Each bound therefore gets its own
+    process group, and the group is what is killed.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+current = None
+
+
+def loop_bounds(left):
+    """[(loop id, suggested limit or None)] from --unwind-suggest; [] if none."""
+    global current
+    cmd = "./iekke_exe %s %s --unwind-suggest" % (program_path, flags)
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
+    try:
+        out, _ = current.communicate(timeout=max(0.01, min(SUGGEST_TIMEOUT, left)))
+    except subprocess.TimeoutExpired:
+        kill_bound(current)
+        current.communicate()
+        out = ""
+    current = None
+    loops = []
+    for line in out.splitlines():
+        m = re.match(r"Loop (\S+):$", line.strip())
+        if m:
+            loops.append([m.group(1), None])
+            continue
+        m = re.match(r"Suggested unwind limit: (\d+)$", line.strip())
+        if m and loops:
+            loops[-1][1] = int(m.group(1))
+    return loops
+
+
+def on_signal(signum, frame):
+    # The bound's group is no longer ours, so a signal that ends the wrapper
+    # would not reach it. Pass it on before going.
+    if current is not None:
+        kill_bound(current)
+    sys.exit(128 + signum)
+
+
+for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(s, on_signal)
+
+
+def memory_limit():
+    """The memory this run may use, in bytes.
+
+    DEAGLE_MEMLIMIT if set, else the tightest cgroup limit on the way up from
+    this process's cgroup (where BenchExec puts its limit, often on a parent),
+    else the machine's RAM. Both cgroup versions are handled.
+    """
+    if os.environ.get("DEAGLE_MEMLIMIT"):
+        return int(os.environ["DEAGLE_MEMLIMIT"])
+    limits = []
+    try:
+        with open("/proc/self/cgroup") as f:
+            entries = [l.rstrip("\n").split(":", 2) for l in f]
+    except OSError:
+        entries = []
+    for _, controllers, path in entries:
+        if controllers == "":
+            root, name = "/sys/fs/cgroup", "memory.max"
+        elif "memory" in controllers.split(","):
+            root, name = "/sys/fs/cgroup/memory", "memory.limit_in_bytes"
+        else:
+            continue
+        while True:
+            try:
+                with open("%s%s/%s" % (root, path.rstrip("/"), name)) as f:
+                    v = f.read().strip()
+                # v2 writes "max" for no limit, v1 a number near 2**63.
+                if v != "max" and int(v) < 1 << 60:
+                    limits.append(int(v))
+            except (OSError, ValueError):
+                pass
+            if path in ("/", ""):
+                break
+            path = os.path.dirname(path.rstrip("/")) or "/"
+    if limits:
+        return min(limits)
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError):
+        return None
+
+
+def group_rss(pgid):
+    """Resident memory of every process in group pgid, in bytes."""
+    total = 0
+    page = os.sysconf("SC_PAGE_SIZE")
+    try:
+        pids = os.listdir("/proc")
+    except OSError:          # no /proc: memory cannot be watched
+        return 0
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % pid) as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            if int(fields[2]) != pgid:
+                continue
+            with open("/proc/%s/statm" % pid) as f:
+                total += int(f.read().split()[1]) * page
+        except (OSError, IndexError, ValueError):
+            pass
+    return total
+
+
+# One bound that outgrows the run's memory gets the whole run killed from
+# outside, and with it every answer the earlier bounds found: a remembered
+# SUCCESSFUL is lost, and the run scores as a memory-out. So each bound is held below
+# the run's limit, with room left for the wrapper and for growth between two
+# checks, and a bound that crosses it fails alone, as a timed-out one does.
+limit = memory_limit()
+CAP = limit - max(256 << 20, limit // 10) if limit else None
+print("memory cap per bound: %s"
+      % ("%.0f MB" % (CAP / 2**20) if CAP else "none (limit unknown)"))
+
+started = time.time()
+bounded_safe = None
+# Rounds shown free of violations, per unwinding (plain bounds only): a later
+# bound with the same unwinding and more rounds checks only assertions and
+# races that run after them (LAZYPO_CHECK_AFTER, lazy_po). An assertion or a
+# race within the first K rounds ends an execution prefix of K rounds, which
+# the earlier bound already covered.
+safe_rounds = {}
+
+def bounds():
+    """The bounds in the order they are tried. The loop limits are asked for
+    only once the reduced program has had its try, so that a slow suggestion
+    does not delay the first bound."""
+    yield REDUCED
+    loops = loop_bounds(BUDGET - (time.time() - started))
+    if any(limit for _, limit in loops):
+        unwindset = ",".join("%s:%d" % (loop, min(limit or UNSUGGESTED, SUGGEST_CAP))
+                             for loop, limit in loops)
+        print("suggested loop limits: %s" % unwindset)
+        yield (UNSUGGESTED, SUGGEST_ROUNDS, "--unwindset " + unwindset)
+    for u, r in SCHEDULE:
+        yield (u, r, "")
+
+
+# A violation found with more rounds than needed gives a longer witness, and a
+# validator has limited time to follow it. A violation at fewer rounds is one
+# at more rounds too, so the answer does not change: the run is repeated at
+# SHORT_ROUNDS for a short while, and its witness kept if it finds one. Only
+# for data races.
+SHORT_ROUNDS = 2
+SHORT_SLICE = 30
+
+
+def shorter_witness(cmd, rounds):
+    """Replace the witness of a violation found at `rounds` by one found at
+    SHORT_ROUNDS with the same flags, when that run finds one in time."""
+    left = BUDGET - (time.time() - started)
+    if left <= MIN_SLICE or not os.path.exists(WITNESS_CONTENT):
+        return
+    shutil.copyfile(WITNESS_CONTENT, WITNESS_CONTENT + ".long")
+    os.remove(WITNESS_CONTENT)
+    short = (cmd.replace("--rounds %d " % rounds, "--rounds %d " % SHORT_ROUNDS)
+                .replace(" --por ", " --no-por "))
+    proc = subprocess.Popen(short, shell=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            errors="replace", start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=min(SHORT_SLICE, left - MIN_SLICE))
+    except subprocess.TimeoutExpired:
+        kill_bound(proc)
+        proc.communicate()
+        out = ""
+    if verdict_of(out) == "FAILED" and os.path.exists(WITNESS_CONTENT):
+        print("  shorter witness: violation at rounds=%d" % SHORT_ROUNDS)
+        os.remove(WITNESS_CONTENT + ".long")
+    else:
+        os.replace(WITNESS_CONTENT + ".long", WITNESS_CONTENT)
+
+
+# SV-COMP counts an array access out of bounds as valid-deref. The tool-info
+# module it runs (benchexec/tools/iekke.py) recognises valid-deref only by
+# "pointer_dereference." or "alloc.assertion." on a FAILURE line, and CBMC
+# names its --bounds-check properties "array_bounds.": alone, such a failure
+# is read as false(unreach-call), a wrong answer for a memory-safety task.
+def deref_reading(out):
+    failed = [l for l in out.splitlines()
+              if l.startswith("[") and l.rstrip().endswith(": FAILURE")]
+    others = ("pointer_dereference.", "alloc.assertion.", "memory-leak.")
+    if (any(".array_bounds." in l for l in failed)
+            and not any(k in l for l in failed for k in others)):
+        return ("valid-deref: an array access out of bounds, "
+                "a pointer_dereference. FAILURE for SV-COMP")
+    return None
+
+
+# The concrete guard. Bounded model checking misses bugs deeper than the
+# bound, such as ones that need many context switches or 2^31 loop
+# iterations, which a native run can reach in seconds. Before an UNKNOWN is
+# reported, the program is compiled with the sanitizer of the property and
+# run, with extreme and random values for __VERIFIER_nondet_* and random
+# delays at thread creation and around locks. A run that shows the violation
+# is a concrete execution of the bug, so the answer is FAILED instead.
+GUARD_HARNESS = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
+#include <time.h>
+static unsigned long long g_state = 88172645463325252ULL;
+static int g_seed = -1;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned long long g_rand(void)
+{ g_state ^= g_state << 13; g_state ^= g_state >> 7; g_state ^= g_state << 17; return g_state; }
+static int g_kind(void)
+{
+  if(g_seed < 0) { const char *s = getenv("GUARD_SEED"); g_seed = s ? atoi(s) : 0;
+                   g_state += (unsigned long long)g_seed * 0x9E3779B97F4A7C15ULL; }
+  if(g_seed <= 3) return g_seed;
+  unsigned long long r = g_rand() % 10;
+  return r < 2 ? 0 : r < 3 ? 1 : r < 4 ? 2 : r < 5 ? 3 : r < 6 ? 4 : r < 8 ? 5 : 6;
+}
+#define NONDET(name, T, MAX, MIN) T name(void) { \
+  int k; T v; real_lock(&g_lock); k = g_kind(); \
+  v = k == 0 ? (T)(MAX) : k == 1 ? (T)(MIN) : k == 2 ? (T)0 : k == 3 ? (T)-1 \
+    : k == 5 ? (T)(1 + g_rand() % 16) : k == 6 ? (T)(1 + g_rand() % 64) : (T)g_rand(); \
+  real_unlock(&g_lock); return v; }
+#undef pthread_mutex_lock
+#undef pthread_mutex_unlock
+#undef pthread_create
+#undef pthread_cond_wait
+#undef pthread_join
+static int real_lock(pthread_mutex_t *m) { return pthread_mutex_lock(m); }
+static int real_unlock(pthread_mutex_t *m) { return pthread_mutex_unlock(m); }
+NONDET(__VERIFIER_nondet_int, int, INT32_MAX, INT32_MIN)
+NONDET(__VERIFIER_nondet_uint, unsigned int, UINT32_MAX, 0)
+NONDET(__VERIFIER_nondet_unsigned, unsigned int, UINT32_MAX, 0)
+NONDET(__VERIFIER_nondet_long, long, LONG_MAX, LONG_MIN)
+NONDET(__VERIFIER_nondet_ulong, unsigned long, ULONG_MAX, 0)
+NONDET(__VERIFIER_nondet_short, short, INT16_MAX, INT16_MIN)
+NONDET(__VERIFIER_nondet_ushort, unsigned short, UINT16_MAX, 0)
+NONDET(__VERIFIER_nondet_char, char, 127, -128)
+NONDET(__VERIFIER_nondet_uchar, unsigned char, 255, 0)
+NONDET(__VERIFIER_nondet_bool, _Bool, 1, 0)
+NONDET(__VERIFIER_nondet_longlong, long long, INT64_MAX, INT64_MIN)
+NONDET(__VERIFIER_nondet_ulonglong, unsigned long long, UINT64_MAX, 0)
+NONDET(__VERIFIER_nondet_size_t, size_t, SIZE_MAX, 0)
+static pthread_mutex_t g_atomic = PTHREAD_MUTEX_INITIALIZER;
+void __VERIFIER_atomic_begin(void) { pthread_mutex_lock(&g_atomic); }
+void __VERIFIER_atomic_end(void) { pthread_mutex_unlock(&g_atomic); }
+void __guard_abort(void) { _exit(0); }
+void __assert_fail(const char *a, const char *f, unsigned l, const char *fn)
+{ fprintf(stderr, "GUARD_REACH %s:%u\n", f, l); _exit(99); }
+static __thread unsigned long long t_state;
+static int quiet = -1, turns = -1;
+static void noise(void)
+{
+  if(quiet < 0) quiet = getenv("GUARD_QUIET") != 0;
+  if(turns < 0) turns = getenv("GUARD_TURNS") != 0;
+  if(quiet) return;
+  /* on one core, giving the processor up at every synchronisation makes
+     the threads take turns, step by step */
+  if(turns) { sched_yield(); return; }
+  if(!t_state) t_state = (unsigned long long)pthread_self() ^ (unsigned long long)getpid() * 0x9E3779B97F4A7C15ULL ^ (unsigned long long)clock();
+  t_state ^= t_state << 13; t_state ^= t_state >> 7; t_state ^= t_state << 17;
+  unsigned r = t_state % 8;
+  if(r == 0) usleep(t_state % 2000); else if(r < 3) sched_yield();
+}
+void __guard_noise(void) { noise(); }
+int __guard_lock(pthread_mutex_t *m) { noise(); return pthread_mutex_lock(m); }
+int __guard_unlock(pthread_mutex_t *m) { int r = pthread_mutex_unlock(m); noise(); return r; }
+int __guard_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { noise(); return pthread_cond_wait(c, m); }
+int __guard_join(pthread_t t, void **r) { noise(); return pthread_join(t, r); }
+struct guard_start { void *(*f)(void *); void *a; };
+static void *trampoline(void *p)
+{ struct guard_start s = *(struct guard_start *)p; free(p); noise(); return s.f(s.a); }
+int __guard_create(pthread_t *t, const pthread_attr_t *at, void *(*f)(void *), void *a)
+{
+  struct guard_start *s = malloc(sizeof *s); int r;
+  if(!s) return 11;
+  s->f = f; s->a = a; r = pthread_create(t, at, trampoline, s); noise(); return r;
+}
+"""
+
+# Only the evidence that is the property itself: reach_error() reached, a
+# signed arithmetic overflow, an out-of-bounds or freed access. Not data
+# races: ThreadSanitizer reports races on _Atomic accesses and CAS loops that
+# are not data races in the C semantics.
+# Force-included into a .c task: the C11 atomic operations yield like the
+# locks do, so that threads synchronising through atomics alone take turns
+# too. Not a store: a step that loads and then stores would take turns
+# between the two, not between steps. A .i task has them expanded
+# already, and including stdatomic.h before it would clash.
+GUARD_ATOMICS = r"""
+#include <stdatomic.h>
+void __guard_noise(void);
+#undef atomic_load
+#define atomic_load(p) (__guard_noise(), atomic_load_explicit((p), memory_order_seq_cst))
+#undef atomic_store
+#define atomic_store(p, v) atomic_store_explicit((p), (v), memory_order_seq_cst)
+#undef atomic_exchange
+#define atomic_exchange(p, v) (__guard_noise(), atomic_exchange_explicit((p), (v), memory_order_seq_cst))
+#undef atomic_fetch_add
+#define atomic_fetch_add(p, v) (__guard_noise(), atomic_fetch_add_explicit((p), (v), memory_order_seq_cst))
+#undef atomic_fetch_sub
+#define atomic_fetch_sub(p, v) (__guard_noise(), atomic_fetch_sub_explicit((p), (v), memory_order_seq_cst))
+#undef atomic_compare_exchange_strong
+#define atomic_compare_exchange_strong(p, e, v) (__guard_noise(), atomic_compare_exchange_strong_explicit((p), (e), (v), memory_order_seq_cst, memory_order_seq_cst))
+#undef atomic_compare_exchange_weak
+#define atomic_compare_exchange_weak(p, e, v) (__guard_noise(), atomic_compare_exchange_weak_explicit((p), (e), (v), memory_order_seq_cst, memory_order_seq_cst))
+"""
+
+GUARD_EVIDENCE = {
+    "unreach-call.prp": r"GUARD_REACH",
+    "no-overflow.prp": r"runtime error: signed integer overflow",
+    "valid-memsafety.prp": r"ERROR: AddressSanitizer: (heap-buffer-overflow|stack-buffer-overflow|global-buffer-overflow|heap-use-after-free|stack-use-after-return|stack-use-after-scope|dynamic-stack-buffer-overflow)",
+}
+# Seconds for the concrete runs. DEAGLE_GUARD=0 turns them off.
+GUARD_BUDGET = float(os.environ.get("DEAGLE_GUARD", "300"))
+
+
+def one_core():
+    # On one core each thread runs whole time slices without contending for
+    # its locks, so long loops progress faster.
+    try:
+        os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
+    except (AttributeError, OSError):
+        pass
+
+
+def concrete_violation(budget):
+    """The first line of evidence of a violation in a concrete run, or None."""
+    kind = [k for k in GUARD_EVIDENCE if k in property_path]
+    if not kind or budget < 10 or not shutil.which("gcc"):
+        return None
+    kind = kind[0]
+    lp64 = data_model == "--64"
+    mflag = "-m64" if lp64 else "-m32"
+    san = {"unreach-call.prp": [],
+           "no-overflow.prp": ["-fsanitize=signed-integer-overflow",
+                               "-fno-sanitize-recover=all"],
+           "valid-memsafety.prp": ["-fsanitize=address"],
+           "no-data-race.prp": ["-fsanitize=thread"]}[kind]
+    env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0",
+               TSAN_OPTIONS="halt_on_error=1 exitcode=66")
+    run_prefix = []
+    if kind == "no-data-race.prp":
+        # ThreadSanitizer needs 64 bits; whether a race exists does not
+        # depend on the data model. It cannot start under the address
+        # randomisation of recent kernels.
+        mflag = "-m64"
+        if shutil.which("setarch"):
+            run_prefix = ["setarch", os.uname().machine, "-R"]
+    d = tempfile.mkdtemp(prefix="guard_", dir=".")
+    try:
+        with open(os.path.join(d, "harness.c"), "w") as f:
+            f.write(GUARD_HARNESS)
+        with open(os.path.join(d, "atomics.h"), "w") as f:
+            f.write(GUARD_ATOMICS)
+        exe = os.path.join(d, "a.out")
+        harness_o = os.path.join(d, "harness.o")
+        # The harness on its own, without the renaming of the calls of the
+        # task: renamed in its own pthread.h too, its calls of the real
+        # functions had no declaration, an error for the GCC 15 of the
+        # SV-COMP 2027 image (only a warning for older ones).
+        steps = [["gcc", mflag, "-w", "-O0", "-g", "-c"] + san +
+                 ["-o", harness_o, os.path.join(d, "harness.c")],
+                 ["gcc", mflag, "-w", "-O0", "-g", "-fno-builtin",
+                  "-Dabort=__guard_abort",
+                  "-Dpthread_mutex_lock=__guard_lock",
+                  "-Dpthread_mutex_unlock=__guard_unlock",
+                  "-Dpthread_create=__guard_create",
+                  "-Dpthread_cond_wait=__guard_cond_wait",
+                  "-Dpthread_join=__guard_join"] + san +
+                 ["-o", exe, program_path, harness_o, "-lpthread"]]
+        if program_path.endswith(".c"):
+            steps.insert(1, steps[1][:-5] + ["-include", os.path.join(d, "atomics.h")]
+                         + steps[1][-5:])
+        built = False
+        for i, cc in enumerate(steps):
+            if built:
+                break
+            try:
+                rc = subprocess.run(cc, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    timeout=min(60, budget)).returncode
+            except subprocess.TimeoutExpired:
+                rc = 1
+            if i == 0 and rc != 0:
+                return None
+            # the task with the atomics header, else without it
+            built = i > 0 and rc == 0
+        if not built:
+            return None
+        end = time.time() + budget
+        seed = 0
+        while time.time() < end - 1:
+            # Runs without the delays: a bug after 2^31 iterations of a
+            # locked loop is out of reach with a delay at every lock. The
+            # first run (largest values, no delays) may take 60% of the budget.
+            # A third kind of run takes turns at every lock, for bugs that
+            # appear only when two threads alternate step by step.
+            env["GUARD_SEED"] = str(seed // 3)
+            env.pop("GUARD_QUIET", None)
+            env.pop("GUARD_TURNS", None)
+            if seed % 3 == 0:
+                env["GUARD_QUIET"] = "1"
+            elif seed % 3 == 1:
+                env["GUARD_TURNS"] = "1"
+            cap = budget * 0.6 if seed == 0 else 10
+            seed += 1
+            try:
+                r = subprocess.run(run_prefix + [exe], env=env, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, text=True, errors="replace",
+                                   timeout=max(1, min(cap, end - time.time())),
+                                   start_new_session=True, preexec_fn=one_core)
+            except subprocess.TimeoutExpired:
+                continue
+            m = re.search(GUARD_EVIDENCE[kind] + ".*", r.stderr)
+            if m and (kind != "unreach-call.prp" or r.returncode == 99):
+                return m.group(0)[:200]
+        return None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def report_concrete(evidence):
+    print("concrete run: %s" % evidence)
+    # the lines the tool-info module of BenchExec reads the property from
+    if "valid-memsafety.prp" in property_path:
+        print("valid-deref: a concrete run, a pointer_dereference. FAILURE")
+    if "no-overflow.prp" in property_path:
+        print("no-overflow: a concrete run, an arithmetic overflow. FAILURE")
+    print("FAILED")
+    sys.exit(0)
+
+
+# Without an answer the bounds take the whole budget, and the guard would
+# have none left: it keeps GUARD_RESERVE seconds (120 of SV-COMP 900).
+GUARD_RESERVE = (min(120, 0.15 * BUDGET)
+                 if GUARD_BUDGET > 0 and any(k in property_path for k in GUARD_EVIDENCE)
+                 else 0)
+
+# A TRUE needs a sound argument, not just a bound that found no error. The
+# bounds above explore a bounded number
+# of rounds and cut loops, so their SUCCESSFUL only steers the stop rule and
+# is never reported. A TRUE comes from a proof run instead: every interleaving
+# (the round-robin encoding at a round count that covers every schedule, see
+# below), every loop checked to be fully unrolled (--unwinding-assertions),
+# no option that cuts executions
+# (--dynamic-array-bound, --symmetric-instance), and no unsound pointer
+# handling. Stock CBMC refuses every write of a shared pointer (#305: a
+# dereference may miss a target published late). Iekke repeats symex, each
+# pass seeded with the points-to sets collected so far, until no consulted
+# set grows, and says whether it converged; only a converged run, or one with
+# no shared pointer write, counts as a proof. Data races: without rounds the
+# race check ignores locks and reports races that do not exist, so a race-free
+# proof uses the round-robin encoding with a round count R that covers every
+# schedule of the unwound program (round_bound.cpp, printed under
+# LAZYPO_ROUND_BOUND=only), plus two rounds: a race is a state reached by some
+# execution in which two conflicting accesses of different threads are both
+# enabled; the execution reaching it fits in R rounds, then one more round
+# runs the first access as the last step of its thread, and the second runs
+# in the same round (a later thread) or the next (an earlier one), which is
+# the witness shape the race encoding looks for. No partial-order reduction
+# there, so every schedule within those rounds is in the formula.
+PROVABLE = True
+# Proof runs start with every loop unwound PROOF_UNWIND_START times; after a
+# run in which some loops were not fully unrolled, only those loops are
+# unwound further, so a loop that needs many iterations does not blow up the
+# unrolling of all the others. Every loop is still checked to be fully
+# unrolled. A cut loop goes straight to 4 (the loops after a cut one are
+# reached only in a later run, so small steps cost one run per loop), then one
+# iteration more up to 8, then doubling. Starting every loop at 4 makes small
+# programs slower.
+PROOF_UNWIND_START = 2
+PROOF_UNWIND_MAX = 1024
+# Spin loops (spin_loops.cpp): an iteration that writes no memory and leaves
+# the loop's locals unchanged only repeats the one before; cutting it keeps
+# every reachable state and lets a wait loop be fully unwound.
+PROOF_FLAGS = (flags.replace("--allow-pointer-unsoundness ", "")
+               + "--allow-pointer-unsoundness --summarise-guards --infer-alloc-types --unwinding-assertions "
+               + "--spin-loop-reduction ")
+# The round-robin encoding with partial-order reduction proves too once the
+# number of rounds covers every schedule: --infer-rounds computes, for the
+# unwound program, a round count R such that every execution has an
+# equivalent one within R rounds (round_bound.cpp), unless it hits the
+# --max-rounds cap. The encoding without rounds covers every schedule with
+# no round count and is tried first: CBMC's partial-order encoding
+# (--cbmc-memory-model) on the SAT solver. Deagle's ordering-consistency
+# solvers are not used for proofs: they are not trusted to be sound.
+ROUNDS_PROOF_FLAGS = "--rounds 1 --infer-rounds --max-rounds 64 --por "
+MEMORY_MODEL_PROOF_FLAGS = "--cbmc-memory-model "
+# For data races the encoding of all interleavings counts two accesses as a
+# race when they can be adjacent in some interleaving. It proves small
+# lock-based programs quickly but grows with the number of access pairs, so
+# it gets a short budget before the round-robin proof; a race it reports is
+# not reported (no witness is written for it), the round-robin proof follows.
+RACE = "no-data-race.prp" in property_path
+PROOF_MODES = (["memory-model", "race"] if RACE
+               else ["memory-model", "rounds"])
+RACE_MEMORY_MODEL_BUDGET = 180.0
+MAX_PROOF_ROUNDS = 64
+
+
+def run_watched(cmd, timeout):
+    """Run one proof command, killed at the timeout or when it outgrows the
+    per-bound memory cap (as the bounds of the bug search are): one run that
+    reached the run's limit would get the whole run killed from outside.
+    Returns (output, None) or (None, "timeout" | "memory")."""
+    global current
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
+    deadline = time.time() + timeout
+    while True:
+        try:
+            out, _ = current.communicate(
+                timeout=max(0.01, min(POLL, deadline - time.time())))
+            current = None
+            return out, None
+        except subprocess.TimeoutExpired:
+            stop = ("timeout" if time.time() >= deadline else
+                    "memory" if CAP and group_rss(current.pid) > CAP else None)
+            if stop:
+                kill_bound(current)
+                current.communicate()
+                current = None
+                return None, stop
+
+
+def next_unwind(n):
+    """the next unwinding of a loop that was not fully unrolled"""
+    return 4 if n < 4 else n + 1 if n < 8 else 2 * n
+
+
+def unwind_options(raised):
+    """--unwind for every loop, --unwindset for the loops raised above it"""
+    opts = "--unwind %d " % PROOF_UNWIND_START
+    if raised:
+        opts += "--unwindset %s " % ",".join(
+            "%s:%d" % (loop, n) for loop, n in sorted(raised.items()))
+    return opts
+
+
+def cut_loops(out):
+    """the loops (function.number) whose unwinding assertion failed"""
+    return sorted(set("%s.%s" % m.groups() for m in re.finditer(
+        r"^\[(.+)\.unwind\.(\d+)\] .*: FAILURE", out, re.M)))
+
+
+def raise_loops(raised, cut):
+    """Unwind the loops in cut further; False when there is none or one
+    would go past PROOF_UNWIND_MAX."""
+    if not cut:
+        return False
+    for loop in cut:
+        raised[loop] = next_unwind(raised.get(loop, PROOF_UNWIND_START))
+    return max(raised.values()) <= PROOF_UNWIND_MAX
+
+
+def race_proof_rounds(unwind, left):
+    """R + 2 for the race-free proof with these unwind options (an int 0 with
+    the loops cut before any thread was created), or None (see PROVABLE)"""
+    cmd = ("LAZYPO_ROUND_BOUND=only LAZYPO_ROUND_BOUND_MAX=%d ./iekke_exe %s "
+           "%s--rounds 1 --no-por %s" % (MAX_PROOF_ROUNDS, program_path,
+                                         PROOF_FLAGS, unwind))
+    out, stop = run_watched(cmd, max(1, min(SLICE, left) / 2))
+    if stop:
+        print("  -> round bound: %s" % stop)
+        return None
+    m = re.search(r"Round bound \(static\): count=\d+ path=(\d+)(.*)", out)
+    if not m and re.search(r"\.unwind\.\d+\] .*: FAILURE", out):
+        # a loop cut before any thread was created: no threads, no bound yet
+        print("  -> a loop not fully unrolled (before the threads)")
+        return 0, cut_loops(out)
+    if not m or "at max rounds" in m.group(2):
+        print("  -> round bound: %s" % (m.group(0) if m else "not computed"))
+        return None
+    print("  round bound %s: %d rounds" % (m.group(1), int(m.group(1)) + 2))
+    return int(m.group(1)) + 2, []
+
+
+def report_violation(out):
+    """Write the violation witness, print the tool output and FAILED, and end
+    the run."""
+    if WANTS_WITNESS:
+        write_violation_witness()
+    print(out)
+    if "valid-memsafety.prp" in property_path and deref_reading(out):
+        print(deref_reading(out))
+    # The tool-info module recognises a data race only by
+    # "nodatarace.assertion." on a FAILURE line; the tool prints
+    # "datarace: FAILURE", which it reads as false(unreach-call).
+    if "no-data-race.prp" in property_path:
+        print("no-data-race: a data race, a nodatarace.assertion. FAILURE")
+    print("FAILED")
+    sys.exit(0)
+
+
+def prove(mode):
+    """Proof runs at growing unwinds; returns only when no proof was found."""
+    global current
+    extra = (MEMORY_MODEL_PROOF_FLAGS if mode == "memory-model"
+             else ROUNDS_PROOF_FLAGS)
+    raised = {}   # loop -> unwinding, for the loops raised above the start
+    mode_started = time.time()
+    while True:
+        left = BUDGET - (time.time() - started) - GUARD_RESERVE
+        if RACE and mode == "memory-model":
+            left = min(left, RACE_MEMORY_MODEL_BUDGET
+                       - (time.time() - mode_started))
+        if left <= MIN_SLICE:
+            return
+        unwind = unwind_options(raised)
+        prefix = ""
+        if mode == "race":
+            bound = race_proof_rounds(unwind, left)
+            if bound is None:
+                return
+            rounds, cut = bound
+            if rounds == 0:
+                if not raise_loops(raised, cut):
+                    return
+                continue
+            extra = "--rounds %d --no-por " % rounds
+            # the bug search showed the same unwinding race-free up to K
+            # rounds: pairs whose later access runs within K are not checked
+            if (unwind == "--unwind %d " % PROOF_UNWIND_START
+                    and 0 < safe_rounds.get(PROOF_UNWIND_START, 0) < rounds):
+                prefix = "LAZYPO_CHECK_AFTER=%d " % safe_rounds[PROOF_UNWIND_START]
+        cmd = "%s./iekke_exe %s %s%s%s--verbosity 8 --glucose" % (
+            prefix, program_path, PROOF_FLAGS, extra, unwind)
+        print("proof try %s %s, all interleavings (%.0fs left)"
+              % (mode, unwind.strip(), left))
+        if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
+            os.remove(WITNESS_CONTENT)
+        # a proof run may use all the time left: the bug search is over
+        out, stop = run_watched(cmd, max(0.01, left))
+        if stop:
+            print("  -> %s" % stop)
+            return
+        verdict = verdict_of(out)
+        failed = [l for l in out.splitlines()
+                  if l.startswith("[") and l.rstrip().endswith(": FAILURE")]
+        if verdict == "SUCCESSFUL" and mode == "rounds" and (
+                "Infer rounds: static round bound" not in out
+                or "the --max-rounds cap" in out):
+            print("  -> rounds capped: not every schedule covered, no proof")
+            return
+        if verdict == "SUCCESSFUL" and (
+                "points-to sets of shared pointers did not converge" in out):
+            print("  -> points-to sets did not converge: no proof")
+            return
+        if verdict == "SUCCESSFUL":
+            print("  -> proved: every loop fully unrolled, every interleaving")
+            if WANTS_CORRECTNESS_WITNESS:
+                try:
+                    write_witness("invariant_set", "2.1", None)
+                except OSError as err:     # the answer stands without it
+                    print("no correctness witness: %s" % err)
+            print(out)
+            print("SUCCESSFUL")
+            sys.exit(0)
+        # an unwinding assertion of a loop ([f.unwind.N]) or of a recursion
+        # ([f.recursion]) says the program was cut, not that it has a bug
+        cut_only = failed and all(
+            ".unwind." in l or ".recursion]" in l for l in failed)
+        if verdict == "FAILED" and cut_only:
+            print("  -> not fully unrolled: %s" % " ".join(
+                cut_loops(out) + (["recursion"] if any(
+                    ".recursion]" in l for l in failed) else [])))
+            if not raise_loops(raised, cut_loops(out)):
+                return
+            continue
+        if verdict == "FAILED" and mode == "memory-model" and RACE:
+            print("  -> a race in the encoding of all interleavings")
+            return
+        if verdict == "FAILED" and mode == "memory-model":
+            # CBMC's encoding of all interleavings is exact within the
+            # unwinding, so a violation
+            # it finds is a bug of the program, reported like one from the
+            # bug search.
+            print("  -> violation in a proof run")
+            report_violation(out)
+        if verdict == "FAILED":
+            # Not reported: the round-robin proof runs prove race freedom or
+            # take over from a failed memory-model run; their violations
+            # are left to the bug search.
+            print("  -> violation in a proof run: no answer from it")
+            return
+        # a refusal (unsound pointer handling, unsupported feature): no proof
+        print("  -> no proof possible (refused): "
+              + " / ".join([l for l in out.splitlines() if l.strip()][-3:]))
+        return
+
+
+# Race freedom decided on the program before unwinding (--static-race-check,
+# static_race_check.cpp): every pair of conflicting accesses that can run
+# concurrently is ordered by thread creation/join in main or holds a common
+# lock; whatever the check cannot decide exactly makes it answer UNKNOWN.
+# Loops of any length are no obstacle, and no bound is involved, so a
+# RACE-FREE answer is a proof and needs no bug search.
+if "no-data-race.prp" in property_path:
+    try:
+        check = subprocess.run("./iekke_exe %s %s--static-race-check" % (
+                                   program_path, data_model + " "),
+                               shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", timeout=60).stdout
+    except subprocess.TimeoutExpired:
+        check = ""
+    line = [l for l in check.splitlines() if l.startswith("STATIC RACE CHECK:")]
+    print(line[0] if line else "static race check: no answer")
+    if line and line[0] == "STATIC RACE CHECK: RACE-FREE":
+        print("SUCCESSFUL")
+        sys.exit(0)
+
+
+for unwind, rounds, extra in bounds():
+    left = BUDGET - (time.time() - started)
+    if left <= MIN_SLICE + (GUARD_RESERVE if bounded_safe is None else 0):
+        break
+    if (bounded_safe is not None or PROVABLE) and time.time() - started >= STOP_AFTER:
+        print("stop rule: a safe answer is held and %.0fs have passed" % STOP_AFTER)
+        break
+
+    slice_ = min(left, SLICE if not extra else
+                 SUGGEST_SLICE if extra.startswith("--unwindset") else REDUCED_SLICE)
+    bound_flags = ARRAY_RF_BYTES + ENCODING_FLAGS
+    if "valid-memsafety.prp" not in property_path:
+        bound_flags += "--dynamic-array-bound %d " % array_bound(unwind)
+    por = "--por" if rounds >= POR_MIN_ROUNDS else "--no-por"
+    cmd = ("./iekke_exe %s %s --unwind %d --rounds %d %s --verbosity 8 --glucose %s%s"
+           % (program_path, flags, unwind, rounds, por, bound_flags, extra))
+    if not extra and 0 < safe_rounds.get(unwind, 0) < rounds:
+        cmd = "LAZYPO_CHECK_AFTER=%d %s" % (safe_rounds[unwind], cmd)
+    print("try unwind=%d rounds=%d %s(%.0fs for this bound, %.0fs left)"
+          % (unwind, rounds, extra + " " if extra else "", slice_, left))
+    # Merged, not concatenated: the verdict is the last line of the run,
+    # and stdout + stderr glued end to end puts every warning after it, so
+    # the verdict stops being last and every run reads as "no verdict".
+    if WANTS_WITNESS and os.path.exists(WITNESS_CONTENT):
+        os.remove(WITNESS_CONTENT)
+    current = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               errors="replace", start_new_session=True)
+    deadline = time.time() + slice_
+    stop_at = (started + STOP_CUT if bounded_safe is not None or PROVABLE
+               else float("inf"))
+    out = None
+    stop = None
+    while out is None:
+        try:
+            # A timed-out communicate() keeps what it has read so far.
+            out, _ = current.communicate(
+                timeout=max(0.01, min(POLL, deadline - time.time())))
+        except subprocess.TimeoutExpired:
+            if time.time() >= stop_at:
+                stop = "stop rule"
+            elif time.time() >= deadline:
+                stop = "timeout"
+            elif CAP and group_rss(current.pid) > CAP:
+                stop = "memory"
+            if stop:
+                # Out of reach at this bound -- but not necessarily at the
+                # next one, which may be cheaper on the axis that matters for
+                # this program. Keep going; the budget check at the top of the
+                # loop ends the search.
+                kill_bound(current)
+                current.communicate()
+                break
+    current = None
+    if stop:
+        print("  -> %s" % stop)
+        if stop == "stop rule":
+            break
+        continue
+
+    verdict = verdict_of(out)
+    # Not the verdict word itself: the tool-info module of BenchExec that
+    # SV-COMP uses (benchexec/tools/iekke.py) answers TRUE if "SUCCESSFUL"
+    # appears on any line of the output, before it looks for "FAILED". A
+    # progress line "-> SUCCESSFUL" would turn a later FALSE or UNKNOWN into a
+    # TRUE. Only the last line of the output may carry a verdict word.
+    print("  -> %s" % {"SUCCESSFUL": "safe at this bound",
+                       "FAILED": "violation at this bound"}.get(verdict, "no verdict"))
+
+    if verdict == "FAILED":
+        if WANTS_WITNESS and rounds > SHORT_ROUNDS and "no-data-race.prp" in property_path:
+            shorter_witness(cmd, rounds)
+        report_violation(out)
+    # For unreach-call a SUCCESSFUL from a bound that generated no verification
+    # condition and cut a loop reached no reach_error() call at all: every path
+    # to one was cut by the unwinding, typically a setup loop longer than the
+    # bound. It says nothing about the program, so it is not kept as a bounded
+    # answer. Without a cut loop, no VCC means symbolic execution discharged
+    # every assertion itself, which is a real bounded answer and is kept.
+    # For the other properties no VCC is not a sign of vacuity: data races
+    # are not VCCs at all.
+    vacuous = ("unreach-call.prp" in property_path
+               and generated_vccs(out) == 0 and "Not unwinding" in out)
+    if vacuous:
+        print("  (no verification condition generated, a loop cut: not kept)")
+    if (verdict == "SUCCESSFUL" and not vacuous
+            and (not extra or extra.startswith("--unwindset"))):
+        bounded_safe = out
+    if verdict == "SUCCESSFUL" and not extra:
+        safe_rounds[unwind] = max(safe_rounds.get(unwind, 0), rounds)
+    # No verdict means a refusal or a crash at *this* bound -- most often
+    # --object-bits exhaustion, which only the very large unwinds provoke. It
+    # says nothing about a bound that is smaller on that axis and deeper on
+    # rounds, so it must not end the search.
+
+
+if PROVABLE:
+    for mode in PROOF_MODES:
+        prove(mode)
+# Before an UNKNOWN: a violation a concrete run shows is the answer.
+left = BUDGET - (time.time() - started)
+evidence = concrete_violation(min(GUARD_BUDGET, left - 30))
+if evidence:
+    report_concrete(evidence)
+if bounded_safe is not None:
+    print("safe at the bounds tried, but no proof: no answer")
+
+print("UNKNOWN")
+sys.exit(1)

@@ -1,0 +1,12 @@
+CORE
+main.c
+--no-por --unwind 5 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^split small choices: 1$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The leftover case of the split (j >= 4) must stay: j == 7 skips the walk and
+reaches the failing assertion.

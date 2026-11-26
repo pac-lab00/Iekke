@@ -1,0 +1,9 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --pointer-check --slice-formula
+^EXIT=10$
+^SIGNAL=0$
+^\[thr.pointer_dereference.[0-9]*\] .*pointer outside object bounds.*: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

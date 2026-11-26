@@ -1,0 +1,10 @@
+CORE
+main.c
+--datarace --por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+An _Atomic array too large to split (field sensitivity stops at 64 elements), accessed at an unresolved index, is atomic as a whole.

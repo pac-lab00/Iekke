@@ -1,0 +1,28 @@
+CORE
+main.c
+--unwind 6 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Every thread picks an element a[i] and, holding a[i]'s own mutex, either
+increments and decrements its datum or asserts that it is 0; the threads go
+through `p = &a[i]`. No assertion can fail.
+
+`pthread_mutex_lock(&p->mutex)` stores through a pointer at an undecided
+offset, lowered to `a' == byte_update(a, offset, v)` and split into one
+assignment per field of every element. Each was an unconditional shared
+write carrying the value the thread had read when the statement started, so
+locking a[3] republished a stale a[4].datum over another thread's update of
+it, and that thread's assertion failed. Now only the fields whose bytes the
+store meets are published.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from goblint
+28-race_reach_74-tricky_address1_racefree (which the fix corrects, with _75
+and _76). It needs five elements and `--unwind 6`: with fewer elements, or
+a bound that cuts the initialisation loop, it passes before the fix as well.
+
+See `store_through_pointer_lost_update_real`: the same program without the
+per-element lock, where the assertion really can fail.

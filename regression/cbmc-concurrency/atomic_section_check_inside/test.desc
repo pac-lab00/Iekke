@@ -1,0 +1,25 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --signed-overflow-check
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Two threads increment `x` under a mutex; after both joins it is 2.
+
+With --signed-overflow-check, `count + 1` in the pthread_mutex_lock model
+gets an overflow ASSERT inside the lock's atomic section. ASSERT and ASSUME
+steps carry no atomic_section_id, so lazy_po took this one for a check
+outside any atomic section and gave it a block of its own, which split the
+section: another thread could run between the lock's write of its owner and
+of its count, and both held the mutex at once. Without the option the same
+program is SUCCESSFUL before and after.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+pthread-complex/workstealqueue_mutex-2 (no-overflow), which the fix also
+corrects.
+
+See `atomic_section_check_inside_real`: one thread increments without the
+mutex, and that must stay FAILED.

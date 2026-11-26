@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --yaml-witness -
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^- segment: \[{waypoint: {type: .function_enter., action: .follow., location: {file_name: .main.c., line: 9}, thread_id: 0}}\]$
+^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .main.c., line: 5}, thread_id: 1}}\]$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The call of pthread_create goes on over two lines. The function_enter
+waypoint is on the line where the call begins, line 9: the format points it at
+the closing parenthesis (line 10), but Dartagnan and CPAchecker match a thread
+creation by the line of the call and found none on line 10
+(pthread/reorder_2-race). No column: CPAchecker matches no function_enter on
+pthread_create that has one.

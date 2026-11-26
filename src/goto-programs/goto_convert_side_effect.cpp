@@ -22,6 +22,16 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <ansi-c/c_expr.h>
 
+/// Does C guarantee that a read-modify-write of this lvalue is atomic?
+/// True exactly when the object is _Atomic-qualified, which the front end
+/// records as ID_C_atomic on the type. Only ++/--/compound assignment get
+/// this guarantee; a hand-written `x = x + 1` does not, and must stay
+/// interleavable so that genuine lost-update bugs remain visible.
+static bool is_atomic_rmw_lvalue(const exprt &lhs)
+{
+  return lhs.type().get_bool(ID_C_atomic);
+}
+
 bool goto_convertt::has_function_call(const exprt &expr)
 {
   forall_operands(it, expr)
@@ -49,6 +59,7 @@ void goto_convertt::remove_assignment(
   if(statement==ID_assign)
   {
     auto &old_assignment = to_side_effect_expr_assign(expr);
+    exprt new_lhs = skip_typecast(old_assignment.lhs());
 
     if(
       result_is_used && !address_taken &&
@@ -57,10 +68,10 @@ void goto_convertt::remove_assignment(
       if(!old_assignment.rhs().is_constant())
         make_temp_symbol(old_assignment.rhs(), "assign", dest, mode);
 
-      replacement_expr_opt = old_assignment.rhs();
+      replacement_expr_opt =
+        typecast_exprt::conditional_cast(old_assignment.rhs(), new_lhs.type());
     }
 
-    exprt new_lhs = skip_typecast(old_assignment.lhs());
     exprt new_rhs =
       typecast_exprt::conditional_cast(old_assignment.rhs(), new_lhs.type());
     code_assignt new_assignment(std::move(new_lhs), std::move(new_rhs));
@@ -115,6 +126,7 @@ void goto_convertt::remove_assignment(
     }
 
     const binary_exprt &binary_expr = to_binary_expr(expr);
+    exprt new_lhs = skip_typecast(binary_expr.op0());
     const typet &op0_type = binary_expr.op0().type();
 
     PRECONDITION(
@@ -124,21 +136,30 @@ void goto_convertt::remove_assignment(
     exprt rhs = binary_exprt{binary_expr.op0(), new_id, binary_expr.op1()};
     rhs.add_source_location() = expr.source_location();
 
+    // x op= e on an _Atomic x is one atomic read-modify-write; the load and
+    // the store must not be separately schedulable.
+    const bool atomic_rmw = is_atomic_rmw_lvalue(binary_expr.op0());
+    if(atomic_rmw)
+      dest.add(goto_programt::make_atomic_begin(expr.source_location()));
+
     if(
       result_is_used && !address_taken &&
       assignment_lhs_needs_temporary(binary_expr.op0()))
     {
       make_temp_symbol(rhs, "assign", dest, mode);
-      replacement_expr_opt = rhs;
+      replacement_expr_opt =
+        typecast_exprt::conditional_cast(rhs, new_lhs.type());
     }
 
-    exprt new_lhs = skip_typecast(binary_expr.op0());
     rhs = typecast_exprt::conditional_cast(rhs, new_lhs.type());
     rhs.add_source_location() = expr.source_location();
     code_assignt assignment(new_lhs, rhs);
     assignment.add_source_location()=expr.source_location();
 
     convert(assignment, dest, mode);
+
+    if(atomic_rmw)
+      dest.add(goto_programt::make_atomic_end(expr.source_location()));
   }
   else
     UNREACHABLE;
@@ -242,6 +263,11 @@ void goto_convertt::remove_pre(
 
   const bool cannot_use_lhs =
     result_is_used && !address_taken && assignment_lhs_needs_temporary(lhs);
+  // ++x / --x on an _Atomic x is one atomic read-modify-write.
+  const bool atomic_rmw = is_atomic_rmw_lvalue(lhs);
+  if(atomic_rmw)
+    dest.add(goto_programt::make_atomic_begin(expr.find_source_location()));
+
   if(cannot_use_lhs)
     make_temp_symbol(rhs, "pre", dest, mode);
 
@@ -249,6 +275,9 @@ void goto_convertt::remove_pre(
   assignment.add_source_location()=expr.find_source_location();
 
   convert(assignment, dest, mode);
+
+  if(atomic_rmw)
+    dest.add(goto_programt::make_atomic_end(expr.find_source_location()));
 
   if(result_is_used)
   {
@@ -329,6 +358,13 @@ void goto_convertt::remove_post(
 
   convert(assignment, tmp2, mode);
 
+  // x++ / x-- on an _Atomic x is one atomic read-modify-write. The section has
+  // to cover the read of the old value as well: that read is emitted into dest
+  // below, ahead of the store in tmp2, and it is part of the same operation.
+  const bool atomic_rmw = is_atomic_rmw_lvalue(op);
+  if(atomic_rmw)
+    dest.add(goto_programt::make_atomic_begin(expr.find_source_location()));
+
   // fix up the expression, if needed
 
   if(result_is_used)
@@ -349,6 +385,9 @@ void goto_convertt::remove_post(
 
   dest.destructive_append(tmp1);
   dest.destructive_append(tmp2);
+
+  if(atomic_rmw)
+    dest.add(goto_programt::make_atomic_end(expr.find_source_location()));
 }
 
 void goto_convertt::remove_function_call(

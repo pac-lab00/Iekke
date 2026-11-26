@@ -16,10 +16,16 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <iostream>
 #include <memory>
 
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+
+#include <util/arith_tools.h>
 #include <util/config.h>
 #include <util/exit_codes.h>
 #include <util/invariant.h>
 #include <util/make_unique.h>
+#include <util/pointer_offset_size.h>
 #include <util/version.h>
 
 #ifdef _MSC_VER
@@ -44,21 +50,27 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <goto-checker/multi_path_symex_checker.h>
 #include <goto-checker/multi_path_symex_only_checker.h>
 #include <goto-checker/properties.h>
+#include <goto-checker/round_incremental_symex_checker.h>
 #include <goto-checker/single_loop_incremental_symex_checker.h>
 #include <goto-checker/single_path_symex_checker.h>
 #include <goto-checker/single_path_symex_only_checker.h>
 #include <goto-checker/stop_on_fail_verifier.h>
 #include <goto-checker/stop_on_fail_verifier_with_fault_localization.h>
 
+#include <goto-programs/goto_check.h>
 #include <goto-programs/initialize_goto_model.h>
 #include <goto-programs/link_to_library.h>
 #include <goto-programs/loop_ids.h>
 #include <goto-programs/process_goto_program.h>
+#include <util/string2int.h>
+#include <goto-symex/symmetric_arrays.h>
 #include <goto-programs/read_goto_binary.h>
 #include <goto-programs/remove_skip.h>
 #include <goto-programs/remove_unused_functions.h>
 #include <goto-programs/set_properties.h>
 #include <goto-programs/show_goto_functions.h>
+#include <goto-programs/spin_loops.h>
+#include <goto-programs/static_race_check.h>
 #include <goto-programs/show_properties.h>
 #include <goto-programs/show_symbol_table.h>
 
@@ -72,6 +84,10 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <pointer-analysis/add_failed_symbols.h>
 
 #include <langapi/mode.h>
+#include <linking/static_lifetime_init.h>
+#include <goto-programs/goto_functions.h>
+#include <util/pointer_expr.h>
+#include <util/expr_initializer.h>
 
 #include "c_test_input_generator.h"
 
@@ -111,6 +127,53 @@ void cbmc_parse_optionst::set_default_options(optionst &options)
   options.set_option("show-points-to-sets", false);
   options.set_option("show-array-constraints", false);
   options.set_option("por", false);
+  // On by default: 2.09x over the ten slowest unreach-call tasks, verdicts
+  // unchanged. --no-read-implication restores the nested-mux form.
+  options.set_option("read-implication", true);
+  // A shared object is carried through the lazy chain once per round at its
+  // full width -- but a pthread_mutex_t is 192 bits of which CBMC's own model
+  // reads one byte. Carrying only the bytes some read observes costs nothing
+  // where it does not apply and is most of the formula where it does.
+  // --no-narrow-shared restores the full-width chain.
+  options.set_option("narrow-shared", true);
+  // Sharedness is decided per program, not per object, so an object only one
+  // thread ever touches still gets a rounds-deep chain for a read-from that
+  // program order already fixes. --thread-private states it once instead.
+  //
+  // OFF by default: it makes 77 of the 398 tuned tasks more than 10% faster
+  // but loses one answer -- elimination_backoff_stack goes 283s -> 408s, a
+  // real 1.44x slowdown in isolation, not a timeout flake. The formula gets
+  // smaller and the search gets longer, the same variable-numbering effect
+  // already recorded for POR. A lost answer outranks a time gain here, so
+  // this waits until that is understood. See src/goto-symex/lazy_po.md.
+  options.set_option("thread-private", false);
+  // Threads that run the same routine on the same argument are
+  // interchangeable, so of two schedules that differ only in which of them
+  // does what, one suffices. --thread-symmetry exact keeps one of the two only
+  // where nothing is lost at any bound; strong always does, which can move a
+  // violation to a larger number of rounds. Off by default until measured.
+  options.set_option("thread-symmetry", 0);
+  options.set_option("index-chain", false);
+  // An array write is a read-modify-write of the whole array in the SSA, so the
+  // chain carries every element once per round, and array objects are 64-90% of
+  // the formula across the data-race family. --array-rf answers an element read
+  // by matching the writes instead, which stops the cost depending on the
+  // array's size.
+  //
+  // On by default. Evaluated at the competition timeout over 537 runs -- the 76
+  // array-heavy tasks under no-data-race and again under unreach-call, the 398
+  // tuned tasks, and a POR on/off x array-rf on/off grid -- with ZERO verdict
+  // differences anywhere, including on every expected-false task, which is the
+  // direction that catches an encoding that proves a violation away. Best
+  // 13.75x on the clause count, median 1.43x per task, and the cost model
+  // leaves a formula untouched where it would not pay: twalock is identical to
+  // the digit either way. Orthogonal to partial order reduction, which is worth
+  // 1.26x with this off and 1.29x with it on.
+  //
+  // --no-array-rf restores the array-valued chain.
+  options.set_option("array-rf", true);
+  options.set_option("glucose", false);
+  options.set_option("kissat", false);
 
   // Other default
   options.set_option("arrays-uf", "auto");
@@ -125,26 +188,204 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
     exit(CPROVER_EXIT_USAGE_ERROR);
   }
 
+  // Keep the modelled state of each mutex in arrays of its own, indexed by
+  // the mutex address, instead of laid over the front of the program's
+  // pthread_mutex_t. Where they differ is undefined behaviour in POSIX: a
+  // mutex used without initialisation is free here, a mutex copied by
+  // assignment does not carry its state, and re-initialising a locked mutex
+  // leaves it locked. Off by default until measured.
+  if(cmdline.isset("mutex-shadow"))
+  {
+    // the deadlock check finds lock acquisitions by writes to an object of
+    // type pthread_mutex_t, which the model no longer writes
+    if(cmdline.isset("deadlock"))
+    {
+      log.error() << "--mutex-shadow cannot be combined with --deadlock"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    config.ansi_c.mutex_shadow = true;
+  }
+
   cbmc_parse_optionst::set_default_options(options);
   parse_c_object_factory_options(cmdline, options);
 
+  if(cmdline.isset("glucose"))
+    options.set_option("glucose", true);
+
+  if(cmdline.isset("kissat"))
+    options.set_option("kissat", true);
+
   if(cmdline.isset("function"))
     options.set_option("function", cmdline.get_value("function"));
+
+  // Thread-creation bound: how many iterations of a recognised
+  // thread-management loop (see thread_spawn_loops.h) goto-symex unwinds,
+  // regardless of --unwind. Default 2: two threads of the same role, plus
+  // main, is enough to exhibit the overwhelming majority of concurrency bugs,
+  // and every extra thread costs a full traversal of that thread body in
+  // symex plus another thread dimension in the round-robin encoding. 0
+  // disables the mechanism and restores the previous behaviour exactly.
+  options.set_option(
+    "thread-creation-bound",
+    cmdline.isset("thread-creation-bound")
+      ? cmdline.get_value("thread-creation-bound")
+      : std::string("2"));
+
+  // --infer-rounds chooses the round count itself (goto-symex/round_bound.h):
+  // it turns the round-robin encoding on even without --rounds, whose value it
+  // then ignores, and it needs partial-order reduction, without which "no
+  // canonical schedule needs another round" is never true.
+  if(cmdline.isset("infer-rounds"))
+  {
+    if(cmdline.isset("no-por"))
+    {
+      log.error() << "--infer-rounds needs partial-order reduction: "
+                     "drop --no-por"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    if(cmdline.isset("datarace"))
+    {
+      log.error() << "--infer-rounds is not validated with --datarace"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    options.set_option("infer-rounds", true);
+    options.set_option(
+      "max-rounds",
+      cmdline.isset("max-rounds") ? cmdline.get_value("max-rounds")
+                                  : std::string("25"));
+    options.set_option(
+      "infer-rounds-first",
+      cmdline.isset("infer-rounds-first")
+        ? cmdline.get_value("infer-rounds-first")
+        : std::string("3"));
+    options.set_option(
+      "infer-rounds-direct",
+      cmdline.isset("infer-rounds-direct")
+        ? cmdline.get_value("infer-rounds-direct")
+        : std::string("6"));
+    if(!cmdline.isset("rounds"))
+      options.set_option("rounds", std::string("1"));
+    options.set_option("por", true);
+  }
+
+  // Give an array allocated with a non-constant number of elements n a
+  // constant number K, under the condition n <= K, cut like an unwinding
+  // bound; it applies to every run, sequential or not. Field sensitivity
+  // splits arrays of up to 64 elements into scalars, so K should stay at or
+  // below that. Not for memory safety.
+  if(cmdline.isset("dynamic-array-bound"))
+  {
+    if(cmdline.isset("unwinding-assertions"))
+    {
+      log.error() << "--dynamic-array-bound cannot be combined with "
+                     "--unwinding-assertions: the bound is an assumption"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    const auto bound =
+      string2optional_size_t(cmdline.get_value("dynamic-array-bound"));
+    if(!bound.has_value() || *bound == 0)
+    {
+      log.error() << "--dynamic-array-bound takes a positive number of "
+                     "elements"
+                  << messaget::eom;
+      exit(CPROVER_EXIT_USAGE_ERROR);
+    }
+    options.set_option("dynamic-array-bound", std::to_string(*bound));
+  }
+
+  if(cmdline.isset("extern-pointers-own-object"))
+    options.set_option("extern-pointers-own-object", true);
+
+  if(cmdline.isset("summarise-guards"))
+    options.set_option("summarise-guards", true);
+
+  if(cmdline.isset("infer-alloc-types"))
+    options.set_option("infer-alloc-types", true);
+
+  if(cmdline.isset("merge-exclusive-threads"))
+    options.set_option("merge-exclusive-threads", true);
+
+  if(cmdline.isset("own-view-reads"))
+    options.set_option("own-view-reads", true);
 
   if(cmdline.isset("rounds"))
   {
     options.set_option(
       "rounds", cmdline.get_value("rounds"));
-    log.warning() << "**** WARNING: Context-bounded analysis may yield unsound "
-                     "verification "
-                     "results"
-                  << messaget::eom;
+    if(!cmdline.isset("infer-rounds"))
+      log.status() << "Context bound: " << cmdline.get_value("rounds")
+                   << " round(s); a safe result covers only the schedules"
+                      " within them (--infer-rounds computes a count that"
+                      " covers all)"
+                   << messaget::eom;
 
-    if(cmdline.isset("por")) {
+    // On by default with --rounds: over the full 1127-task set it is worth
+    // two answers and 438s, and far more on the solver-bound tasks
+    // (fib_unsafe-11 50.4s against 165.8s). --no-por restores the unreduced
+    // encoding; --por remains accepted so existing scripts keep working.
+    if(!cmdline.isset("no-por"))
+    {
       options.set_option("por", true);
       log.warning() << "Enabling Partial Order Reduction"
                   << messaget::eom;
     }
+
+    if(cmdline.isset("read-implication"))
+      options.set_option("read-implication", true);
+
+    if(cmdline.isset("no-read-implication"))
+      options.set_option("read-implication", false);
+
+    if(cmdline.isset("narrow-shared"))
+      options.set_option("narrow-shared", true);
+
+    if(cmdline.isset("no-narrow-shared"))
+      options.set_option("narrow-shared", false);
+
+    if(cmdline.isset("thread-private"))
+      options.set_option("thread-private", true);
+
+    if(cmdline.isset("no-thread-private"))
+      options.set_option("thread-private", false);
+
+    if(cmdline.isset("thread-symmetry"))
+    {
+      const std::string mode = cmdline.get_value("thread-symmetry");
+      if(mode == "exact")
+        options.set_option("thread-symmetry", 1);
+      else if(mode == "strong")
+        options.set_option("thread-symmetry", 2);
+      else if(mode != "off")
+      {
+        log.error() << "--thread-symmetry takes exact, strong or off"
+                    << messaget::eom;
+        exit(CPROVER_EXIT_USAGE_ERROR);
+      }
+    }
+
+    if(cmdline.isset("array-rf"))
+      options.set_option("array-rf", true);
+
+    if(cmdline.isset("no-array-rf"))
+      options.set_option("array-rf", false);
+
+    // Also answer reads of arrays accessed byte-wise -- CBMC's mutex model
+    // reads its own fields out of the program's mutex, a heap object can be
+    // allocated with another type than it is used with -- byte by byte, from
+    // the writes that cover each byte. Off by default until measured.
+    if(cmdline.isset("array-rf-bytes"))
+      options.set_option("array-rf-bytes", true);
+
+    // With three rounds or more, an object's chain may carry the index of the
+    // last write instead of its value, where an estimate finds that smaller:
+    // the index is a few bits wide and the value is decoded once per read.
+    // The same executions either way. Off by default until measured.
+    if(cmdline.isset("index-chain"))
+      options.set_option("index-chain", true);
   }
 
   if(cmdline.isset("cover") && cmdline.isset("unwinding-assertions"))
@@ -330,6 +571,13 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
   if(cmdline.isset("slice-formula"))
     options.set_option("slice-formula", true);
 
+  // Drop the Ackermann constraints of constant arrays. Removing constraints
+  // only adds models, so a SUCCESSFUL remains sound; every added model reads
+  // a constant array out of bounds, so a FAILED may be spurious and must be
+  // confirmed without the option.
+  if(cmdline.isset("constant-array-oob-nondet"))
+    options.set_option("constant-array-oob-nondet", true);
+
   if(cmdline.isset("arrays-uf-always"))
     options.set_option("arrays-uf", "always");
   else if(cmdline.isset("arrays-uf-never"))
@@ -369,6 +617,15 @@ void cbmc_parse_optionst::get_command_line_options(optionst &options)
                   << messaget::eom;
       exit(CPROVER_EXIT_USAGE_ERROR);
     }
+  }
+
+  if(cmdline.isset("yaml-witness"))
+  {
+    options.set_option("yaml-witness", cmdline.get_value("yaml-witness"));
+    options.set_option(
+      "yaml-witness-values", cmdline.isset("yaml-witness-values"));
+    options.set_option("stop-on-fail", true);
+    options.set_option("trace", true);
   }
 
   if(cmdline.isset("graphml-witness"))
@@ -617,7 +874,14 @@ int cbmc_parse_optionst::doit()
 
   std::unique_ptr<goto_verifiert> verifier = nullptr;
 
-  if(options.is_set("incremental-loop"))
+  if(options.get_bool_option("infer-rounds"))
+  {
+    // One call does the whole round search and stops at the first violation.
+    verifier = util_make_unique<
+      stop_on_fail_verifiert<round_incremental_symex_checkert>>(
+      options, ui_message_handler, goto_model);
+  }
+  else if(options.is_set("incremental-loop"))
   {
     if(options.get_bool_option("stop-on-fail"))
     {
@@ -724,6 +988,42 @@ int cbmc_parse_optionst::get_goto_program(
     return CPROVER_EXIT_SUCCESS;
   }
 
+  // Instantiate recognised symmetric array families at a small size, before
+  // process_goto_program instruments the model.
+  //
+  // The order matters and was measured: 28-race_reach_86-lists_racing-deref is
+  // recognised as symmetric when analysed plainly and is not recognised once
+  // the memory-safety checks have been inserted, because those relate distinct
+  // slots through same-object and bounds conditions. Running afterwards would
+  // silently decline exactly the benchmarks this is for.
+  //
+  // An under-approximation: only a reported violation may be believed, so this
+  // is opt-in and never a default.
+  if(cmdline.isset("symmetric-instance"))
+  {
+    const auto instance =
+      string2optional<std::size_t>(cmdline.get_value("symmetric-instance"));
+
+    if(!instance.has_value() || *instance == 0)
+    {
+      log.error() << "--symmetric-instance takes a positive number of slots"
+                  << messaget::eom;
+      return CPROVER_EXIT_USAGE_ERROR;
+    }
+
+    // A bound chosen for the reduced program is unsafe on the unreduced one:
+    // the setup loop would be cut rather than completed, and a cut setup loop
+    // yields a vacuous safe result. Refuse rather than answer from it.
+    if(!shrink_symmetric_array_families(goto_model, *instance, ui_message_handler))
+    {
+      log.error() << "--symmetric-instance was requested but no family could be "
+                     "instantiated; refusing to continue, because a bound chosen "
+                     "for the reduced program is not sound on the original"
+                  << messaget::eom;
+      return CPROVER_EXIT_INTERNAL_ERROR;
+    }
+  }
+
   if(cbmc_parse_optionst::process_goto_program(goto_model, options, log))
     return CPROVER_EXIT_INTERNAL_ERROR;
 
@@ -746,6 +1046,22 @@ int cbmc_parse_optionst::get_goto_program(
   {
     show_goto_functions(
       goto_model, ui_message_handler, cmdline.isset("list-goto-functions"));
+    return CPROVER_EXIT_SUCCESS;
+  }
+
+  // --spin-loop-reduction: cut the iterations of side-effect-free loops
+  // that change nothing (spin_loops.cpp)
+  if(cmdline.isset("spin-loop-reduction"))
+    log.status() << "Spin-loop reduction: "
+                 << spin_loop_reduction(goto_model) << " loop(s)"
+                 << messaget::eom;
+
+  // --static-race-check: decide race freedom on the goto program, before
+  // any unwinding (static_race_check.cpp), and stop
+  if(cmdline.isset("static-race-check"))
+  {
+    std::cout << "STATIC RACE CHECK: " << static_race_check(goto_model)
+              << std::endl;
     return CPROVER_EXIT_SUCCESS;
   }
 
@@ -787,6 +1103,367 @@ void cbmc_parse_optionst::preprocessing(const optionst &options)
     log.error() << "PREPROCESSING ERROR" << messaget::eom;
 }
 
+/// --extern-pointers-own-object: a pointer to a complete struct or union,
+/// declared extern and defined nowhere, starts nondeterministic (its static
+/// initialisation assigns a nondet side effect, which is what is replaced
+/// here), so pointer analysis cannot say where it points, and once merged
+/// with the pointers the program publishes its dereference reaches every
+/// object whose address the program stores. With the option it starts as
+/// `nondet ? &<name>$own_object : NULL`, the object of the pointee type with
+/// nondeterministic contents. Assumed: (a) the pointee is none of the
+/// objects the program declares or allocates; (b) two such pointers never
+/// point to the same object; (c) it points to offset 0 of one object, so
+/// `p + 1` is out of bounds; (d) it may be null.
+static void extern_pointers_own_object(goto_modelt &goto_model, messaget &log)
+{
+  auto function = goto_model.goto_functions.function_map.find(
+    INITIALIZE_FUNCTION);
+  if(function == goto_model.goto_functions.function_map.end())
+    return;
+  const namespacet ns(goto_model.symbol_table);
+  goto_programt &body = function->second.body;
+  std::size_t count = 0;
+  for(auto it = body.instructions.begin(); it != body.instructions.end(); ++it)
+  {
+    if(!it->is_assign() || it->assign_lhs().id() != ID_symbol)
+      continue;
+    const irep_idt &name = to_symbol_expr(it->assign_lhs()).get_identifier();
+    const symbolt &symbol = ns.lookup(name);
+    if(
+      !symbol.is_extern || symbol.value.is_not_nil() ||
+      symbol.type.id() != ID_pointer ||
+      it->assign_rhs().id() != ID_side_effect)
+    {
+      continue;
+    }
+    const typet &target = to_pointer_type(symbol.type).base_type();
+    const typet &followed = ns.follow(target);
+    if(
+      (followed.id() != ID_struct && followed.id() != ID_union) ||
+      to_struct_union_type(followed).is_incomplete())
+    {
+      continue;
+    }
+    symbolt object;
+    object.name = id2string(name) + "$own_object";
+    object.base_name = object.name;
+    object.pretty_name = object.name;
+    object.type = target;
+    object.mode = symbol.mode;
+    object.location = symbol.location;
+    object.is_static_lifetime = true;
+    object.is_lvalue = true;
+    goto_model.symbol_table.add(object);
+    const auto contents = nondet_initializer(target, symbol.location, ns);
+    CHECK_RETURN(contents.has_value());
+    body.insert_before(
+      it,
+      goto_programt::make_assignment(
+        object.symbol_expr(), *contents, it->source_location()));
+    it->assign_rhs_nonconst() = if_exprt{
+      side_effect_expr_nondett{bool_typet{}, symbol.location},
+      address_of_exprt{object.symbol_expr()},
+      null_pointer_exprt{to_pointer_type(symbol.type)}};
+    ++count;
+  }
+  goto_model.goto_functions.update();
+  log.status() << "extern pointers given an object of their own: " << count
+               << messaget::eom;
+}
+/// --infer-alloc-types: an allocation whose size was written as a number --
+/// `tmp = kzalloc(3816UL, 208U); cam = (struct cafe_camera *)tmp;`, as the
+/// ldv-linux tasks do throughout -- carries no sizeof(T), so symex_allocate
+/// makes it an array of bytes, with one points-to entry for the whole block:
+/// every pointer stored in any member is read back from every member. Here
+/// the number is tagged with sizeof(T), as the front end tags sizeof, when
+/// the call's result is cast to T * by the next assignment and exactly one
+/// argument is a constant between sizeof(T) and 2 sizeof(T) + 64 (the tasks
+/// carry LP64 sizes under ILP32). The tag travels with the constant through
+/// the allocation wrappers, as sizeof does.
+///
+/// Sound by construction: the tag only chooses how symex_allocate types a
+/// block of the same size (T, T[n], or T followed by bytes); the bytes, and
+/// so every value the program can read, are the same. A wrong guess costs
+/// efficiency, not correctness.
+static void infer_allocation_types(goto_modelt &goto_model, messaget &log)
+{
+  const namespacet ns(goto_model.symbol_table);
+  std::size_t tagged = 0;
+  for(auto &gf : goto_model.goto_functions.function_map)
+  {
+    auto &body = gf.second.body;
+    for(auto it = body.instructions.begin(); it != body.instructions.end(); ++it)
+    {
+      if(!it->is_function_call() || it->call_lhs().id() != ID_symbol)
+        continue;
+      // the cast, after any declarations and no-ops in between
+      auto next = std::next(it);
+      while(next != body.instructions.end() &&
+            (next->is_decl() || next->is_dead() || next->is_skip() ||
+             next->is_location()))
+      {
+        ++next;
+      }
+      if(next == body.instructions.end() || !next->is_assign())
+        continue;
+      const exprt &rhs = next->assign_rhs();
+      if(rhs.id() != ID_typecast || to_typecast_expr(rhs).op() != it->call_lhs())
+        continue;
+      if(rhs.type().id() != ID_pointer)
+        continue;
+      const typet &target = to_pointer_type(rhs.type()).base_type();
+      const typet &followed = ns.follow(target);
+      if(followed.id() != ID_struct && followed.id() != ID_union)
+        continue;
+      const auto t_size = pointer_offset_size(target, ns);
+      if(!t_size.has_value() || *t_size == 0)
+        continue;
+      exprt *only = nullptr;
+      std::size_t candidates = 0;
+      for(auto &arg : it->call_arguments())
+      {
+        const auto c = numeric_cast<mp_integer>(arg);
+        if(c.has_value() && *c >= *t_size && *c <= 2 * *t_size + 64)
+        {
+          only = &arg;
+          ++candidates;
+        }
+      }
+      if(candidates != 1)
+        continue;
+      only->set(ID_C_c_sizeof_type, target);
+      ++tagged;
+    }
+  }
+  log.statistics() << "Allocation sizes tagged with a type: " << tagged
+                   << messaget::eom;
+}
+
+/// Split on a small choice. A local integer that receives a nondeterministic value
+/// (`x = __VERIFIER_nondet_*()`) and from whose element, in an array of at most
+/// 16 elements, the rest then reads a pointer (`X[x]` or a member of it, of
+/// pointer type) is split by value. Only such a read can fan out: the pointer
+/// read from "any of the N elements" may point to any of their targets. An
+/// index that only picks an element (`&a[x]`, an int member) selects within
+/// one object, and copying the rest then costs without removing anything
+/// (28-race_reach_75 at u16 r4: 290 s split, 33 s not). After the choice, the function
+/// branches on `x == 0`, ..., `x == N-1`; each branch sets x to that constant
+/// and runs its own copy of the rest of the function, the original rest
+/// handling every other value. The branches together are exactly the original
+/// behaviours. In each copy the index is a constant, so an object selected
+/// through it is one object instead of N for the points-to analysis
+/// (goblint race_reach_91: every walk step of a thread touched all ten lists).
+/// The original rest stays as the leftover case; the path bounds of symex
+/// (goto_symext::decide_by_path_bounds) remove it when the program's own range
+/// check and the failed cases rule out every other value.
+/// One split per function; skipped when the rest of the function is entered
+/// other than at its start, or jumps back before it, or x's address is taken,
+/// or the copies would exceed max_copied_instructions, or the rest starts a
+/// thread: each copy would start its own, and the threads, not the pointers,
+/// would multiply (09-regions_13-arraycollapse_nr-deref: main split on j, the
+/// bug found in 5 s before, no answer in 390 s and 9 GB after). Carrying a
+/// choice of the creating thread into the threads is a separate step.
+/// Likewise when the rest allocates: each copy has its own allocation site,
+/// so the heap objects multiply and every later points-to set grows (the
+/// same task with only the thread function split: 5 s -> 33 s).
+static std::size_t split_small_choices(goto_modelt &goto_model)
+{
+  const std::size_t max_copied_instructions = 5000;
+  // The functions whose instructions, directly or through a call, satisfy
+  // `direct`: those that start a thread, and those that allocate.
+  const auto closure = [&goto_model](
+                         const std::function<bool(const goto_programt::instructiont &)>
+                           &direct) {
+    std::unordered_set<irep_idt> result;
+    for(bool grew = true; grew;)
+    {
+      grew = false;
+      for(const auto &f : goto_model.goto_functions.function_map)
+      {
+        if(result.count(f.first) != 0)
+          continue;
+        for(const auto &ins : f.second.body.instructions)
+        {
+          if(
+            direct(ins) ||
+            (ins.is_function_call() && ins.call_function().id() == ID_symbol &&
+             result.count(to_symbol_expr(ins.call_function()).get_identifier()) !=
+               0))
+          {
+            result.insert(f.first);
+            grew = true;
+            break;
+          }
+        }
+      }
+    }
+    return result;
+  };
+  const auto is_allocation = [](const goto_programt::instructiont &ins) {
+    return ins.is_assign() && ins.assign_rhs().id() == ID_side_effect &&
+           to_side_effect_expr(ins.assign_rhs()).get_statement() == ID_allocate;
+  };
+  const std::unordered_set<irep_idt> starts_threads = closure(
+    [](const goto_programt::instructiont &ins) { return ins.is_start_thread(); });
+  const std::unordered_set<irep_idt> allocates = closure(is_allocation);
+  std::size_t splits = 0;
+  for(auto &entry : goto_model.goto_functions.function_map)
+  {
+    goto_programt &body = entry.second.body;
+    if(body.instructions.empty() || !body.instructions.back().is_end_function())
+      continue;
+    const goto_programt::targett end_it = std::prev(body.instructions.end());
+    for(auto it = body.instructions.begin(); it != end_it; ++it)
+    {
+      if(!it->is_assign())
+        continue;
+      const exprt &lhs = it->assign_lhs();
+      const exprt &rhs = it->assign_rhs();
+      if(
+        lhs.id() != ID_symbol || rhs.id() != ID_symbol ||
+        (lhs.type().id() != ID_signedbv && lhs.type().id() != ID_unsignedbv) ||
+        id2string(to_symbol_expr(rhs).get_identifier())
+            .find("return_value___VERIFIER_nondet") == std::string::npos)
+      {
+        continue;
+      }
+      const irep_idt var = to_symbol_expr(lhs).get_identifier();
+      const symbolt *sym = goto_model.symbol_table.lookup(var);
+      if(sym == nullptr || sym->is_static_lifetime)
+        continue;
+      const goto_programt::targett tail_begin = std::next(it);
+      if(tail_begin == end_it)
+        continue;
+
+      std::unordered_set<const goto_programt::instructiont *> in_tail;
+      std::vector<goto_programt::targett> tail;
+      for(auto t = tail_begin; t != end_it; ++t)
+      {
+        in_tail.insert(&*t);
+        tail.push_back(t);
+      }
+      mp_integer n = 0;
+      bool address_taken = false;
+      const auto visit = [&](const exprt &e) {
+        e.visit_pre([&](const exprt &x) {
+          if(
+            x.id() == ID_address_of &&
+            to_address_of_expr(x).object().id() == ID_symbol &&
+            to_symbol_expr(to_address_of_expr(x).object()).get_identifier() ==
+              var)
+          {
+            address_taken = true;
+          }
+          // a pointer read from the selected element: X[x], or a member of
+          // it, of pointer type
+          if(x.type().id() != ID_pointer)
+            return;
+          const exprt *base = &x;
+          while(base->id() == ID_member)
+            base = &to_member_expr(*base).compound();
+          if(base->id() != ID_index)
+            return;
+          const index_exprt &ix = to_index_expr(*base);
+          if(
+            ix.index().id() == ID_symbol &&
+            to_symbol_expr(ix.index()).get_identifier() == var &&
+            ix.array().type().id() == ID_array)
+          {
+            const auto size =
+              numeric_cast<mp_integer>(to_array_type(ix.array().type()).size());
+            if(size.has_value() && *size >= 2 && *size <= 16)
+              n = std::max(n, *size);
+          }
+        });
+      };
+      bool bad_jump = false;
+      bool starts_thread = false;
+      bool allocates_memory = false;
+      for(auto t = body.instructions.begin(); t != end_it; ++t)
+      {
+        t->apply(visit);
+        if(
+          t->is_function_call() && t->call_function().id() == ID_symbol &&
+          starts_threads.count(
+            to_symbol_expr(t->call_function()).get_identifier()) != 0 &&
+          in_tail.count(&*t) != 0)
+        {
+          starts_thread = true;
+        }
+        if(
+          in_tail.count(&*t) != 0 &&
+          (is_allocation(*t) ||
+           (t->is_function_call() && t->call_function().id() == ID_symbol &&
+            allocates.count(
+              to_symbol_expr(t->call_function()).get_identifier()) != 0)))
+        {
+          allocates_memory = true;
+        }
+        if(!t->is_goto() && !t->is_start_thread())
+          continue;
+        const bool from_tail = in_tail.count(&*t) != 0;
+        if(from_tail && t->is_start_thread())
+          starts_thread = true;
+        for(const auto &target : t->targets)
+        {
+          const bool to_tail = in_tail.count(&*target) != 0;
+          if(from_tail && !to_tail && target != end_it)
+            bad_jump = true; // jumps back before the split
+          if(!from_tail && to_tail && target != tail_begin)
+            bad_jump = true; // enters the rest in its middle
+        }
+      }
+      if(
+        n == 0 || address_taken || bad_jump || starts_thread ||
+        allocates_memory ||
+        n * tail.size() > max_copied_instructions)
+      {
+        continue;
+      }
+
+      const source_locationt &loc = it->source_location();
+      // the original rest: every value outside 0 .. n-1; then to the end
+      body.insert_before(end_it, goto_programt::make_goto(end_it, loc));
+      std::vector<goto_programt::targett> dispatch;
+      std::vector<goto_programt::targett> case_start;
+      for(mp_integer k = 0; k < n; ++k)
+      {
+        dispatch.push_back(body.insert_before(
+          tail_begin,
+          goto_programt::make_goto(
+            end_it, equal_exprt{lhs, from_integer(k, lhs.type())}, loc)));
+        const goto_programt::targett start = body.insert_before(
+          end_it,
+          goto_programt::make_assignment(lhs, from_integer(k, lhs.type()), loc));
+        case_start.push_back(start);
+        std::unordered_map<const goto_programt::instructiont *, goto_programt::targett>
+          copy_of;
+        std::vector<goto_programt::targett> copies;
+        for(const auto &t : tail)
+        {
+          const goto_programt::targett c = body.insert_before(end_it, *t);
+          copy_of[&*t] = c;
+          copies.push_back(c);
+        }
+        for(auto &c : copies)
+          for(auto &target : c->targets)
+          {
+            const auto m = copy_of.find(&*target);
+            if(m != copy_of.end())
+              target = m->second;
+          }
+        body.insert_before(end_it, goto_programt::make_goto(end_it, loc));
+      }
+      for(std::size_t k = 0; k < dispatch.size(); ++k)
+        dispatch[k]->set_target(case_start[k]);
+      ++splits;
+      break; // one split per function
+    }
+  }
+  goto_model.goto_functions.update();
+  return splits;
+}
+
 bool cbmc_parse_optionst::process_goto_program(
   goto_modelt &goto_model,
   const optionst &options,
@@ -804,6 +1481,9 @@ bool cbmc_parse_optionst::process_goto_program(
   link_to_library(
     goto_model, log.get_message_handler(), cprover_c_library_factory);
 
+  if(options.get_bool_option("infer-alloc-types"))
+    infer_allocation_types(goto_model, log);
+
   // Common removal of types and complex constructs
   if(::process_goto_program(goto_model, options, log))
     return true;
@@ -817,6 +1497,87 @@ bool cbmc_parse_optionst::process_goto_program(
                  << messaget::eom;
     nondet_static(goto_model);
   }
+
+  if(options.get_bool_option("extern-pointers-own-object"))
+    extern_pointers_own_object(goto_model, log);
+
+  // --datarace --no-assertions checks no-data-race: races, and nothing else.
+  // --no-assertions disables the program's own assertions (goto_check turns
+  // them into assignments to a dummy variable); the checks still in the
+  // program -- preconditions of library functions -- would make the answer
+  // FAILED for a violation that is not a race. Each of them is treated the
+  // same way here: its condition is assigned to the dummy, so the memory
+  // reads in it still produce their events, and the check itself becomes
+  // `assert(true)`. It stays a property, because a truncated run with an
+  // empty property set is reported INCONCLUSIVE rather than with the result
+  // of the race property, which lazy_po adds later as an equation assertion
+  // and is not affected here. An assertion is never assumed, so no path
+  // changes. Checks created during symbolic execution (unwinding and
+  // recursion assertions) are not touched.
+  if(
+    options.get_bool_option("datarace") &&
+    !options.get_bool_option("assertions"))
+  {
+    const symbol_exprt dummy =
+      get_datarace_assert_dummy(goto_model.symbol_table);
+    std::size_t made_true = 0;
+    for(auto &function : goto_model.goto_functions.function_map)
+    {
+      goto_programt &body = function.second.body;
+      for(auto it = body.instructions.begin(); it != body.instructions.end();
+          ++it)
+      {
+        if(!it->is_assert() || it->condition().is_true())
+          continue;
+        if(it->condition().type() == dummy.type())
+        {
+          body.insert_before(
+            it,
+            goto_programt::make_assignment(
+              dummy, it->condition(), it->source_location()));
+        }
+        it->condition_nonconst() = true_exprt{};
+        ++made_true;
+      }
+    }
+    goto_model.goto_functions.update();
+    if(made_true != 0)
+      log.status() << "--datarace: " << made_true
+                   << " checks that are not races made true" << messaget::eom;
+  }
+
+  // The preconditions of library functions (free, memset, ... instantiated
+  // at each call) are memory-safety checks. Without --pointer-check memory
+  // safety is not the property being checked, yet they stayed in the
+  // program: a double free made a no-overflow answer FAILED for a violation
+  // of another property (adutux, 2026-11-02), and the same could happen to
+  // unreach-call. They are made true, as the block above does for --datarace;
+  // an assertion is never assumed, so no path changes.
+  if(
+    !options.get_bool_option("pointer-check") &&
+    !(options.get_bool_option("datarace") &&
+      !options.get_bool_option("assertions")))
+  {
+    std::size_t made_true = 0;
+    for(auto &function : goto_model.goto_functions.function_map)
+      for(auto &instruction : function.second.body.instructions)
+        if(
+          instruction.is_assert() && !instruction.condition().is_true() &&
+          instruction.source_location().get_property_class() ==
+            ID_precondition_instance)
+        {
+          instruction.condition_nonconst() = true_exprt{};
+          ++made_true;
+        }
+    if(made_true != 0)
+      log.status() << "no --pointer-check: " << made_true
+                   << " library memory-safety preconditions made true"
+                   << messaget::eom;
+  }
+
+  const std::size_t splits = split_small_choices(goto_model);
+  if(splits != 0)
+    log.status() << "split small choices: " << splits << messaget::eom;
 
   // add failed symbols
   // needs to be done before pointer analysis
@@ -978,9 +1739,20 @@ void cbmc_parse_optionst::help()
     "Semantic transformations:\n"
     // NOLINTNEXTLINE(whitespace/line_length)
     " --nondet-static              add nondeterministic initialization of variables with static lifetime\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --extern-pointers-own-object an undefined extern pointer to a struct or union points to an object of its own, or is null\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --summarise-guards           with threads, the guard after a call is the guard at the call and one fresh symbol\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --infer-alloc-types          type an allocation of a constant size by the cast of its result\n"
+    " --merge-exclusive-threads    one thread for creations of the same code on paths that exclude each other\n"
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --own-view-reads             read a shared object no other thread writes after the first spawn from the thread's own view\n"
     "\n"
     "BMC options:\n"
     HELP_BMC
+    // NOLINTNEXTLINE(whitespace/line_length)
+    " --constant-array-oob-nondet  out-of-bounds reads of constant arrays are unconstrained (a FAILED may be spurious)\n"
     "\n"
     "Backend options:\n"
     HELP_CONFIG_BACKEND

@@ -56,7 +56,11 @@ symex_configt::symex_configt(const optionst &options)
     complexity_limits_active(
       options.get_signed_int_option("symex-complexity-limit") > 0),
     cache_dereferences{options.get_bool_option("symex-cache-dereferences")},
-    lazy_po_rounds(options.get_unsigned_int_option("rounds"))
+    lazy_po_rounds(options.get_unsigned_int_option("rounds")),
+    dynamic_array_bound(options.get_unsigned_int_option("dynamic-array-bound")),
+    summarise_guards(options.get_bool_option("summarise-guards")),
+    infer_alloc_types(options.get_bool_option("infer-alloc-types")),
+    merge_exclusive_threads(options.get_bool_option("merge-exclusive-threads"))
 {
 }
 
@@ -244,6 +248,7 @@ void goto_symext::symex_assume_l2(statet &state, const exprt &cond)
   {
     exprt tmp = state.guard.guard_expr(rewritten_cond);
     target.assumption(state.guard.as_expr(), tmp, state.source);
+    state.guarded_assumptions.emplace_back(state.guard.as_expr(), rewritten_cond);
   }
   // symex_target_equationt::convert_assertions would fail to
   // consider assumptions of threads that have a thread-id above that
@@ -443,6 +448,7 @@ std::unique_ptr<goto_symext::statet> goto_symext::initialize_entry_point_state(
 
   CHECK_RETURN(!state->threads.empty());
   CHECK_RETURN(!state->call_stack().empty());
+  state->datarace = enable_datarace;
 
   goto_programt::const_targett limit =
     std::prev(start_function->body.instructions.end());
@@ -465,6 +471,15 @@ std::unique_ptr<goto_symext::statet> goto_symext::initialize_entry_point_state(
     entry_point_id, *start_function);
   state->dirty = &path_storage.dirty;
 
+  // Static thread-exclusivity information, if the caller computed any. It is
+  // only ever computed under --rounds (lazy_po), so the pointer stays null and
+  // this is a complete no-op for default CBMC runs.
+  if(symex_config.lazy_po_rounds > 0 && !thread_exclusive_variables.empty())
+    state->thread_exclusive = &thread_exclusive_variables;
+
+  if(own_view_reads)
+    state->own_view = &own_view;
+
   // Only enable loop analysis when complexity is enabled.
   if(symex_config.complexity_limits_active)
   {
@@ -485,7 +500,13 @@ void goto_symext::symex_from_entry_point_of(
   const get_goto_functiont &get_goto_function,
   symbol_tablet &new_symbol_table)
 {
+  path_bound_decisions = 0;
   auto state = initialize_entry_point_state(get_goto_function);
+
+  // See goto_symext::seed_value_set_from_overall.  Only ever set under
+  // --refined-pointer-analysis, so the default configuration is unaffected.
+  if(seed_value_set_from_overall)
+    state->value_set.make_union(overall_value_set);
 
   symex_with_state(*state, get_goto_function, new_symbol_table);
 }
@@ -607,9 +628,46 @@ void goto_symext::symex_step(
   const get_goto_functiont &get_goto_function,
   statet &state)
 {
+  // Keep the state's guard merged with the equation's expressions.
+  // merge_irep replaces a subtree only by one that compares equal, so the
+  // guard's value is unchanged; sharing the stored nodes lets the merge of
+  // the next step's guard find them by pointer instead of comparing them
+  // node by node.
+  state.guard = guardt{target.merged(state.guard.as_expr()), guard_manager};
+
   // __SZH_ADD_BEGIN__
   if(try_finding_value_set)
-    overall_value_set.make_union(state.value_set);
+  {
+    // make_union reports whether it actually added anything; remember that
+    // so the caller can iterate to a fixpoint (see
+    // goto_symext::overall_value_set_changed).
+    //
+    // Only what changed since the last step is merged. A whole-set union here
+    // compared every entry of the state against the overall set at every
+    // step, and the two differ in nearly every pointer, since the overall set
+    // is wider: on the ldv-linux drivers symex did not finish the first bound
+    // (u2 r2) in 300 s, half the samples inside this union.
+    if(overall_value_set.make_union_delta(
+         state.value_set.values, value_set_at_last_union))
+    {
+      overall_value_set_changed = true;
+    }
+    value_set_at_last_union = state.value_set.values;
+  }
+
+  // Was: state.value_set.make_union(overall_value_set) at every step, which
+  // widens every pointer everywhere. That triples the formula and suppresses
+  // race detection in both directions -- measured, it removes hemlock's real
+  // race exactly as readily as mcslock's spurious one.
+  //
+  // Hand the collected set to the state instead and let it top up one
+  // object's entry at a shared read of a pointer, which is the only place the
+  // staleness can bite. See goto_symex_statet::seed_published_targets.
+  if(seed_value_set_from_overall || seed_published_reads)
+  {
+    state.published_value_set = &overall_value_set;
+    state.consulted_published = &consulted_published;
+  }
   // __SZH_ADD_END__
 
   // Print debug statements if they've been enabled.

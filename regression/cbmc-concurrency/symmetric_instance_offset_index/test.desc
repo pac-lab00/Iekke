@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 4 --rounds 2 --no-por --allow-pointer-unsoundness --symmetric-instance 2
+^EXIT=6$
+^SIGNAL=0$
+no family could be instantiated
+--
+symmetric arrays: instantiating
+--
+An index started at a nondeterministic offset does not reach every slot alike:
+i runs over offset .. offset + 1 with offset bounded by the original size, so
+after a reduction to two slots it reads past the end of the array, and what it
+reads there is a value no slot held. This made pthread-ext/09_fmaxsym-zero and
+11_fmaxsymopt-zero report a race they do not have. The family is refused.

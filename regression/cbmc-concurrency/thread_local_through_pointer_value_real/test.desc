@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `thread_local_through_pointer_value`: checks `slot == 9`, which
+no execution satisfies. Must stay FAILED before and after the fix.

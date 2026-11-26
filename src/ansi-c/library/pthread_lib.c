@@ -1,3 +1,20 @@
+/* FUNCTION: pthread_mutexattr_init */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+int pthread_mutexattr_init(pthread_mutexattr_t *attr)
+{
+  __CPROVER_HIDE:;
+  // PTHREAD_MUTEX_DEFAULT is not recursive. There was no model for this at
+  // all, so the attribute stayed uninitialised and pthread_mutex_init would
+  // have read a nondeterministic recursive flag out of it.
+  *((signed char *)attr) = 0;
+  return 0;
+}
+
 /* FUNCTION: pthread_mutexattr_settype */
 
 #ifndef __CPROVER_PTHREAD_H_INCLUDED
@@ -11,12 +28,15 @@ int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type)
 {
   __CPROVER_HIDE:;
 
-  (void)attr;
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
+  (void)attr;
   if(type==PTHREAD_MUTEX_RECURSIVE)
     __CPROVER_set_must(attr, "mutexattr-recursive");
   #else
-  (void)type;
+  // Read back by pthread_mutex_init. Without it a legal re-acquisition cannot
+  // be told apart from one that would deadlock, and the model assumes the
+  // first away along with everything that follows it.
+  *((signed char *)attr) = (type == PTHREAD_MUTEX_RECURSIVE);
   #endif
 
   int result=__VERIFIER_nondet_int();
@@ -63,6 +83,28 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned short owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
 #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
 void pthread_mutex_cleanup(void *p)
 {
@@ -73,13 +115,30 @@ void pthread_mutex_cleanup(void *p)
 }
 #endif
 
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_init(
   pthread_mutex_t *mutex,
   const pthread_mutexattr_t *mutexattr)
 {
   __CPROVER_HIDE:;
-  *((__CPROVER_mutex_t *)mutex)=0;
-  if(mutexattr!=0) (void)*mutexattr;
+#ifdef __CPROVER_MUTEX_SHADOW
+  __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+  __CPROVER_mutex_count[__key] = 0;
+  __CPROVER_mutex_owner[__key] = 0;
+  __CPROVER_mutex_recursive[__key] =
+    mutexattr != 0 ? *((const signed char *)mutexattr) : 0;
+#else
+  __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+  __state->count = 0;
+  __state->owner = 0;
+  __state->recursive = mutexattr != 0 ? *((const signed char *)mutexattr) : 0;
+#endif
 
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_cleanup(mutex, pthread_mutex_cleanup);
@@ -109,6 +168,35 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned short owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -130,8 +218,28 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
     "mutex not initialised or destroyed");
   #else
   __CPROVER_atomic_begin();
-  __CPROVER_assume(!*((__CPROVER_mutex_t *)mutex));
-  *((__CPROVER_mutex_t *)mutex)=1;
+  {
+    // A recursive mutex may be re-acquired by the thread that already holds
+    // it; every other acquisition waits for it to be free. Assuming only
+    // `count == 0` makes the re-acquisition unsatisfiable, which silently
+    // prunes the rest of the thread rather than blocking it.
+#ifdef __CPROVER_MUTEX_SHADOW
+    __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+    __CPROVER_assume(
+      __CPROVER_mutex_count[__key] == 0 ||
+      (__CPROVER_mutex_recursive[__key] &&
+       __CPROVER_mutex_owner[__key] == (unsigned short)__CPROVER_thread_id));
+    __CPROVER_mutex_owner[__key] = __CPROVER_thread_id;
+    __CPROVER_mutex_count[__key] = __CPROVER_mutex_count[__key] + 1;
+#else
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+    __CPROVER_assume(
+      __state->count == 0 ||
+      (__state->recursive && __state->owner == (unsigned short)__CPROVER_thread_id));
+    __state->owner = __CPROVER_thread_id;
+    __state->count = __state->count + 1;
+#endif
+  }
   __CPROVER_atomic_end();
 
   __CPROVER_fence("WWfence", "RRfence", "RWfence", "WRfence",
@@ -158,6 +266,35 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned short owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_trylock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -172,16 +309,39 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
     "mutex not initialised or destroyed");
   #endif
 
-  if(*((__CPROVER_mutex_t *)mutex)==1)
   {
-    // failed
-    return_value=16;
-  }
-  else
-  {
-    // ok
-    return_value=0;
-    *((__CPROVER_mutex_t *)mutex)=1;
+#ifdef __CPROVER_MUTEX_SHADOW
+    __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+    if(__CPROVER_mutex_count[__key] != 0 &&
+       !(__CPROVER_mutex_recursive[__key] &&
+         __CPROVER_mutex_owner[__key] == (unsigned short)__CPROVER_thread_id))
+    {
+      // failed
+      return_value=16;
+    }
+    else
+    {
+      // ok
+      return_value=0;
+      __CPROVER_mutex_owner[__key] = __CPROVER_thread_id;
+      __CPROVER_mutex_count[__key] = __CPROVER_mutex_count[__key] + 1;
+    }
+#else
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+    if(__state->count != 0 &&
+       !(__state->recursive && __state->owner == (unsigned short)__CPROVER_thread_id))
+    {
+      // failed
+      return_value=16;
+    }
+    else
+    {
+      // ok
+      return_value=0;
+      __state->owner = __CPROVER_thread_id;
+      __state->count = __state->count + 1;
+    }
+#endif
   }
 
   __CPROVER_atomic_end();
@@ -209,6 +369,35 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned short owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -233,7 +422,20 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
   __CPROVER_atomic_begin();
   // __CPROVER_assert(*((__CPROVER_mutex_t *)mutex)==1,
   //   "must hold lock upon unlock");
-  *((__CPROVER_mutex_t *)mutex)=0;
+  {
+    // A recursive mutex is released only by as many unlocks as it took
+    // locks; for a non-recursive one the count is 0 or 1 and this is the
+    // assignment it replaces.
+#ifdef __CPROVER_MUTEX_SHADOW
+    __CPROVER_size_t __key = (__CPROVER_size_t)mutex;
+    if(__CPROVER_mutex_count[__key] > 0)
+      __CPROVER_mutex_count[__key] = __CPROVER_mutex_count[__key] - 1;
+#else
+    __CPROVER_mutex_state_t *__state = (__CPROVER_mutex_state_t *)mutex;
+    if(__state->count > 0)
+      __state->count = __state->count - 1;
+#endif
+  }
   __CPROVER_atomic_end();
   #endif
 
@@ -257,6 +459,35 @@ typedef signed char __CPROVER_mutex_t;
 #endif
 #endif
 
+#ifndef __CPROVER_mutex_state_defined
+#define __CPROVER_mutex_state_defined
+// The modelled state of a mutex, laid over the front of the real object.
+// `count` keeps offset 0 and its established encoding -- 0 free, -1 destroyed
+// -- so every existing test on it still reads the same value; a recursive
+// mutex counts its acquisitions there instead of saturating at 1. `owner` is
+// meaningful only while `count` is positive. It is 16 bits, next to the
+// others, because the concurrency encoding carries the bytes from the first
+// field accessed to the last at every write: an `unsigned long` at offset 4
+// made every mutex 64 bits wide there, 8 times its single byte before `owner`
+// existed. A thread id is compared modulo 2^16, which can only let a thread
+// re-acquire another's recursive mutex in a run with more than 65536 threads.
+typedef struct
+{
+  __CPROVER_mutex_t count;
+  __CPROVER_mutex_t recursive;
+  unsigned short owner;
+} __CPROVER_mutex_state_t;
+#endif
+
+extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
+
+#ifdef __CPROVER_MUTEX_SHADOW
+// --mutex-shadow: the state of each mutex, indexed by its address
+extern signed char __CPROVER_mutex_count[];
+extern signed char __CPROVER_mutex_recursive[];
+extern unsigned short __CPROVER_mutex_owner[];
+#endif
+
 int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
   __CPROVER_HIDE:;
@@ -277,7 +508,11 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 
   // __CPROVER_assert(*((__CPROVER_mutex_t *)mutex)==0,
   //   "lock held upon destroy");
+#ifdef __CPROVER_MUTEX_SHADOW
+  __CPROVER_mutex_count[(__CPROVER_size_t)mutex] = -1;
+#else
   *((__CPROVER_mutex_t *)mutex)=-1;
+#endif
 
   #endif
 
@@ -292,27 +527,24 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 #endif
 
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
 extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
-extern __CPROVER_thread_local void (*__CPROVER_thread_key_dtors[])(void *);
+extern void (*__CPROVER_thread_key_dtors[])(void *);
 extern __CPROVER_thread_local unsigned long __CPROVER_next_thread_key;
+
+void __CPROVER_run_thread_key_dtors(void);
 
 void pthread_exit(void *value_ptr)
 {
   __CPROVER_HIDE:;
-  if(value_ptr!=0) (void)*(char*)value_ptr;
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
-  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
-  {
-    const void *key = __CPROVER_thread_keys[i];
-    __CPROVER_thread_keys[i] = 0;
-    if(__CPROVER_thread_key_dtors[i] && key)
-      __CPROVER_thread_key_dtors[i](key);
-  }
-#endif
+  // the value pthread_join hands back; pthread_exit does not dereference it
+  __CPROVER_thread_return_values[__CPROVER_thread_id] = value_ptr;
+  // the destructors of the thread-specific values; defined with
+  // pthread_key_create, so a program that creates no key calls a function
+  // with no body, which does nothing
+  __CPROVER_run_thread_key_dtors();
   __CPROVER_threads_exited[__CPROVER_thread_id]=1;
   __CPROVER_assume(0);
 #ifdef LIBRARY_CHECK
@@ -333,6 +565,7 @@ void pthread_exit(void *value_ptr)
 #endif
 
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 extern unsigned long __CPROVER_next_thread_id;
 
@@ -348,8 +581,11 @@ __CPROVER_HIDE:;
 
   if((unsigned long)thread>__CPROVER_next_thread_id) return ESRCH;
   if((unsigned long)thread==__CPROVER_thread_id) return EDEADLK;
-  if(value_ptr!=0) (void)**(char**)value_ptr;
   __CPROVER_assume(__CPROVER_threads_exited[(unsigned long)thread]);
+  // the value the thread returned or passed to pthread_exit; *value_ptr is
+  // written, never read (it was dereferenced as a pointer, and never set)
+  if(value_ptr!=0)
+    *value_ptr = __CPROVER_thread_return_values[(unsigned long)thread];
 
   return 0;
 }
@@ -370,6 +606,7 @@ __CPROVER_HIDE:;
 
 #ifdef __APPLE__
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 extern unsigned long __CPROVER_next_thread_id;
 
@@ -385,8 +622,11 @@ __CPROVER_HIDE:;
 
   if((unsigned long)thread>__CPROVER_next_thread_id) return ESRCH;
   if((unsigned long)thread==__CPROVER_thread_id) return EDEADLK;
-  if(value_ptr!=0) (void)**(char**)value_ptr;
   __CPROVER_assume(__CPROVER_threads_exited[(unsigned long)thread]);
+  // the value the thread returned or passed to pthread_exit; *value_ptr is
+  // written, never read (it was dereferenced as a pointer, and never set)
+  if(value_ptr!=0)
+    *value_ptr = __CPROVER_thread_return_values[(unsigned long)thread];
 
   return 0;
 }
@@ -557,19 +797,17 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *lock)
 /* FUNCTION: __spawned_thread */
 
 extern __CPROVER_bool __CPROVER_threads_exited[];
+extern void *__CPROVER_thread_return_values[];
 extern __CPROVER_thread_local unsigned long __CPROVER_thread_id;
 
 extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
-extern __CPROVER_thread_local void (*__CPROVER_thread_key_dtors[])(void *);
+extern void (*__CPROVER_thread_key_dtors[])(void *);
 extern __CPROVER_thread_local unsigned long __CPROVER_next_thread_key;
+
+void __CPROVER_run_thread_key_dtors(void);
 
 void __spawned_thread(
   unsigned long this_thread_id,
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
-  void (**thread_key_dtors)(void *),
-#endif
   unsigned long next_thread_key,
   void *(*start_routine)(void *),
   void *arg)
@@ -577,18 +815,12 @@ void __spawned_thread(
 __CPROVER_HIDE:;
   __CPROVER_thread_id = this_thread_id;
   __CPROVER_next_thread_key = next_thread_key;
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
-  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
-    __CPROVER_thread_key_dtors[i] = thread_key_dtors[i];
-#endif
 #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   // Clear all locked mutexes; locking must happen in same thread.
   __CPROVER_clear_must(0, "mutex-locked");
   __CPROVER_clear_may(0, "mutex-locked");
 #endif
-  start_routine(arg);
+  __CPROVER_thread_return_values[this_thread_id] = start_routine(arg);
   __CPROVER_fence(
     "WWfence",
     "RRfence",
@@ -598,17 +830,10 @@ __CPROVER_HIDE:;
     "RRcumul",
     "RWcumul",
     "WRcumul");
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
-  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
-  {
-    const void *key = __CPROVER_thread_keys[i];
-    __CPROVER_thread_keys[i] = 0;
-    if(__CPROVER_thread_key_dtors[i] && key)
-      __CPROVER_thread_key_dtors[i](key);
-  }
-#endif
+  // the destructors of the thread-specific values; defined with
+  // pthread_key_create, so a program that creates no key calls a function
+  // with no body, which does nothing
+  __CPROVER_run_thread_key_dtors();
   __CPROVER_threads_exited[this_thread_id] = 1;
 }
 
@@ -623,11 +848,6 @@ extern unsigned long __CPROVER_next_thread_id;
 
 void __spawned_thread(
   unsigned long this_thread_id,
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
-  void (**thread_key_dtors)(void *),
-#endif
   unsigned long next_thread_key,
   void *(*start_routine)(void *),
   void *arg);
@@ -654,20 +874,10 @@ int pthread_create(
   if(attr) (void)*attr;
 
   unsigned long next_thread_key = __CPROVER_next_thread_key;
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
-  void (**thread_key_dtors)(void *) = __CPROVER_thread_key_dtors;
-#endif
 
   __CPROVER_ASYNC_1:
     __spawned_thread(
       this_thread_id,
-#if 0
-      // Destructor support is disabled as it is too expensive due to its
-      // extensive use of shared variables.
-      thread_key_dtors,
-#endif
       next_thread_key,
       start_routine,
       arg);
@@ -845,23 +1055,43 @@ int __VERIFIER_nondet_int();
 // no pthread_barrier_t on the Mac
 // slightly different declaration on OpenBSD
 #if !defined(__APPLE__) && !defined(__OpenBSD__)
+#ifndef __CPROVER_barrier_state_defined
+#define __CPROVER_barrier_state_defined
+// The modelled state of a barrier, laid over the front of the real object as
+// the mutex state is (see __CPROVER_mutex_state_t, also for the 16 bits): the
+// number of threads it waits for, how many have arrived in the current cycle,
+// and the number of that cycle; and whether it is process-shared.
+typedef struct
+{
+  unsigned short count;
+  unsigned short arrived;
+  unsigned short cycle;
+  unsigned short shared;
+} __CPROVER_barrier_state_t;
+#endif
+
 int pthread_barrier_init(
   pthread_barrier_t *restrict barrier,
   const pthread_barrierattr_t *restrict attr,
   unsigned count)
 {
   __CPROVER_HIDE:;
-  (void)barrier;
-  (void)attr;
-  (void)count;
-
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_set_must(barrier, "barrier-init");
   __CPROVER_clear_may(barrier, "barrier-destroyed");
   #endif
 
-  int result=__VERIFIER_nondet_int();
-  return result;
+  // POSIX: a count of zero is EINVAL
+  if(count == 0)
+    return 22;
+  __CPROVER_barrier_state_t *__state = (__CPROVER_barrier_state_t *)barrier;
+  __state->count = (unsigned short)count;
+  __state->arrived = 0;
+  __state->cycle = 0;
+  // the attribute object holds its pshared value (pthread_barrierattr_init)
+  __state->shared =
+    attr != 0 && *(const int *)attr == PTHREAD_PROCESS_SHARED;
+  return 0;
 }
 #endif
 
@@ -928,11 +1158,24 @@ int __VERIFIER_nondet_int();
 
 // no pthread_barrier_t on the Mac
 #ifndef __APPLE__
+#ifndef __CPROVER_barrier_state_defined
+#define __CPROVER_barrier_state_defined
+// The modelled state of a barrier, laid over the front of the real object as
+// the mutex state is (see __CPROVER_mutex_state_t, also for the 16 bits): the
+// number of threads it waits for, how many have arrived in the current cycle,
+// and the number of that cycle; and whether it is process-shared.
+typedef struct
+{
+  unsigned short count;
+  unsigned short arrived;
+  unsigned short cycle;
+  unsigned short shared;
+} __CPROVER_barrier_state_t;
+#endif
+
 int pthread_barrier_wait(pthread_barrier_t *barrier)
 {
   __CPROVER_HIDE:;
-
-  (void)barrier;
 
   #ifdef __CPROVER_CUSTOM_BITVECTOR_ANALYSIS
   __CPROVER_assert(__CPROVER_get_must(barrier, "barrier-init"),
@@ -941,8 +1184,38 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
                    "pthread barrier must not be destroyed");
   #endif
 
-  int result=__VERIFIER_nondet_int();
-  return result;
+  // A thread arrives; the one that completes the count starts the next cycle
+  // and returns PTHREAD_BARRIER_SERIAL_THREAD, the others wait until it has.
+  // A cycle that never completes (more threads expected than ever arrive)
+  // blocks them for good, which prunes the rest of each such thread. The
+  // previous model returned at once, so the barrier ordered nothing.
+  __CPROVER_barrier_state_t *__state = (__CPROVER_barrier_state_t *)barrier;
+  unsigned short __cycle;
+  int __last;
+  __CPROVER_atomic_begin();
+  __cycle = __state->cycle;
+  __state->arrived = __state->arrived + 1;
+  __last = __state->arrived == __state->count;
+  if(__last)
+  {
+    __state->arrived = 0;
+    __state->cycle = __state->cycle + 1;
+  }
+  __CPROVER_atomic_end();
+  // A process-shared barrier can also be completed by processes this model
+  // does not have (fork() is not a second process here): such a thread may
+  // also go on without the cycle completing. Blocking it for good made
+  // pthread-barrier/unreach-reachable-process-shared-wait report safe.
+  if(!__last && (!__state->shared || __VERIFIER_nondet_int()))
+  {
+    __CPROVER_atomic_begin();
+    __CPROVER_assume(__state->cycle != __cycle);
+    __CPROVER_atomic_end();
+  }
+
+  __CPROVER_fence("WWfence", "RRfence", "RWfence", "WRfence",
+                  "WWcumul", "RRcumul", "RWcumul", "WRcumul");
+  return __last ? PTHREAD_BARRIER_SERIAL_THREAD : 0;
 }
 #endif
 
@@ -954,20 +1227,35 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 #endif
 
 extern __CPROVER_thread_local const void *__CPROVER_thread_keys[];
-extern __CPROVER_thread_local void (*__CPROVER_thread_key_dtors[])(void *);
+extern void (*__CPROVER_thread_key_dtors[])(void *);
 extern __CPROVER_thread_local unsigned long __CPROVER_next_thread_key;
+
+// The destructor of each key with a value, as a thread ends (return from its
+// start routine, or pthread_exit). Defined here, in pthread_key_create's own
+// block, so that it is linked only into programs that create a key: in every
+// other program the thread-end call has no body. Defined for all of them, the
+// loop over the keys made each thread end dispatch a function pointer over
+// every function of a compatible type wherever symex could not tell the count
+// was zero (pthread-theta/unwind3-100: 12.5 GB, the bug lost).
+void __CPROVER_run_thread_key_dtors(void)
+{
+__CPROVER_HIDE:;
+  for(unsigned long i = 0; i < __CPROVER_next_thread_key; ++i)
+  {
+    const void *key = __CPROVER_thread_keys[i];
+    __CPROVER_thread_keys[i] = 0;
+    if(__CPROVER_thread_key_dtors[i] && key)
+      __CPROVER_thread_key_dtors[i](key);
+  }
+}
 
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 {
 __CPROVER_HIDE:;
   __CPROVER_thread_keys[__CPROVER_next_thread_key] = 0;
-#if 0
-  // Destructor support is disabled as it is too expensive due to its extensive
-  // use of shared variables.
+  // A key and its destructor are process-wide, so the table of destructors is
+  // a plain global: no thread copies it. Only the values are thread-local.
   __CPROVER_thread_key_dtors[__CPROVER_next_thread_key] = destructor;
-#else
-  __CPROVER_precondition(destructor == 0, "destructors are not yet supported");
-#endif
   *key = __CPROVER_next_thread_key++;
   return 0;
 }
@@ -1016,5 +1304,88 @@ int pthread_setspecific(pthread_key_t key, const void *value)
 {
 __CPROVER_HIDE:;
   __CPROVER_thread_keys[key] = value;
+  return 0;
+}
+
+/* FUNCTION: pthread_once */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+// The first caller runs the routine; every other caller waits until it has
+// returned, so what the routine writes is ordered before every call's return.
+// The control holds PTHREAD_ONCE_INIT (0) until a call starts the routine, 1
+// while it runs and 2 once it has returned. Without this model the call was
+// an undefined function: the routine never ran.
+int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
+{
+__CPROVER_HIDE:;
+  int __run;
+  __CPROVER_atomic_begin();
+  __run = *once_control == 0;
+  if(__run)
+    *once_control = 1;
+  __CPROVER_atomic_end();
+  if(__run)
+  {
+    init_routine();
+    __CPROVER_atomic_begin();
+    *once_control = 2;
+    __CPROVER_atomic_end();
+  }
+  else
+  {
+    __CPROVER_atomic_begin();
+    __CPROVER_assume(*once_control == 2);
+    __CPROVER_atomic_end();
+  }
+  return 0;
+}
+
+/* FUNCTION: pthread_barrierattr_init */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+// The attribute object holds only its pshared value, read by
+// pthread_barrier_init.
+int pthread_barrierattr_init(pthread_barrierattr_t *attr)
+{
+__CPROVER_HIDE:;
+  *(int *)attr = PTHREAD_PROCESS_PRIVATE;
+  return 0;
+}
+
+/* FUNCTION: pthread_barrierattr_setpshared */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+int pthread_barrierattr_setpshared(pthread_barrierattr_t *attr, int pshared)
+{
+__CPROVER_HIDE:;
+  if(pshared != PTHREAD_PROCESS_PRIVATE && pshared != PTHREAD_PROCESS_SHARED)
+    return 22; // EINVAL
+  *(int *)attr = pshared;
+  return 0;
+}
+
+/* FUNCTION: pthread_barrierattr_destroy */
+
+#ifndef __CPROVER_PTHREAD_H_INCLUDED
+#include <pthread.h>
+#define __CPROVER_PTHREAD_H_INCLUDED
+#endif
+
+int pthread_barrierattr_destroy(pthread_barrierattr_t *attr)
+{
+__CPROVER_HIDE:;
+  (void)attr;
   return 0;
 }

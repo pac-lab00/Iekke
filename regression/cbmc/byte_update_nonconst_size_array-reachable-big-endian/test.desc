@@ -1,0 +1,16 @@
+CORE
+main.c
+--32 --big-endian -DTEST_BIG_ENDIAN --unwind 5 -DCHECK_REACHABLE
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] line 31 assertion 0: FAILURE$
+^\[main.assertion.2\] line 35 assertion a\[1\] == 0x20000: SUCCESS$
+^\[main.assertion.3\] line 40 assertion a\[2\] == 0: SUCCESS$
+^\[main.assertion.4\] line 45 assertion 0: FAILURE$
+^\[main.assertion.5\] line 49 assertion b\[1\] == 0x01 && b\[2\] == 0x02000000: SUCCESS$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Both checked branches of byte_update_nonconst_size_array-big-endian are
+reached, so its SUCCESSFUL is not vacuous.

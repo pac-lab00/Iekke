@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --show-vcc
+^EXIT=0$
+^SIGNAL=0$
+byte_extract_little_endian(m#[0-9]*, 0, unsignedbv\[32\])
+--
+byte_extract_little_endian(m#[0-9]*, 0, unsignedbv\[64\])
+--
+The required line is the narrowed chain value of m; an `owner` wider than 16
+bits, or farther from offset 0, shows up as a wider slice.

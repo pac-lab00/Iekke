@@ -18,6 +18,7 @@ Author: Daniel Kroening, Peter Schrammel
 #include <util/options.h>
 #include <util/version.h>
 
+#include <cstdlib>
 #include <iostream>
 
 #include "../util/options.h"
@@ -215,6 +216,11 @@ make_satcheck_prop(message_handlert &message_handler, const optionst &options)
 
 #include "solvers/sat/satcheck_minisat2.h"
 
+#ifdef HAVE_GLUCOSE
+#include "solvers/sat/satcheck_glucose.h"
+#include "solvers/sat/satcheck_kissat.h"
+#endif
+
 static std::unique_ptr<propt>
 get_sat_solver(message_handlert &message_handler, const optionst &options)
 {
@@ -248,6 +254,10 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_minisat()
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_NONE;
   else if(options.get_option("arrays-uf") == "always")
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_ALL;
+  else if(options.get_option("arrays-uf") == "auto")
+    bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_AUTO;
+  bv_pointers->constant_array_oob_nondet =
+    options.get_bool_option("constant-array-oob-nondet");
 
   set_decision_procedure_time_limit(*bv_pointers);
 
@@ -258,7 +268,54 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_minisat()
 std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
 {
   auto solver = util_make_unique<solvert>();
+#ifdef HAVE_KISSAT
+  // kissat in-process, opt-in e primo nella catena come --glucose. Serve a
+  // separare "solver moderno" da "path esterno": finora un solver con
+  // inprocessing aggressivo era misurabile solo scrivendo il DIMACS su disco,
+  // quindi il suo vantaggio era confuso con il diverso trattamento delle
+  // assumption. kissat non e' incrementale, quindi ignora --no-sat-preprocessor
+  // (non c'e' un SatELite separato da spegnere) e risolve una volta sola.
+  if(options.get_bool_option("kissat"))
+  {
+    solver->set_prop(
+      make_satcheck_prop<satcheck_kissatt>(message_handler, options));
+  }
+  else
+#endif
+#ifdef HAVE_GLUCOSE
+  // In-process Glucose, opt-in and first in the chain: the POR decision-tier
+  // experiment needs variable provenance, which the external DIMACS path cannot
+  // carry, and an explicit --glucose must win over the Deagle solvers that this
+  // fork enables by default. Without the flag nothing changes.
+  // Without --rounds the memory-model encoding hands its ordering constraints
+  // to the selected Deagle solver (bmc_util casts the solver to it), so
+  // Glucose cannot stand in there: it crashed on the first program with an
+  // ordering edge (libvsync/ticketlock, Huawei).
+  if(options.get_bool_option("glucose") &&
+     !(options.get_unsigned_int_option("rounds") == 0 &&
+       (options.get_bool_option("deagle-closure") ||
+        options.get_bool_option("deagle-icd") ||
+        options.get_bool_option("deagle-segment"))))
+  {
+    // Honour --no-sat-preprocessor here too: with the simplifier the freezing
+    // that prop_conv_solvert applies to every symbol-bearing literal blocks most
+    // of SatELite's work, so being able to switch it off is what makes that cost
+    // measurable.
+    if(options.get_bool_option("sat-preprocessor"))
+      solver->set_prop(make_satcheck_prop<satcheck_glucose_simplifiert>(
+        message_handler, options));
+    else
+      solver->set_prop(make_satcheck_prop<satcheck_glucose_no_simplifiert>(
+        message_handler, options));
+  }
+  else
+#endif
   // __SZH_ADD_BEGIN__
+  // Deagle-family solvers are only compiled in as part of satcheck_minisat2.cpp,
+  // which is only added to the build for sat_impl=minisat2 (see
+  // solvers/CMakeLists.txt). Guarded locally to unblock building with
+  // sat_impl=glucose, where these classes don't exist.
+#ifdef HAVE_MINISAT2
   if(options.get_bool_option("cat"))
   {
     solver->set_prop(make_satcheck_prop<memory_model_solvert>(message_handler, options));
@@ -279,6 +336,14 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
     solver->set_prop(make_satcheck_prop<deagle_segment_solvert>(message_handler, options));
     std::cout << "Use Deagle's segment solver\n";
   }
+#else
+  if(false)
+  {
+    // Deagle-family solvers unavailable: satcheck_minisat2.cpp (which defines
+    // them) is only compiled for sat_impl=minisat2. Kept as a no-op branch
+    // purely to preserve the surrounding if/else-if chain's syntax.
+  }
+#endif
   // __SZH_ADD_END__
   else if(
     options.get_bool_option("beautify") ||
@@ -302,6 +367,10 @@ std::unique_ptr<solver_factoryt::solvert> solver_factoryt::get_default()
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_NONE;
   else if(options.get_option("arrays-uf") == "always")
     bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_ALL;
+  else if(options.get_option("arrays-uf") == "auto")
+    bv_pointers->unbounded_array = bv_pointerst::unbounded_arrayt::U_AUTO;
+  bv_pointers->constant_array_oob_nondet =
+    options.get_bool_option("constant-array-oob-nondet");
 
   set_decision_procedure_time_limit(*bv_pointers);
   solver->set_decision_procedure(std::move(bv_pointers));
@@ -637,7 +706,21 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
   }
 
   // __SZH_ADD_BEGIN__ : default
-  if(cmdline.isset("deagle-closure") || (!cmdline.isset("deagle-segment") && !cmdline.isset("deagle-icd") && !solver_set))
+  // Gated on the same condition as the solvers themselves in get_default():
+  // these options do two things, and only one of them survives without
+  // HAVE_MINISAT2. They select Deagle's ordering-consistency solver, and they
+  // set memory_model->use_deagle, which makes memory_model_sct skip from_read
+  // because that solver derives fr from rf and ws during search. With the
+  // solver family compiled out, enabling them drops from_read and leaves
+  // nothing to derive it, so the memory-model path reports violations on
+  // race-free programs -- mutex1, sc4-sc6 and
+  // svcomp13_read_write_lock_safe among them.
+#ifdef HAVE_MINISAT2
+  // --cbmc-memory-model: without --rounds, CBMC's own partial-order encoding
+  // (from-read constraints included) on the SAT solver, no Deagle solver
+  if(cmdline.isset("deagle-closure") ||
+     (!cmdline.isset("deagle-segment") && !cmdline.isset("deagle-icd") &&
+      !cmdline.isset("cbmc-memory-model") && !solver_set))
     options.set_option("deagle-closure", true);
 
   if(cmdline.isset("deagle-icd"))
@@ -645,6 +728,7 @@ static void parse_smt2_options(const cmdlinet &cmdline, optionst &options)
 
   if(cmdline.isset("deagle-segment"))
     options.set_option("deagle-segment", true);
+#endif
 
   if(cmdline.isset("datarace"))
     options.set_option("datarace", true);

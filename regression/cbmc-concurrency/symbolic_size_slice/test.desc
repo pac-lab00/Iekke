@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --pointer-check --slice-formula
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Fails with the size of data sliced away. See symbolic_size_slice_real for
+the other direction.

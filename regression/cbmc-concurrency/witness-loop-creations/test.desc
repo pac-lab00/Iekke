@@ -1,0 +1,18 @@
+CORE
+main.c
+--64 --datarace --no-assertions --unwind 4 --rounds 3 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+<data key="createThread">1</data>
+<data key="createThread">2</data>
+<data key="unroll-bound">2</data>
+--
+^warning: ignoring
+<data key="createThread">3</data>
+--
+The loop repeats the line of pthread_create, and the witness writer merged
+steps on a repeated line or instruction: one createThread edge, while thread 2
+ran too (41_FreeBSD_abd_kbd_sliced). The trace also creates threads up to the
+loop bound that never run; their creation is left out, and unroll-bound is 2
+(one iteration needed), not 5: Dartagnan confirmed FreeBSD in 4 s at 2 and
+timed out at 3.

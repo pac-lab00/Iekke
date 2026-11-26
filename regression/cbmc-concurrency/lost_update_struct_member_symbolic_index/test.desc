@@ -1,0 +1,9 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+--
+Two threads store different members of the same element of an array of structs at a computed index. Each element used to publish all its members under i == k, the untouched ones with this thread stale values, so one store reset the other. Only the stored member is published now. Fails on a binary without the fix.

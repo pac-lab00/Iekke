@@ -42,10 +42,47 @@ void dirtyt::search_other(const goto_programt::instructiont &instruction)
       statement == ID_expression || statement == ID_array_set ||
       statement == ID_array_equal || statement == ID_array_copy ||
       statement == ID_array_replace || statement == ID_havoc_object ||
-      statement == ID_input || statement == ID_output)
+      statement == ID_input || statement == ID_output ||
+      // An address appearing in an asm operand is address-taken like any
+      // other. This was listed below as a case we do not look at, which was
+      // harmless only while remove_asm turned every asm into a SKIP; now that
+      // untranslated asm is preserved so its operands survive, missing it
+      // makes an object that is address-taken *only* inside asm look
+      // thread-exclusive, and another thread's write through that pointer
+      // invisible. See regression/thread-exclusivity/adv_Z_asm_addr.c.
+      statement == ID_asm)
     {
+      // Dirty means: may be accessed through a pointer at some other
+      // statement. The array builtins (array_set, array_equal, array_copy,
+      // array_replace) dereference their operands within the statement
+      // itself and store no pointer, so a symbol whose address appears only
+      // there, bare or as &a[i]..., cannot be reached from elsewhere; every
+      // client still sees the statement's own read or write of it through
+      // goto_rw or symex_other. Indices inside the operand are searched as
+      // usual. (The library's memset and memcpy pass their local copy
+      // arrays this way; marked dirty, those became shared objects in every
+      // threaded program.)
+      const bool by_address_only =
+        statement == ID_array_set || statement == ID_array_equal ||
+        statement == ID_array_copy || statement == ID_array_replace;
       forall_operands(it, code)
+      {
+        const exprt *op = &*it;
+        while(op->id() == ID_typecast)
+          op = &to_typecast_expr(*op).op();
+        if(by_address_only && op->id() == ID_address_of)
+        {
+          const exprt *object = &to_address_of_expr(*op).object();
+          while(object->id() == ID_index)
+          {
+            find_dirty(to_index_expr(*object).index());
+            object = &to_index_expr(*object).array();
+          }
+          if(object->id() == ID_symbol)
+            continue;
+        }
         find_dirty(*it);
+      }
     }
     // other possible cases according to goto_programt::instructiont::output
     // and goto_symext::symex_other:
@@ -53,7 +90,7 @@ void dirtyt::search_other(const goto_programt::instructiont &instruction)
     // statement == ID_user_specified_predicate ||
     // statement == ID_user_specified_parameter_predicates ||
     // statement == ID_user_specified_return_predicates ||
-    // statement == ID_decl || statement == ID_nondet || statement == ID_asm)
+    // statement == ID_decl || statement == ID_nondet)
   }
 }
 

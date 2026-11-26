@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Racy control for `array_element_pointer_load`: the thread updates a[i]
+holding a[0]'s mutex, so with both threads at i == 1 they race on
+a[1].datum. Must stay FAILED before and after.

@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness --no-por --thread-symmetry exact
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^thread symmetry: 1 pair of 2 threads$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Two identical threads form one pair. Ordering them keeps the lost update, which
+needs the two to run in the same round, where the exact ordering does not apply.

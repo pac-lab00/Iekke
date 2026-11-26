@@ -125,6 +125,7 @@ protected:
   // overloading
   literalt convert_rest(const exprt &expr) override;
   virtual bool boolbv_set_equality_to_true(const equal_exprt &expr);
+  bool set_implied_equality_to_true(const implies_exprt &expr);
 
   // NOLINTNEXTLINE(readability/identifiers)
   typedef arrayst SUB;

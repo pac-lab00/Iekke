@@ -1,0 +1,10 @@
+CORE
+main.c
+
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+--
+Re-entering a scope by goto past a declaration leaves the variable indeterminate
+(upstream regression/cbmc/declaration-goto/re-enter_scope).

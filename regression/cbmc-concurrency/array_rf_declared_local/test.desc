@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+A declaration taken as a fresh value at every read lets x and y differ and
+fails here. The array is 1000 elements so that the cost model takes it. See
+array_rf_declared_local_violation for the other direction.

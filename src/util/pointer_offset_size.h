@@ -16,6 +16,8 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "mp_arith.h"
 #include "optional.h"
 
+#include <vector>
+
 class exprt;
 class namespacet;
 class struct_typet;
@@ -27,6 +29,12 @@ optionalt<mp_integer> member_offset(
   const struct_typet &type,
   const irep_idt &member,
   const namespacet &ns);
+
+/// The byte offset of every component of \p type, in order: entry i is what
+/// member_offset returns for component i. Computed in one pass, where calling
+/// member_offset for each component sums the components before it again.
+std::vector<optionalt<mp_integer>>
+member_offsets(const struct_typet &type, const namespacet &ns);
 
 optionalt<mp_integer> member_offset_bits(
   const struct_typet &type,

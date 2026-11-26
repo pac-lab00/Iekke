@@ -1,0 +1,29 @@
+CORE
+main.c
+--no-assertions --datarace --unwind 4 --rounds 2 --por --allow-pointer-unsoundness --symmetric-instance 2 --verbosity 9
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+symmetric arrays: instantiating 1 array(s) at 2 slots instead of 64
+--
+^warning: ignoring
+--
+The program declares 64 slots and its setup loop runs once per slot, so at
+--unwind 4 that loop is cut unless the family is reduced first: the unwinding
+assumption then prunes every path through it and the run reports success
+having generated nothing to check. Measured on this program without the flag:
+"Generated 0 VCC(s)" and VERIFICATION SUCCESSFUL. With --symmetric-instance 2
+the loop is two iterations long, runs to completion, and the race is found.
+
+So the FAILED here is only reachable when the reduction actually happened, and
+the "instantiating" line is required as well so the test cannot pass by the
+reduction silently doing nothing.
+
+Sound as an under-approximation: a reported violation is real, a safe result
+at a reduced instance is not a proof, which is why the flag is opt-in.
+
+The index has to be a local. An earlier version of this test used a global
+index and was not recognised as symmetric at all -- index_is_uniform looks for
+locals.
+
+test.pl matches with grep, so these are basic regular expressions.

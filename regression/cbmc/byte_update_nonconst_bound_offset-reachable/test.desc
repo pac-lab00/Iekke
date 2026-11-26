@@ -1,0 +1,16 @@
+CORE
+main.c
+--32 --little-endian -DCHECK_REACHABLE
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] line 26 assertion 0: FAILURE$
+^\[main.assertion.2\] line 32 assertion s.a == 0x04031101: SUCCESS$
+^\[main.assertion.3\] line 34 assertion s.b == 0x08070605: SUCCESS$
+^\[main.assertion.4\] line 39 assertion 0: FAILURE$
+^\[main.assertion.5\] line 45 assertion s.a == 0x33221101 && s.b == 0x08075544: SUCCESS$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+Both checked branches of byte_update_nonconst_bound_offset are reached, so its
+SUCCESSFUL is not vacuous.

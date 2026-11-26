@@ -1,0 +1,19 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Mutexes in an array whose size is symbolic: every lock is a store into one
+array the solver keeps whole, so the array theory adds an Ackermann pair for
+every two indices of every array term. Terms built as `c ? a : b` or
+`a with [i := v]` no longer get pairs of their own -- their consistency
+follows from a and b through the if/with constraints over the same index
+set -- which here takes the pairs from 6805 to 4039 and the run from about
+15 s to 3 s.
+
+A known-answer test for that path, not a bug fix: SUCCESSFUL before and
+after. See `array_theory_lock_array_race`, which must stay FAILED.

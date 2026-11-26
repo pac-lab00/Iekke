@@ -183,12 +183,32 @@ public:
   // for SHARED_READ/SHARED_WRITE and ATOMIC_BEGIN/ATOMIC_END
   unsigned atomic_section_id = 0;
 
+  /// Ids from here up name the sections symex opens itself around a store
+  /// into a shared object it cannot split (see assign_non_struct_symbol):
+  /// they make the store atomic for values, not the program's accesses.
+  static constexpr unsigned first_store_atomic_section = 1u << 30;
+
+  /// Whether this access is inside an atomic section of the program's own,
+  /// which is what the data-race encoding asks.
+  bool in_program_atomic_section() const
+  {
+    return atomic_section_id != 0 &&
+           atomic_section_id < first_store_atomic_section;
+  }
+
   // for LazyCSeq/Round Robin trace reconstruction
   std::vector<symbol_exprt> round_robin_exec_symbols;
   unsigned round_robin_label = 0;
   unsigned round_robin_num = 0;
   unsigned round_robin_thread = 0;
   unsigned round_robin_trace_order = 0;
+
+  /// for SPAWN: the thread it starts. Several spawns start the same thread
+  /// under --merge-exclusive-threads, so it is not the spawn's rank.
+  std::size_t spawned_thread_nr = 0;
+  /// for SPAWN: where the program creates the thread -- the call of
+  /// pthread_create, not the spawn inside its library model
+  source_locationt spawn_call_location;
 
   // for slicing
   bool ignore = false;

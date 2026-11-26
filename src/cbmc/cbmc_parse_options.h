@@ -33,7 +33,14 @@ class optionst;
 
 // clang-format off
 #define CBMC_OPTIONS \
-  "(deagle-closure)(deagle-icd)(deagle-segment)(datarace)(goblint)(locksmith)(deadlock)" \
+  "(deagle-closure)(deagle-icd)(deagle-segment)(cbmc-memory-model)(datarace)(goblint)(locksmith)(deadlock)" \
+  "(symmetric-instance):" \
+  "(read-implication)(no-read-implication)" \
+  "(narrow-shared)(no-narrow-shared)" \
+  "(thread-private)(no-thread-private)" \
+  "(thread-symmetry):" \
+  "(array-rf)(no-array-rf)(array-rf-bytes)(constant-array-oob-nondet)(mutex-shadow)(dynamic-array-bound):(extern-pointers-own-object)(summarise-guards)(infer-alloc-types)(merge-exclusive-threads)(index-chain)(own-view-reads)" \
+  "(no-por)(static-race-check)(spin-loop-reduction)" \
   OPT_BMC \
   "(preprocess)(slice-by-trace):" \
   OPT_FUNCTIONS \

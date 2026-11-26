@@ -88,6 +88,19 @@ const std::string satcheck_glucose_simplifiert::solver_text()
   return "Glucose Syrup with simplifier";
 }
 
+template <typename T>
+void satcheck_glucose_baset<T>::set_por_variable(literalt a)
+{
+  if(a.is_constant())
+    return;
+
+  // The variable may not exist yet if no clause has mentioned it so far.
+  add_variables();
+
+  if(a.var_no() < (unsigned)solver->nVars())
+    solver->setPORVar(a.var_no(), true);
+}
+
 template<typename T>
 void satcheck_glucose_baset<T>::add_variables()
 {
@@ -114,13 +127,10 @@ void satcheck_glucose_baset<T>::lcnf(const bvt &bv)
       }
     }
 
-    Glucose::vec<Glucose::Lit> c;
-
-    convert(bv, c);
-
     // Note the underscore.
-    // Add a clause to the solver without making superflous internal copy.
-
+    // Add a clause to the solver without making a superfluous internal copy.
+    Glucose::vec<Glucose::Lit> c;
+    convert(bv, c);
     solver->addClause_(c);
 
     if(solver_hardness)
@@ -191,7 +201,24 @@ propt::resultt satcheck_glucose_baset<T>::do_prop_solve()
         Glucose::vec<Glucose::Lit> solver_assumptions;
         convert(assumptions, solver_assumptions);
 
-        if(solver->solve(solver_assumptions))
+        const bool sat_result = solver->solve(solver_assumptions);
+
+        // Split the decision count by tier: the fallback figure is the evidence
+        // that POR variables are reachable at all. If it stays zero while POR
+        // clauses exist, either nothing was classified or the search never ran
+        // out of ordinary candidates.
+        log.statistics() << "decisions: " << solver->decisions << " total, "
+                         << solver->stats_por_fallback_decisions
+                         << " from the POR fallback tier, "
+                         << solver->stats_por_decisions
+                         << " landing on a POR variable; conflicts: "
+                         << solver->conflicts << ", propagations: "
+                         << solver->propagations
+                         << "; CS-first: "
+                         << (solver->cs_first_enabled ? "on" : "off")
+                         << messaget::eom;
+
+        if(sat_result)
         {
           log.status() << "SAT checker: instance is SATISFIABLE"
                        << messaget::eom;

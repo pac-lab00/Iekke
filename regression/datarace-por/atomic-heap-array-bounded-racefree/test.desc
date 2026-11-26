@@ -1,0 +1,10 @@
+CORE
+main.c
+--datarace --por --unwind 2 --rounds 2 --allow-pointer-unsoundness --dynamic-array-bound 4
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A heap array of _Atomic int given a constant size by --dynamic-array-bound is split into elements; they stay atomic (weaver/popl20-min-max-* reported a false race).

@@ -1,0 +1,14 @@
+CORE
+main.c
+--allow-pointer-unsoundness --32 --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=10$
+^SIGNAL=0$
+^\[.*\] datarace: FAILURE$
+^VERIFICATION FAILED$
+--
+precondition_instance.*FAILURE
+--
+The only read of g is inside a check, and a thread writes g. Under --datarace
+--no-assertions the check is made true, but its condition is still evaluated
+(into the dummy variable), so the read keeps its event and the race is found.
+Making the check true without keeping its condition lost the race.

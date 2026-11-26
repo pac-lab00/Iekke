@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The new thread publishes the address of its own copy of `slot`, and main
+writes through it while the thread writes `slot`: a real race on the
+thread's copy. Recording the copy's initialisation in the new thread must
+not hide it. FAILED before and after the fix.

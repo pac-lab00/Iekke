@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+A process-shared barrier can be completed by another process, which this
+model does not have (fork() is not a second process), so the one thread here
+may pass it (pthread-barrier/unreach-reachable-process-shared-wait).

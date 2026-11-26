@@ -9,6 +9,7 @@ Author: Michael Tautschnig
 #include "field_sensitivity.h"
 
 #include <util/arith_tools.h>
+#include <util/pointer_offset_size.h>
 #include <util/simplify_expr.h>
 #include <util/std_expr.h>
 
@@ -40,8 +41,95 @@ exprt field_sensitivityt::apply(
 
   if(expr.id() != ID_address_of)
   {
+    // Materialising the array operand of a store at a symbolic index is the
+    // lowering framing the untouched elements back over themselves, not a
+    // read the program performs. Produce the values, record no events: the
+    // writes are already conditioned on `i == k` in field_assignments_rec,
+    // and without this the same store is recorded as reading every element,
+    // so two threads storing to different elements are paired on all of them.
+    const bool framing_base = expr.id() == ID_with &&
+                              expr.operands().size() == 3 &&
+                              !to_with_expr(expr).where().is_constant();
+#ifdef ENABLE_ARRAY_FIELD_SENSITIVITY
+    // A load `a[i]` at an undecided i of an array still in symbol form --
+    // among others the base of `with(a[i], member, v)`, the lowering of
+    // `p->member = v` with `p = &a[i]`. Expanded by the plain walk below,
+    // every element of `a` was renamed with the path guard, so the load was
+    // recorded as reading all of them: a thread working on a[1] under a[1]'s
+    // mutex was paired, on a[0], with a thread storing a[0] under a[0]'s
+    // (goblint 06-symbeq_06..08). Expand it reading element k only under the
+    // condition that the load meets it: the bytes [i * s, i * s + s), for
+    // elements of size s, meet element k's exactly when i == k. (Were i * s
+    // to overflow it would only add reads, never remove one.)
+    // goto_symex_statet::rename does the same for an array that is already
+    // expanded when it walks the expression.
+    const bool index_load =
+      !write && expr.id() == ID_index && is_ssa_expr(expr.op0()) &&
+      is_divisible(to_ssa_expr(expr.op0())) &&
+      expr.op0().type().id() == ID_array &&
+      !simplify_expr(expr.op1(), ns).is_constant() &&
+      (expr.op1().type().id() == ID_signedbv ||
+       expr.op1().type().id() == ID_unsignedbv);
+    const auto element_size =
+      index_load
+        ? pointer_offset_size(to_array_type(expr.op0().type()).element_type(), ns)
+        : optionalt<mp_integer>{};
+#else
+    const bool index_load = false;
+    const optionalt<mp_integer> element_size;
+#endif
+    // The object operand of a store at an undecided offset,
+    // `byte_update(o, offset, v)`: the lowering frames o's untouched bytes
+    // back over themselves, which the program does not read. Expanded by the
+    // plain walk, every leaf of o was recorded as read: on libvsync/hmcslock
+    // a store to one field of a lock struct was paired, on another field,
+    // with a thread writing that one. Read a leaf only under the condition
+    // that the stored bytes meet it (a leaf they cover in part keeps its
+    // other bytes), as the writes are in field_assignments_rec.
+    const bool update_base =
+      !write &&
+      (expr.id() == ID_byte_update_little_endian ||
+       expr.id() == ID_byte_update_big_endian) &&
+      expr.operands().size() == 3 && is_ssa_expr(expr.op0()) &&
+      is_divisible(to_ssa_expr(expr.op0())) &&
+      (expr.op1().type().id() == ID_signedbv ||
+       expr.op1().type().id() == ID_unsignedbv) &&
+      !simplify_expr(expr.op1(), ns).is_constant();
+    const auto update_size = update_base
+                               ? pointer_offset_size(expr.op2().type(), ns)
+                               : optionalt<mp_integer>{};
+    bool is_base = true;
     Forall_operands(it, expr)
-      *it = apply(ns, state, std::move(*it), write);
+    {
+      if(framing_base && is_base)
+      {
+        state.record_events.push(false);
+        *it = apply(ns, state, std::move(*it), write);
+        state.record_events.pop();
+      }
+      else if(
+        index_load && is_base && element_size.has_value() && *element_size > 0)
+      {
+        *it = get_fields_in_range(
+          ns,
+          state,
+          to_ssa_expr(*it),
+          mult_exprt{
+            expr.op1(), from_integer(*element_size, expr.op1().type())},
+          *element_size,
+          0);
+      }
+      else if(
+        update_base && is_base && update_size.has_value() && *update_size > 0)
+      {
+        *it = get_fields_in_range(
+          ns, state, to_ssa_expr(*it), expr.op1(), *update_size, 0, false,
+          true);
+      }
+      else
+        *it = apply(ns, state, std::move(*it), write);
+      is_base = false;
+    }
   }
 
   if(!write && is_ssa_expr(expr))
@@ -225,6 +313,8 @@ exprt field_sensitivityt::get_fields(
     return ssa_expr;
 }
 
+static bool is_own_old_value(const exprt &e, const irep_idt &object);
+
 void field_sensitivityt::field_assignments(
   const namespacet &ns,
   goto_symex_statet &state,
@@ -239,10 +329,213 @@ void field_sensitivityt::field_assignments(
   {
     bool run_apply_bak = run_apply;
     run_apply = false;
+    // A store through a pointer at an undecided offset is lowered to
+    // `o' == byte_update(o, offset, v)`, which the split below turns into one
+    // assignment per field and element of o -- each of them, untouched ones
+    // included, an unconditional shared write carrying the value this thread
+    // read when the statement started. Any field another thread updated in
+    // between is reset to that stale value: a lost update that exists only in
+    // the lowering. In goblint 28-race_reach_74..76 a pthread_mutex_lock on
+    // a[3].mutex republished a[4].datum and broke an assertion protected by
+    // a[4]'s own mutex. As for a `with` at a non-constant index (below),
+    // publish only the leaves whose bytes the store meets.
+    const exprt saved_offset = store_offset;
+    const mp_integer saved_size = store_size;
+    const exprt saved_cond = store_cond;
+    const irep_idt saved_object = store_object;
+    store_offset = nil_exprt{};
+    store_cond = true_exprt{};
+    store_object = lhs.get_l1_object_identifier();
+    // A store through a pointer with more than one target arrives as
+    // `c ? byte_update(o, offset, v) : o#old`: o is written only under c.
+    // Not recognised, it published every leaf of o: on libvsync/hmcslock an
+    // atomic store to one hmcs_locks[k] field, through a pointer loaded from
+    // leaf_locks, republished leaf_locks itself, which no thread writes after
+    // the spawn, and a false race was reported on it.
+    exprt update = rhs;
+    exprt update_cond = true_exprt{};
+    if(rhs.id() == ID_if)
+    {
+      const if_exprt &ite = to_if_expr(rhs);
+      if(is_own_old_value(ite.false_case(), store_object))
+      {
+        update = ite.true_case();
+        update_cond = ite.cond();
+      }
+      else if(is_own_old_value(ite.true_case(), store_object))
+      {
+        update = ite.false_case();
+        update_cond = not_exprt{ite.cond()};
+      }
+    }
+    if(
+      (update.id() == ID_byte_update_little_endian ||
+       update.id() == ID_byte_update_big_endian) &&
+      update.operands().size() == 3 &&
+      (update.op1().type().id() == ID_signedbv ||
+       update.op1().type().id() == ID_unsignedbv) &&
+      !simplify_expr(update.op1(), ns).is_constant())
+    {
+      const auto size = pointer_offset_size(update.op2().type(), ns);
+      if(size.has_value() && *size > 0)
+      {
+        store_offset = update.op1();
+        store_size = *size;
+        store_cond = update_cond;
+      }
+    }
     field_assignments_rec(
       ns, state, lhs_fs, rhs, target, allow_pointer_unsoundness);
+    store_offset = saved_offset;
+    store_size = saved_size;
+    store_cond = saved_cond;
+    store_object = saved_object;
     run_apply = run_apply_bak;
   }
+}
+
+/// Whether \p e is the old value of \p object: its symbol, or -- once field
+/// sensitivity has split it -- an array or struct of its leaves, as
+/// symex_assign frames it back. Any such literal of the object's leaves is
+/// accepted; only field_sensitivityt::apply builds one, from the object's
+/// current leaves.
+static bool is_own_old_value(const exprt &e, const irep_idt &object)
+{
+  if(is_ssa_expr(e))
+  {
+    // For a leaf (`a[[0]]..m`) the cached L1 object identifier names the
+    // field; get_l1_object() strips the field path to the root object.
+    return !object.empty() &&
+           (to_ssa_expr(e).get_l1_object_identifier() == object ||
+            to_ssa_expr(e).get_l1_object().get_identifier() == object);
+  }
+  if((e.id() == ID_array || e.id() == ID_struct) && e.has_operands())
+  {
+    for(const auto &op : e.operands())
+      if(!is_own_old_value(op, object))
+        return false;
+    return true;
+  }
+  return false;
+}
+
+/// The condition under which the store \p rhs, assigned to an array that is
+/// a part of \p object, writes element \p k -- or nullopt when that is not
+/// known, in which case the element counts as written:
+///   with(b, i, v)  at an undecided i:   i == k, or k is written in b (b is
+///                                      the old value unless it is itself a
+///                                      recognised store)
+///   c ? x : y                          c ? (k in x) : (k in y)
+///   object's own old value             false
+/// The `if` is what a store through a pointer with more than one target
+/// leaves, the old value being the other target's case.
+static optionalt<exprt> element_written(
+  const exprt &rhs,
+  const irep_idt &object,
+  std::size_t k)
+{
+  if(rhs.id() == ID_with && rhs.operands().size() == 3)
+  {
+    const with_exprt &with = to_with_expr(rhs);
+    if(with.where().is_constant())
+      return {};
+    const exprt here =
+      equal_exprt{with.where(), from_integer(k, with.where().type())};
+    // the base is the array's old value unless it is itself a recognised
+    // store
+    const auto in_base = element_written(with.old(), object, k);
+    if(!in_base.has_value() || in_base->is_false())
+      return {here};
+    return {or_exprt{here, *in_base}};
+  }
+  if(rhs.id() == ID_if)
+  {
+    const if_exprt &ite = to_if_expr(rhs);
+    const auto t = element_written(ite.true_case(), object, k);
+    const auto f = element_written(ite.false_case(), object, k);
+    if(!t.has_value() || !f.has_value())
+      return {};
+    if(t->is_false() && f->is_false())
+      return {false_exprt{}};
+    return {if_exprt{ite.cond(), *t, *f}};
+  }
+  if(is_own_old_value(rhs, object))
+    return {false_exprt{}};
+  return {};
+}
+
+/// For a store `a[i].m = v` at an undecided i, which symbolic execution
+/// leaves as `with(a, i, with(index(a, i), m, v))` with a the object's old
+/// value: the member path [m]; for `a[i].s.m = v`, nested one `with` deeper,
+/// [s, m]. Only the leaves on that path in element k are written; the others
+/// carry back the values this thread read, and publishing them would reset
+/// whatever another thread stored there since (a lost update between two
+/// members of one element). Nullopt for any other shape, which keeps the
+/// element-wide condition. The `if` a store through a pointer with more than
+/// one target leaves is seen through as in element_written.
+std::size_t member_store_depth(const exprt &value, bool renamed)
+{
+  std::size_t depth = 0;
+  const exprt *part = &value;
+  const exprt *base = nullptr;
+  while(part->id() == ID_with && part->operands().size() == 3 &&
+        to_with_expr(*part).where().id() == ID_member_name)
+  {
+    const with_exprt &member_with = to_with_expr(*part);
+    if(base != nullptr)
+    {
+      const with_exprt &outer = to_with_expr(*base);
+      const irep_idt &name = outer.where().get(ID_component_name);
+      if(
+        member_with.old().id() != ID_member ||
+        to_member_expr(member_with.old()).get_component_name() != name ||
+        (!renamed && to_member_expr(member_with.old()).compound() != outer.old()))
+      {
+        break;
+      }
+    }
+    ++depth;
+    base = part;
+    part = &member_with.new_value();
+  }
+  return depth;
+}
+
+static optionalt<std::vector<irep_idt>>
+member_stored(const exprt &rhs, const irep_idt &object)
+{
+  if(rhs.id() == ID_if)
+  {
+    const if_exprt &ite = to_if_expr(rhs);
+    const auto own = [&object](const exprt &e) {
+      return is_own_old_value(e, object);
+    };
+    if(own(ite.false_case()))
+      return member_stored(ite.true_case(), object);
+    if(own(ite.true_case()))
+      return member_stored(ite.false_case(), object);
+    return {};
+  }
+  if(rhs.id() != ID_with || rhs.operands().size() != 3)
+    return {};
+  const with_exprt &with = to_with_expr(rhs);
+  if(with.where().is_constant())
+    return {};
+  // As in element_written, the base is the array's old value -- the object's
+  // symbol, or its leaves expanded -- unless it is itself a store.
+  if(with.old().id() == ID_with || with.old().id() == ID_if)
+    return {};
+  std::vector<irep_idt> path;
+  const exprt *element = &with.new_value();
+  for(std::size_t level = member_store_depth(*element, true); level > 0;
+      --level)
+  {
+    path.push_back(to_with_expr(*element).where().get(ID_component_name));
+    element = &to_with_expr(*element).new_value();
+  }
+  if(path.empty())
+    return {};
+  return path;
 }
 
 /// Assign to the individual fields \p lhs_fs of a non-expanded symbol \p lhs.
@@ -255,16 +548,37 @@ void field_sensitivityt::field_assignments(
 /// \param ssa_rhs: right-hand-side value to assign
 /// \param target: symbolic execution equation store
 /// \param allow_pointer_unsoundness: allow pointer unsoundness
+/// \param lo: byte offset of \p lhs_fs in the object, or -1 if unknown
 void field_sensitivityt::field_assignments_rec(
   const namespacet &ns,
   goto_symex_statet &state,
   const exprt &lhs_fs,
   const exprt &ssa_rhs,
   symex_targett &target,
-  bool allow_pointer_unsoundness)
+  bool allow_pointer_unsoundness,
+  const mp_integer &lo)
 {
   if(is_ssa_expr(lhs_fs))
   {
+    // See field_assignments: publish this leaf only if the store meets it.
+    exprt meets = true_exprt{};
+    const auto leaf_size = pointer_offset_size(lhs_fs.type(), ns);
+    if(store_offset.is_not_nil() && lo >= 0 && leaf_size.has_value())
+    {
+      const exprt &offset = store_offset;
+      meets = binary_relation_exprt{
+        offset, ID_lt, from_integer(lo + *leaf_size, offset.type())};
+      if(lo - store_size >= 0 || offset.type().id() == ID_signedbv)
+        meets = and_exprt{
+          meets,
+          binary_relation_exprt{
+            offset, ID_gt, from_integer(lo - store_size, offset.type())}};
+    }
+    if(store_offset.is_not_nil() && !store_cond.is_true())
+      meets = and_exprt{store_cond, meets};
+    const goto_symex_statet::shared_write_condition_scopet write_cond{
+      state, meets};
+
     const ssa_exprt ssa_lhs = state
                                 .assignment(
                                   to_ssa_expr(lhs_fs),
@@ -296,14 +610,25 @@ void field_sensitivityt::field_assignments_rec(
       (lhs_fs.has_operands() && lhs_fs.operands().size() == components.size()));
 
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
+    const auto offsets = lo < 0 ? std::vector<optionalt<mp_integer>>{}
+                                : member_offsets(type, ns);
+    std::size_t comp_index = 0;
     for(const auto &comp : components)
     {
       const exprt member_rhs =
         simplify_opt(member_exprt{ssa_rhs, comp.get_name(), comp.type()}, ns);
       const exprt &member_lhs = *fs_it;
+      const auto at = lo < 0 ? optionalt<mp_integer>{} : offsets[comp_index];
+      ++comp_index;
 
       field_assignments_rec(
-        ns, state, member_lhs, member_rhs, target, allow_pointer_unsoundness);
+        ns,
+        state,
+        member_lhs,
+        member_rhs,
+        target,
+        allow_pointer_unsoundness,
+        at.has_value() ? lo + *at : mp_integer{-1});
       ++fs_it;
     }
   }
@@ -317,6 +642,36 @@ void field_sensitivityt::field_assignments_rec(
     if(array_size > max_field_sensitivity_array_size)
       return;
 
+    // A store at a *non-constant* index is lowered by symbolic execution into
+    // read the whole array, write the whole array, with every element other
+    // than the one stored to framed over from the value that was read.  The
+    // split below turns that into one assignment per element, of the shape
+    //   a[[k]] == (index == k ? new_value : a[[k]]#read)
+    // Each of those assignments is an unconditional shared write of element k.
+    // In a concurrent program that is wrong: the storing thread publishes a
+    // write to every element of the array carrying the value it read when the
+    // statement started, so any element another thread updated in between is
+    // reset to that stale value.  The lost update is an artefact of the
+    // lowering -- the program performs a single store -- and it produces
+    // spurious counterexamples, including apparent violations of mutual
+    // exclusion when the array holds per-element mutexes (a store to
+    // a[i].datum frames a[k].mutex back to its pre-lock state).
+    //
+    // Record the element-selection condition so that only the element actually
+    // stored to emits a *visible* write event; the SSA equality defining each
+    // a[[k]] is unaffected, so this thread's own view of the array stays
+    // exactly as before.  Framed-away elements simply keep whatever value the
+    // interleaving gave them.
+    //
+    // A store through a pointer with more than one target arrives as
+    // `c ? with(a, i, v) : a#old`, not as a bare `with`, and was not
+    // recognised: every element's write was published, so on
+    // workstealqueue_mutex-2 one thread's `r->field++` on items[2] republished
+    // items[0] over the other thread's update of it. element_written sees
+    // through the `if`.
+
+    const auto element_size = pointer_offset_size(type->element_type(), ns);
+
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
     for(std::size_t i = 0; i < array_size; ++i)
     {
@@ -324,8 +679,103 @@ void field_sensitivityt::field_assignments_rec(
         index_exprt{ssa_rhs, from_integer(i, type->index_type())}, ns);
       const exprt &index_lhs = *fs_it;
 
-      field_assignments_rec(
-        ns, state, index_lhs, index_rhs, target, allow_pointer_unsoundness);
+      const auto written = element_written(ssa_rhs, store_object, i);
+      const exprt element_cond =
+        written.has_value() ? *written : static_cast<exprt>(true_exprt{});
+
+      // A store to one member of the element: only the leaves on its member
+      // path are published, the other members under false.
+      const auto path = written.has_value()
+                          ? member_stored(ssa_rhs, store_object)
+                          : optionalt<std::vector<irep_idt>>{};
+      if(path.has_value())
+      {
+        // Publishes the leaves of element k on the member path under
+        // element_cond and the others under false. Returns false, having
+        // emitted nothing, when part_lhs is not split along the path; the
+        // caller then publishes that part whole under element_cond.
+        std::function<bool(const exprt &, const exprt &, std::size_t,
+                           const mp_integer &)>
+          publish = [&](const exprt &part_lhs, const exprt &part_rhs,
+                        std::size_t depth, const mp_integer &at) {
+            if(depth == path->size())
+            {
+              const goto_symex_statet::shared_write_condition_scopet
+                write_cond{state, element_cond};
+              field_assignments_rec(
+                ns, state, part_lhs, part_rhs, target,
+                allow_pointer_unsoundness, at);
+              return true;
+            }
+            const typet &part_type = ns.follow(part_rhs.type());
+            if(
+              part_type.id() != ID_struct || part_lhs.id() != ID_struct ||
+              part_lhs.operands().size() !=
+                to_struct_type(part_type).components().size())
+            {
+              return false;
+            }
+            const struct_typet &st = to_struct_type(part_type);
+            exprt::operandst::const_iterator m_it = part_lhs.operands().begin();
+            const auto offsets = member_offsets(st, ns);
+            std::size_t comp_index = 0;
+            for(const auto &comp : st.components())
+            {
+              const exprt member_rhs = simplify_opt(
+                member_exprt{part_rhs, comp.get_name(), comp.type()}, ns);
+              const auto &offset = offsets[comp_index++];
+              const mp_integer member_at = at >= 0 && offset.has_value()
+                                             ? at + *offset
+                                             : mp_integer{-1};
+              if(comp.get_name() == (*path)[depth])
+              {
+                if(!publish(*m_it, member_rhs, depth + 1, member_at))
+                {
+                  const goto_symex_statet::shared_write_condition_scopet
+                    write_cond{state, element_cond};
+                  field_assignments_rec(
+                    ns, state, *m_it, member_rhs, target,
+                    allow_pointer_unsoundness, member_at);
+                }
+              }
+              else
+              {
+                const goto_symex_statet::shared_write_condition_scopet
+                  write_cond{state, false_exprt{}};
+                field_assignments_rec(
+                  ns, state, *m_it, member_rhs, target,
+                  allow_pointer_unsoundness, member_at);
+              }
+              ++m_it;
+            }
+            return true;
+          };
+        if(publish(
+             index_lhs,
+             index_rhs,
+             0,
+             lo >= 0 && element_size.has_value() ? lo + *element_size * i
+                                                 : mp_integer{-1}))
+        {
+          ++fs_it;
+          continue;
+        }
+      }
+
+      {
+        const goto_symex_statet::shared_write_condition_scopet write_cond{
+          state, element_cond};
+
+        field_assignments_rec(
+          ns,
+          state,
+          index_lhs,
+          index_rhs,
+          target,
+          allow_pointer_unsoundness,
+          lo >= 0 && element_size.has_value() ? lo + *element_size * i
+                                              : mp_integer{-1});
+      }
       ++fs_it;
     }
   }
@@ -339,8 +789,9 @@ void field_sensitivityt::field_assignments_rec(
     exprt::operandst::const_iterator fs_it = lhs_fs.operands().begin();
     for(const exprt &op : ssa_rhs.operands())
     {
+      // Position of the parts unknown here: no store condition below.
       field_assignments_rec(
-        ns, state, *fs_it, op, target, allow_pointer_unsoundness);
+        ns, state, *fs_it, op, target, allow_pointer_unsoundness, -1);
       ++fs_it;
     }
   }
@@ -348,6 +799,102 @@ void field_sensitivityt::field_assignments_rec(
   {
     UNREACHABLE;
   }
+}
+
+exprt field_sensitivityt::get_fields_in_range(
+  const namespacet &ns,
+  goto_symex_statet &state,
+  const ssa_exprt &ssa_expr,
+  const exprt &offset,
+  const mp_integer &size,
+  const mp_integer &lo,
+  bool l2,
+  bool members) const
+{
+  // Unlike get_fields, which renames each part as a whole once it is built,
+  // rename every leaf here, under the conditions of all the parts that hold
+  // it: renamed as a whole, a part would emit its leaves' events after the
+  // inner conditions were gone.
+  const bool rename_leaves = l2 || !ssa_expr.get_level_2().empty();
+
+  // One part, starting at byte `at`, under "[offset, offset + size) meets
+  // its bytes", when its size is known and the condition applies.
+  auto part = [&](ssa_exprt tmp, const mp_integer &at, bool condition) {
+    const auto part_size = pointer_offset_size(tmp.type(), ns);
+    exprt meets = true_exprt{};
+    if(condition && part_size.has_value())
+    {
+      meets = binary_relation_exprt{
+        offset, ID_lt, from_integer(at + *part_size, offset.type())};
+      if(at - size >= 0 || offset.type().id() == ID_signedbv)
+        meets = and_exprt{
+          meets,
+          binary_relation_exprt{
+            offset, ID_gt, from_integer(at - size, offset.type())}};
+    }
+    // On the read events only: see goto_symex_statet::shared_read_cond.
+    const goto_symex_statet::shared_read_condition_scopet read_cond{
+      state, meets};
+    return is_divisible(tmp)
+             ? get_fields_in_range(
+                 ns, state, tmp, offset, size, at, rename_leaves, members)
+             : rename_leaves ? state.rename(exprt{tmp}, ns).get()
+                             : static_cast<exprt>(tmp);
+  };
+
+  if(ssa_expr.type().id() == ID_struct || ssa_expr.type().id() == ID_struct_tag)
+  {
+    const struct_typet &type = to_struct_type(ns.follow(ssa_expr.type()));
+    struct_exprt::operandst fields;
+    fields.reserve(type.components().size());
+    const exprt &struct_op = ssa_expr.get_original_expr();
+    const auto offsets = member_offsets(type, ns);
+    std::size_t comp_index = 0;
+    for(const auto &comp : type.components())
+    {
+      ssa_exprt tmp = ssa_expr;
+      tmp.remove_level_2();
+      tmp.set_expression(member_exprt{struct_op, comp.get_name(), comp.type()});
+      const auto &at = offsets[comp_index++];
+      // Members are not conditioned (unless \p members): a load of one
+      // member of an element still reads the element, and the untouched
+      // members of a store's base are written back from what was read,
+      // which has to be current.
+      fields.push_back(part(std::move(tmp), at.has_value() ? lo + *at : lo,
+                            members && at.has_value()));
+    }
+    return struct_exprt(std::move(fields), ssa_expr.type());
+  }
+#ifdef ENABLE_ARRAY_FIELD_SENSITIVITY
+  else if(
+    ssa_expr.type().id() == ID_array &&
+    to_array_type(ssa_expr.type()).size().id() == ID_constant)
+  {
+    const mp_integer mp_array_size = numeric_cast_v<mp_integer>(
+      to_constant_expr(to_array_type(ssa_expr.type()).size()));
+    if(mp_array_size < 0 || mp_array_size > max_field_sensitivity_array_size)
+      return ssa_expr;
+    const array_typet &type = to_array_type(ssa_expr.type());
+    const auto element_size = pointer_offset_size(type.element_type(), ns);
+    const std::size_t array_size = numeric_cast_v<std::size_t>(mp_array_size);
+    array_exprt::operandst elements;
+    elements.reserve(array_size);
+    const exprt &array = ssa_expr.get_original_expr();
+    for(std::size_t i = 0; i < array_size; ++i)
+    {
+      ssa_exprt tmp = ssa_expr;
+      tmp.remove_level_2();
+      tmp.set_expression(index_exprt{array, from_integer(i, type.index_type())});
+      elements.push_back(part(
+        std::move(tmp),
+        element_size.has_value() ? lo + *element_size * i : lo,
+        element_size.has_value()));
+    }
+    return array_exprt(std::move(elements), type);
+  }
+#endif // ENABLE_ARRAY_FIELD_SENSITIVITY
+  else
+    return ssa_expr;
 }
 
 bool field_sensitivityt::is_divisible(const ssa_exprt &expr) const

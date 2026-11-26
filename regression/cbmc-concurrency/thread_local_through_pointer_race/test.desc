@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Racy control for `thread_local_through_pointer`: `slot` is an ordinary
+global, so both threads write the same object. Must stay FAILED before and
+after the fix.

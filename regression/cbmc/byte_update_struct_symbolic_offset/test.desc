@@ -1,0 +1,24 @@
+CORE
+main.c
+--32 --unwind 5
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+pthread_mutex_lock(&c.mutex[j]), j nondeterministic, writes the lock state
+through a pointer whose target is c at an undecided offset: a byte update of
+the whole struct at a non-constant offset. It is lowered by turning c into
+bytes, updating them, and extracting c back. The bytes are now a single array
+literal, element j being offset == j ? value : old, with the value bound once
+by a let, rather than a with over the bytes: extracting c from the with
+indexed it once per byte and simplified it whole each time, and the value
+appeared once per byte (goblint-regression/09-regions_19-nested_nr: Convert
+SSA 54 s -> 1.9 s).
+
+The lock must leave the slots unchanged, lock c.mutex[j] and no other.
+Passes before and after the change; it fails if an element takes the value
+regardless of the offset, or keeps its old value where the offset matches.
+See byte_update_struct_symbolic_offset_locked and
+byte_update_struct_symbolic_offset_other, which must stay FAILED.

@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 3 --rounds 3 --por --allow-pointer-unsoundness --deadlock --mutex-shadow
+^EXIT=1$
+^SIGNAL=0$
+^--mutex-shadow cannot be combined with --deadlock$
+--
+^warning: ignoring
+--
+The deadlock check finds lock acquisitions by writes to pthread_mutex_t
+objects, which --mutex-shadow no longer makes: the combination is refused
+(it used to crash).

@@ -1,0 +1,10 @@
+CORE
+main.c
+--32 --unwind 3 --rounds 3 --allow-pointer-unsoundness --dynamic-array-bound 4
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+The bug needs 6 elements in a thread: cut at K = 4 (it stalls that thread).

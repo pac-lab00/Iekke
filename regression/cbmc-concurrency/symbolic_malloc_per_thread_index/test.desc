@@ -1,0 +1,29 @@
+CORE
+main.c
+--unwind 5 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+A `malloc` region of *symbolic* size is not split per element by field
+sensitivity (it needs a constant size), so `datas[i] = v` lowers to
+
+    obj#4 == (datas == &obj ? obj#3 WITH [i:=v] : obj#2)
+
+The right-hand side is not a `with`: it is an `if` that contains one, because
+the pointer might alias elsewhere. `lazy_pot::handling_datarace` tested the
+RHS shape directly and only recognised a bare `with`/`index`, so this access
+fell through to the STRUCT branch, which gives it the sentinel offset -1 --
+for *every* access to the object, regardless of `i`. Since the race condition
+compares `dr_loc(1) == dr_loc(2)`, two threads writing different elements
+both got the same sentinel location and were declared racing.
+
+Minimal reproducer pulled from the family that cost `per-thread-array-index`,
+`per-thread-index-bitmask`, `per-thread-index-inc` and `sssc12` on the
+corpus. The companion test `symbolic_malloc_per_thread_index_race` pins down
+that suppressing the framed sentinel does not suppress a genuine collision.
+
+Before the fix this program (two threads writing distinct, symbolically-sized
+array elements) was reported FAILED; it is race-free and must be SUCCESSFUL.

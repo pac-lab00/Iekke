@@ -1,5 +1,8 @@
 project(CBMC)
 
+include(GNUInstallDirs)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
 find_package(BISON REQUIRED)
 find_package(FLEX REQUIRED)
 
@@ -93,6 +96,7 @@ add_subdirectory(analyses)
 add_subdirectory(ansi-c)
 add_subdirectory(assembler)
 add_subdirectory(big-int)
+add_subdirectory(cat)
 add_subdirectory(cpp)
 add_subdirectory(xmllang)
 add_subdirectory(goto-checker)
@@ -119,5 +123,5 @@ add_subdirectory(goto-harness)
 add_subdirectory(symtab2gb)
 
 if(UNIX OR WITH_MEMORY_ANALYZER)
-add_subdirectory(memory-analyzer)
+# add_subdirectory(memory-analyzer)  # disabled locally: cprover_default_properties() undefined in this fork
 endif()

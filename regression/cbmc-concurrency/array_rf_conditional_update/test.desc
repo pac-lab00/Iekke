@@ -1,0 +1,19 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+When c is 0 the thread writes x, and a[1] keeps 0, so the assertion fails.
+A read-from that took the conditional update as made wherever p points would
+always find 5 at a[1] and report SUCCESSFUL: a missed bug.
+
+The condition is stated twice: in the update and in the guard of the step
+symex emits it under, which the write's exec symbol includes. Dropping it from
+the selection alone therefore changes nothing here; it is kept so that the
+decomposition does not depend on that.
+
+See array_rf_conditional_update_taken for the other direction.

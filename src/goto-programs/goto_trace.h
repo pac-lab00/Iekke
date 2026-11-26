@@ -140,6 +140,11 @@ public:
   // for function calls
   irep_idt called_function;
 
+  /// for SPAWN: the thread it starts, as numbered in this trace's steps, and
+  /// where the program creates it (the call of pthread_create)
+  unsigned spawned_thread_nr = 0;
+  source_locationt spawn_call_location;
+
   // for function call
   std::vector<exprt> function_arguments;
 

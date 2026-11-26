@@ -1,10 +1,18 @@
 CORE
 main.c
 --all-properties
-^EXIT=0$
+^EXIT=10$
 ^SIGNAL=0$
-^\[main\.assertion\.1\] assertion i==1: FAILED$
-^\[main\.assertion\.2\] assertion i==2: OK$
+^\[main\.assertion\.1\] .*assertion i==1: FAILURE$
+^\[main\.assertion\.2\] .*assertion i==2: SUCCESS$
 ^\*\* 1 of 2 failed (2 iterations)$
 --
 ^warning: ignoring
+--
+The verdicts here have always been right: two threads each increment i inside
+an atomic section and both are joined, so i==1 fails and i==2 holds.
+
+What was stale is the expected output. --all-properties now exits 10 when any
+property fails, not 0, and goto-checker/properties.cpp spells the per-property
+results FAILURE and SUCCESS rather than FAILED and OK. The line number is
+matched loosely so that editing main.c does not break this again.

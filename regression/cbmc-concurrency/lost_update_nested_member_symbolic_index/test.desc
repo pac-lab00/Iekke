@@ -1,0 +1,9 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --por --array-rf-bytes --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+--
+lost_update_struct_member_symbolic_index one level deeper: a[i].s.f and a[j].s.g. Only the leaves on the stored member path are published. Fails on a binary without the fix.

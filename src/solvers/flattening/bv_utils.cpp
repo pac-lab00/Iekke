@@ -954,7 +954,32 @@ void bv_utilst::unsigned_divider(
   bvt &res,
   bvt &rem)
 {
+  PRECONDITION(op0.size() == op1.size());
   std::size_t width=op0.size();
+
+  // If both operands are constant, compute the result directly so it folds to
+  // constant literals downstream instead of introducing fresh variables and a
+  // multiplier constraint.  Division by zero falls through to the general
+  // (non-deterministic) encoding below.
+  if(is_constant(op0) && is_constant(op1))
+  {
+    // Reconstruct each operand into mp_integer via binary2integer, mirroring
+    // the inverse used by build_constant (which calls integer2binary).
+    std::string s0(width, '0'), s1(width, '0');
+    for(std::size_t i = 0; i < width; i++)
+    {
+      s0[width - i - 1] = op0[i].is_true() ? '1' : '0';
+      s1[width - i - 1] = op1[i].is_true() ? '1' : '0';
+    }
+    const mp_integer n0 = binary2integer(s0, false);
+    const mp_integer n1 = binary2integer(s1, false);
+    if(n1 != 0)
+    {
+      res = build_constant(n0 / n1, width);
+      rem = build_constant(n0 % n1, width);
+      return;
+    }
+  }
 
   // check if we divide by a power of two
   #if 0
@@ -1204,34 +1229,48 @@ literalt bv_utilst::lt_or_le(
   representationt rep)
 {
   PRECONDITION(bv0.size() == bv1.size());
-
-  literalt top0=bv0[bv0.size()-1],
-    top1=bv1[bv1.size()-1];
+  PRECONDITION(!bv0.empty());
 
 #ifdef COMPACT_LT_OR_LE
   if(prop.has_set_to() && prop.cnf_handled_well())
   {
-    bvt compareBelow;   // 1 if a compare is needed below this bit
-    literalt result;
-    size_t start;
-    size_t i;
-
-    compareBelow = prop.new_variables(bv0.size());
-    result = prop.new_variable();
-
     if(rep == representationt::SIGNED)
     {
+      literalt top0 = sign_bit(bv0), top1 = sign_bit(bv1);
+
+      if(top0.is_false() && top1.is_true())
+        return const_literal(false);
+      else if(top0.is_true() && top1.is_false())
+        return const_literal(true);
+
+      // 1-bit signed: the sign bit is the only bit
+      if(bv0.size() == 1)
+      {
+        if(or_equal)
+          return prop.lor(top0, !top1);
+        else
+          return prop.land(top0, !top1);
+      }
+
       INVARIANT(
         bv0.size() >= 2, "signed bitvectors should have at least two bits");
-      start = compareBelow.size() - 2;
+      // 1 if a compare is needed below this bit
+      bvt compareBelow = prop.new_variables(bv0.size() - 1);
+      size_t start = compareBelow.size() - 1;
 
-      literalt firstComp=compareBelow[start];
+      literalt &firstComp = compareBelow[start];
+      if(top0.is_false())
+        firstComp = !top1;
+      else if(top0.is_true())
+        firstComp = top1;
+      else if(top1.is_false())
+        firstComp = !top0;
+      else if(top1.is_true())
+        firstComp = top0;
+
+      literalt result = prop.new_variable();
 
       // When comparing signs we are comparing the top bit
-#ifdef INCLUDE_REDUNDANT_CLAUSES
-      prop.l_set_to_true(compareBelow[start + 1])
-#endif
-
       // Four cases...
       prop.lcnf(top0, top1, firstComp);  // + + compare needed
       prop.lcnf(top0, !top1, !result); // + - result false and no compare needed
@@ -1242,57 +1281,130 @@ literalt bv_utilst::lt_or_le(
       prop.lcnf(top0, !top1, !firstComp);
       prop.lcnf(!top0,  top1, !firstComp);
 #endif
+
+      // Determine the output
+      //  \forall i .  cb[i] & -a[i] &  b[i] =>  result
+      //  \forall i .  cb[i] &  a[i] & -b[i] => -result
+      size_t i = start;
+      do
+      {
+        if(compareBelow[i].is_false())
+          continue;
+
+        prop.lcnf(!compareBelow[i],  bv0[i], !bv1[i],  result);
+        prop.lcnf(!compareBelow[i], !bv0[i],  bv1[i], !result);
+      }
+      while(i-- != 0);
+
+      // Chain the comparison bit
+      //  \forall i != 0 . cb[i] &  a[i] &  b[i] => cb[i-1]
+      //  \forall i != 0 . cb[i] & -a[i] & -b[i] => cb[i-1]
+      for(i = start; i > 0; i--)
+      {
+        prop.lcnf(!compareBelow[i], !bv0[i], !bv1[i], compareBelow[i-1]);
+        prop.lcnf(!compareBelow[i],  bv0[i],  bv1[i], compareBelow[i-1]);
+      }
+
+#ifdef INCLUDE_REDUNDANT_CLAUSES
+      // Optional zeroing of the comparison bit when not needed
+      //  \forall i != 0 . -c[i] => -c[i-1]
+      //  \forall i != 0 .  c[i] & -a[i] &  b[i] => -c[i-1]
+      //  \forall i != 0 .  c[i] &  a[i] & -b[i] => -c[i-1]
+      for(i = start; i > 0; i--)
+      {
+        prop.lcnf(compareBelow[i],                   !compareBelow[i-1]);
+        prop.lcnf(!compareBelow[i],  bv0[i], !bv1[i], !compareBelow[i-1]);
+        prop.lcnf(!compareBelow[i], !bv0[i],  bv1[i], !compareBelow[i-1]);
+      }
+#endif
+
+      // The 'base case' of the induction is the case when they are equal
+      prop.lcnf(!compareBelow[0], !bv0[0], !bv1[0], (or_equal)?result:!result);
+      prop.lcnf(!compareBelow[0],  bv0[0],  bv1[0], (or_equal)?result:!result);
+
+      return result;
     }
     else
     {
       // Unsigned is much easier
-      start = compareBelow.size() - 1;
-      prop.l_set_to_true(compareBelow[start]);
-    }
+      // 1 if a compare is needed below this bit
+      bvt compareBelow;
+      literalt result;
+      size_t start = bv0.size() - 1;
 
-    // Determine the output
-    //  \forall i .  cb[i] & -a[i] &  b[i] =>  result
-    //  \forall i .  cb[i] &  a[i] & -b[i] => -result
-    i = start;
-    do
-    {
-      prop.lcnf(!compareBelow[i],  bv0[i], !bv1[i],  result);
-      prop.lcnf(!compareBelow[i], !bv0[i],  bv1[i], !result);
-    }
-    while(i-- != 0);
+      // Determine the output
+      //  \forall i .  cb[i] & -a[i] &  b[i] =>  result
+      //  \forall i .  cb[i] &  a[i] & -b[i] => -result
+      // A common prefix of identical (e.g. constant) bits decides nothing;
+      // the first differing constant bit decides everything.
+      bool same_prefix = true;
+      size_t i = start;
+      do
+      {
+        if(same_prefix)
+        {
+          if(i == 0)
+          {
+            if(or_equal)
+              return prop.lor(!bv0[0], bv1[0]);
+            else
+              return prop.land(!bv0[0], bv1[0]);
+          }
+          else if(bv0[i] == bv1[i])
+            continue;
+          else if(bv0[i].is_false() && bv1[i].is_true())
+            return const_literal(true);
+          else if(bv0[i].is_true() && bv1[i].is_false())
+            return const_literal(false);
+          else
+          {
+            same_prefix = false;
+            start = i;
+            compareBelow = prop.new_variables(i);
+            compareBelow.push_back(const_literal(true));
+            result = prop.new_variable();
+          }
+        }
 
-    // Chain the comparison bit
-    //  \forall i != 0 . cb[i] &  a[i] &  b[i] => cb[i-1]
-    //  \forall i != 0 . cb[i] & -a[i] & -b[i] => cb[i-1]
-    for(i = start; i > 0; i--)
-    {
-      prop.lcnf(!compareBelow[i], !bv0[i], !bv1[i], compareBelow[i-1]);
-      prop.lcnf(!compareBelow[i],  bv0[i],  bv1[i], compareBelow[i-1]);
-    }
+        prop.lcnf(!compareBelow[i],  bv0[i], !bv1[i],  result);
+        prop.lcnf(!compareBelow[i], !bv0[i],  bv1[i], !result);
+      }
+      while(i-- != 0);
 
+      // Chain the comparison bit
+      //  \forall i != 0 . cb[i] &  a[i] &  b[i] => cb[i-1]
+      //  \forall i != 0 . cb[i] & -a[i] & -b[i] => cb[i-1]
+      for(i = start; i > 0; i--)
+      {
+        prop.lcnf(!compareBelow[i], !bv0[i], !bv1[i], compareBelow[i-1]);
+        prop.lcnf(!compareBelow[i],  bv0[i],  bv1[i], compareBelow[i-1]);
+      }
 
 #ifdef INCLUDE_REDUNDANT_CLAUSES
-    // Optional zeroing of the comparison bit when not needed
-    //  \forall i != 0 . -c[i] => -c[i-1]
-    //  \forall i != 0 .  c[i] & -a[i] &  b[i] => -c[i-1]
-    //  \forall i != 0 .  c[i] &  a[i] & -b[i] => -c[i-1]
-    for(i = start; i > 0; i--)
-    {
-      prop.lcnf(compareBelow[i],                   !compareBelow[i-1]);
-      prop.lcnf(!compareBelow[i],  bv0[i], !bv1[i], !compareBelow[i-1]);
-      prop.lcnf(!compareBelow[i], !bv0[i],  bv1[i], !compareBelow[i-1]);
-    }
+      // Optional zeroing of the comparison bit when not needed
+      //  \forall i != 0 . -c[i] => -c[i-1]
+      //  \forall i != 0 .  c[i] & -a[i] &  b[i] => -c[i-1]
+      //  \forall i != 0 .  c[i] &  a[i] & -b[i] => -c[i-1]
+      for(i = start; i > 0; i--)
+      {
+        prop.lcnf(compareBelow[i],                   !compareBelow[i-1]);
+        prop.lcnf(!compareBelow[i],  bv0[i], !bv1[i], !compareBelow[i-1]);
+        prop.lcnf(!compareBelow[i], !bv0[i],  bv1[i], !compareBelow[i-1]);
+      }
 #endif
 
-    // The 'base case' of the induction is the case when they are equal
-    prop.lcnf(!compareBelow[0], !bv0[0], !bv1[0], (or_equal)?result:!result);
-    prop.lcnf(!compareBelow[0],  bv0[0],  bv1[0], (or_equal)?result:!result);
+      // The 'base case' of the induction is the case when they are equal
+      prop.lcnf(!compareBelow[0], !bv0[0], !bv1[0], (or_equal)?result:!result);
+      prop.lcnf(!compareBelow[0],  bv0[0],  bv1[0], (or_equal)?result:!result);
 
-    return result;
+      return result;
+    }
   }
   else
 #endif
   {
+    literalt top0 = sign_bit(bv0), top1 = sign_bit(bv1);
+
     literalt carry=
       carry_out(bv0, inverted(bv1), const_literal(true));
 

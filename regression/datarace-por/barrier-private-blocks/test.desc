@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A private barrier for two threads is never completed by one: it blocks, and
+the assertion after it is never reached.

@@ -1,0 +1,9 @@
+CORE
+main.c
+--datarace --cbmc-memory-model --no-assertions --unwind 2 --unwinding-assertions --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^\[nodatarace\.assertion\.[0-9]*\] No data races on variable x .*: FAILURE$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

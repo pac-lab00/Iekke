@@ -1,0 +1,11 @@
+CORE
+main.c
+--32 --pointer-check --extern-pointers-own-object
+^EXIT=10$
+^SIGNAL=0$
+^extern pointers given an object of their own: 1$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The pointer may still be null: the dereference check must fail.

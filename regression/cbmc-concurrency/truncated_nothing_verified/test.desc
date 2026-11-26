@@ -1,0 +1,44 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^VERIFICATION INCONCLUSIVE$
+^SIGNAL=0$
+^No property was generated and the run was truncated
+--
+^VERIFICATION SUCCESSFUL$
+--
+An empty property set was folded into a proof.
+
+determine_result() starts from PASS and conjoins the status of every
+property, so when the set is *empty* the fold yields PASS and the tool prints
+VERIFICATION SUCCESSFUL having checked nothing whatsoever.
+
+A setup loop longer than the unwind bound produces exactly that. The
+unwinding assumption makes every path past the bound infeasible, so execution
+stops inside the loop, never reaches the code under test, and no property is
+generated. Here 64 array elements are written before the thread is created;
+at --unwind 4 the race below is not merely missed, it is never expressed.
+
+The real instance is `pthread/indexer`, whose main initialises 128 mutexes
+before creating any thread:
+
+    --unwind 32   SUCCESSFUL   no verification condition   unwinding truncated
+    --unwind 129  (timeout)    no verification condition   unwinding complete
+
+It is expected-false, so that SUCCESSFUL scored -32 where silence scores 0.
+Climbing the bound does not help and that was the confusing part: every bound
+up to 32 gives the same vacuous answer, and the first one that would say
+anything is 129.
+
+An empty property set is not wrong on its own -- a program with no shared
+access genuinely has nothing to check under --datarace, and must still be
+SUCCESSFUL. It is empty *and truncated* that cannot be a proof, so the marker
+is only recorded when `unwinding_incomplete` or `thread_creation_bound_hit`
+is set.
+
+It is recorded on the early-return path rather than in update_properties,
+where a first attempt put it: on UNSAT,
+`update_properties_status_from_goals` turns every UNKNOWN property into PASS,
+including one that has no goal in the decider at all, so the marker was
+flipped straight back and the verdict stayed SUCCESSFUL while the diagnostic
+printed. Returning before the decider runs leaves it intact.

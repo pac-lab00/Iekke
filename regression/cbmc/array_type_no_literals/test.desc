@@ -1,0 +1,18 @@
+CORE
+main.c
+--unwind 3 --rounds 2 --por --allow-pointer-unsoundness --verbosity 9
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+ variables, 
+--
+^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]* variables,
+--
+The disallowed pattern is the point of this test: it matches a variable count
+of seven digits or more. A 10000-element array handled by the array decision
+procedure must not cost one SAT variable per bit. Before the fix this program
+encoded to 4487727 variables, after it to 7727, for the same 20495 clauses and
+the same verdict -- the removed variables never appeared in a clause.
+
+Note test.pl matches with grep, so these are basic regular expressions: no
+'+' or '{n,m}' quantifiers, hence the spelled-out digit runs.

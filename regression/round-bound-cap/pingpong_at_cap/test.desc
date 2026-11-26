@@ -1,0 +1,14 @@
+CORE
+main.c
+--rounds 2 --unwind 3
+^EXIT=0$
+^SIGNAL=0$
+^Round bound (static): count=3 path=3 (at max rounds) max=3 
+--
+path capped
+^warning: ignoring
+--
+The pingpong program of round-bound needs 4 rounds (path=4, count=4). With
+the cap at 3 both are clamped to 3 and the line says so; the search stops as
+soon as it has found a path with two backward edges, so it never falls back
+to count ("path capped" must not appear).

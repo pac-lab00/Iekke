@@ -43,6 +43,7 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <algorithm>
 #include <optional>
+#include <set>
 
 #include <util/format_type.h>
 #include <util/format_expr.h>
@@ -95,7 +96,30 @@ public:
   ///   collected
   void collect_allocations(const goto_functionst &goto_functions);
 
+  /// Find the pointer parameters that only borrow their argument: inside the
+  /// function they are only dereferenced or handed on to another such
+  /// parameter, so no copy of the pointer outlives the call.
+  void collect_borrowing_parameters(const goto_functionst &goto_functions);
+
 protected:
+  /// (function, parameter index) pairs found by collect_borrowing_parameters
+  std::set<std::pair<irep_idt, std::size_t>> borrowing_parameters;
+
+  /// the calls of \p body that start a thread: their callee runs on after
+  /// the caller's locals have died
+  static std::set<goto_programt::const_targett>
+  thread_calls(const goto_programt &body);
+
+  /// whether \p call (not a thread start) hands \p arg, its argument \p i,
+  /// to a borrowing parameter
+  bool borrowed_argument(
+    const goto_programt::instructiont &call,
+    std::size_t i) const;
+
+  /// the dirty locals of \p body whose address is only ever handed to
+  /// borrowing parameters
+  std::set<irep_idt> borrowed_locals(const goto_programt &body) const;
+
   const namespacet &ns;
   std::unique_ptr<local_bitvector_analysist> local_bitvector_analysis;
   goto_programt::const_targett current_target;
@@ -478,6 +502,200 @@ void goto_check_ct::collect_allocations(const goto_functionst &goto_functions)
       allocations.push_back({args[0], args[1]});
     }
   }
+}
+
+std::set<goto_programt::const_targett>
+goto_check_ct::thread_calls(const goto_programt &body)
+{
+  // START_THREAD jumps to the code of the new thread, which runs up to the
+  // next END_THREAD
+  std::set<goto_programt::const_targett> result;
+  for(auto it = body.instructions.begin(); it != body.instructions.end(); ++it)
+  {
+    if(!it->is_start_thread())
+      continue;
+    for(auto t = it->get_target();
+        t != body.instructions.end() && !t->is_end_thread();
+        ++t)
+    {
+      if(t->is_function_call())
+        result.insert(t);
+    }
+  }
+  return result;
+}
+
+static const exprt &skip_typecasts(const exprt &e)
+{
+  const exprt *p = &e;
+  while(p->id() == ID_typecast)
+    p = &to_typecast_expr(*p).op();
+  return *p;
+}
+
+bool goto_check_ct::borrowed_argument(
+  const goto_programt::instructiont &call,
+  std::size_t i) const
+{
+  const exprt &f = call.call_function();
+  return f.id() == ID_symbol &&
+         borrowing_parameters.count(
+           {to_symbol_expr(f).get_identifier(), i}) != 0;
+}
+
+/// Does \p e use the symbol \p id other than as a pointer that is
+/// dereferenced? Pointer arithmetic and casts under a dereference stay a
+/// dereference of the same pointer.
+static bool uses_pointer_value(const exprt &e, const irep_idt &id, bool deref)
+{
+  if(e.id() == ID_symbol)
+    return to_symbol_expr(e).get_identifier() == id && !deref;
+  if(e.id() == ID_dereference)
+    return uses_pointer_value(to_dereference_expr(e).pointer(), id, true);
+  const bool keep = deref && (e.id() == ID_typecast || e.id() == ID_plus ||
+                              e.id() == ID_minus);
+  for(std::size_t k = 0; k < e.operands().size(); ++k)
+  {
+    // in p + i and p - i only the pointer operand stays dereferenced
+    const bool d = keep && (e.id() == ID_typecast || k == 0);
+    if(uses_pointer_value(e.operands()[k], id, d))
+      return true;
+  }
+  return false;
+}
+
+void goto_check_ct::collect_borrowing_parameters(
+  const goto_functionst &goto_functions)
+{
+  // Start from every pointer parameter of a function with a body and drop
+  // those used otherwise until nothing changes (the greatest such set: a
+  // parameter handed on to itself through recursion still only borrows).
+  for(const auto &gf : goto_functions.function_map)
+  {
+    if(!gf.second.body_available())
+      continue;
+    const auto &params = gf.second.parameter_identifiers;
+    const code_typet &type = to_code_type(ns.lookup(gf.first).type);
+    for(std::size_t i = 0; i < params.size() && i < type.parameters().size();
+        ++i)
+    {
+      if(!params[i].empty() && type.parameters()[i].type().id() == ID_pointer)
+        borrowing_parameters.insert({gf.first, i});
+    }
+  }
+
+  bool changed = true;
+  while(changed)
+  {
+    changed = false;
+    for(const auto &gf : goto_functions.function_map)
+    {
+      if(!gf.second.body_available())
+        continue;
+      const auto &params = gf.second.parameter_identifiers;
+      const goto_programt &body = gf.second.body;
+      const auto async = thread_calls(body);
+      for(std::size_t i = 0; i < params.size(); ++i)
+      {
+        if(borrowing_parameters.count({gf.first, i}) == 0)
+          continue;
+        const irep_idt &id = params[i];
+        bool lent = false;
+        for(auto it = body.instructions.begin();
+            it != body.instructions.end() && !lent;
+            ++it)
+        {
+          if(it->is_function_call())
+          {
+            if(uses_pointer_value(it->call_lhs(), id, false) ||
+               uses_pointer_value(it->call_function(), id, false))
+              lent = true;
+            const auto &args = it->call_arguments();
+            for(std::size_t k = 0; k < args.size() && !lent; ++k)
+            {
+              const exprt &a = skip_typecasts(args[k]);
+              if(a.id() == ID_symbol &&
+                 to_symbol_expr(a).get_identifier() == id)
+              {
+                lent = async.count(it) != 0 || !borrowed_argument(*it, k);
+              }
+              else if(uses_pointer_value(args[k], id, false))
+                lent = true;
+            }
+          }
+          else if(it->is_assign() &&
+                  skip_typecasts(it->assign_lhs()).id() == ID_symbol &&
+                  to_symbol_expr(skip_typecasts(it->assign_lhs()))
+                      .get_identifier() == id)
+            lent = true; // the parameter itself is overwritten
+          else
+          {
+            it->apply([&lent, &id](const exprt &e) {
+              if(!lent && uses_pointer_value(e, id, false))
+                lent = true;
+            });
+          }
+        }
+        if(lent)
+        {
+          borrowing_parameters.erase({gf.first, i});
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+std::set<irep_idt>
+goto_check_ct::borrowed_locals(const goto_programt &body) const
+{
+  // every address-of of a local, and whether it is a borrowed call argument
+  std::set<irep_idt> borrowed, lent;
+  const auto async = thread_calls(body);
+  auto note = [&lent](const exprt &e) {
+    e.visit_pre([&lent](const exprt &x) {
+      if(x.id() == ID_address_of)
+      {
+        // any address taken from (a part of) a symbol
+        const exprt *o = &to_address_of_expr(x).object();
+        while(o->id() == ID_member || o->id() == ID_index)
+          o = &o->operands()[0];
+        if(o->id() == ID_symbol)
+          lent.insert(to_symbol_expr(*o).get_identifier());
+      }
+    });
+  };
+  for(auto it = body.instructions.begin(); it != body.instructions.end(); ++it)
+  {
+    if(it->is_function_call())
+    {
+      note(it->call_lhs());
+      note(it->call_function());
+      const auto &args = it->call_arguments();
+      for(std::size_t k = 0; k < args.size(); ++k)
+      {
+        const exprt &a = skip_typecasts(args[k]);
+        if(a.id() == ID_address_of &&
+           to_address_of_expr(a).object().id() == ID_symbol &&
+           async.count(it) == 0 && borrowed_argument(*it, k))
+        {
+          borrowed.insert(
+            to_symbol_expr(to_address_of_expr(a).object()).get_identifier());
+        }
+        else
+          note(args[k]);
+      }
+    }
+    else
+      it->apply(note);
+  }
+  std::set<irep_idt> result;
+  for(const auto &id : borrowed)
+  {
+    if(lent.count(id) == 0)
+      result.insert(id);
+  }
+  return result;
 }
 
 void goto_check_ct::invalidate(const exprt &lhs)
@@ -1064,9 +1282,15 @@ void goto_check_ct::integer_overflow_check(
   {
     std::string kind = type.id() == ID_unsignedbv ? "unsigned" : "signed";
 
-    // __SZH_ADD_BEGIN__ : only check 32-bit now
-    if(type.id() == ID_signedbv && to_signedbv_type(type).get_width() == 32)
-    // __SZH_ADD_END__
+    // Signed overflow is undefined behaviour; unsigned arithmetic wraps and is
+    // not checked here. This used to test for 32-bit signed operations only,
+    // so long and long long arithmetic got no overflow check at all.
+    // An operation narrower than int is not checked: C promotes short and char
+    // operands to int, so it cannot overflow. Such an operation only arises
+    // from ++ and --, which goto_convert builds in the type of the operand.
+    if(
+      type.id() == ID_signedbv &&
+      to_signedbv_type(type).get_width() >= config.ansi_c.int_width)
     {
       const binary_exprt &bexpr = to_binary_expr(expr);
       add_guarded_property(
@@ -2102,6 +2326,7 @@ void goto_check_ct::goto_check(
     util_make_unique<local_bitvector_analysist>(goto_function, ns);
 
   goto_programt &goto_program = goto_function.body;
+  const std::set<irep_idt> borrowed = borrowed_locals(goto_program);
 
   // __SZH_ADD_BEGIN__
   static std::vector<exprt> tids;
@@ -2282,9 +2507,23 @@ void goto_check_ct::goto_check(
       if(enable_pointer_check || enable_pointer_primitive_check)
       {
         const symbol_exprt &variable = i.dead_symbol();
+        // The locals of main's outermost block, and its parameters, die when
+        // main returns, and that ends the program (C11 5.1.2.2.3): no thread
+        // runs on to dereference them. The model lets threads run after main
+        // has returned, so marking them dead would report the dereferences
+        // of threads that in C never happen.
+        const std::string &name = id2string(variable.get_identifier());
+        const bool main_outermost =
+          function_identifier == "main" && name.rfind("main::", 0) == 0 &&
+          (name.find("::", 6) == std::string::npos ||
+           (name.rfind("main::1::", 0) == 0 &&
+            name.find("::", 9) == std::string::npos));
 
-        // is it dirty?
-        if(local_bitvector_analysis->dirty(variable))
+        // is it dirty? A local whose address only went to borrowing
+        // parameters has no pointer to it left when it dies, so no
+        // dereference can ever match the record
+        if(!main_outermost && local_bitvector_analysis->dirty(variable) &&
+           borrowed.count(variable.get_identifier()) == 0)
         {
           // need to mark the dead variable as dead
           exprt lhs = ns.lookup(CPROVER_PREFIX "dead_object").symbol_expr();
@@ -2449,23 +2688,26 @@ goto_check_ct::get_pointer_points_to_valid_memory_conditions(
       not_exprt{is_invalid_pointer_exprt{address}}, "pointer invalid"});
   }
 
-  // if(unknown || flags.is_dynamic_heap())
-  // {
-  //   conditions.push_back(conditiont(
-  //     or_exprt(
-  //       in_bounds_of_some_explicit_allocation,
-  //       not_exprt(deallocated(address, ns))),
-  //     "deallocated dynamic object"));
-  // }
+  // Commented out with the Deagle 2.2 update (ef8e5da4, no reason given),
+  // which left a use after free and a dereference of a dead local unchecked
+  // (pthread-join-result/dangling-local, valid-deref, answered TRUE).
+  if(unknown || flags.is_dynamic_heap())
+  {
+    conditions.push_back(conditiont(
+      or_exprt(
+        in_bounds_of_some_explicit_allocation,
+        not_exprt(deallocated(address, ns))),
+      "deallocated dynamic object"));
+  }
 
-  // if(unknown || flags.is_dynamic_local())
-  // {
-  //   conditions.push_back(conditiont(
-  //     or_exprt(
-  //       in_bounds_of_some_explicit_allocation,
-  //       not_exprt(dead_object(address, ns))),
-  //     "dead object"));
-  // }
+  if(unknown || flags.is_dynamic_local())
+  {
+    conditions.push_back(conditiont(
+      or_exprt(
+        in_bounds_of_some_explicit_allocation,
+        not_exprt(dead_object(address, ns))),
+      "dead object"));
+  }
 
   if(flags.is_dynamic_heap())
   {
@@ -2569,6 +2811,7 @@ void goto_check_c(
   goto_check_ct goto_check(ns, options, message_handler);
 
   goto_check.collect_allocations(goto_functions);
+  goto_check.collect_borrowing_parameters(goto_functions);
 
   for(auto &gf_entry : goto_functions.function_map)
   {

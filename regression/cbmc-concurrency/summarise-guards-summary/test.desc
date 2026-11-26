@@ -1,0 +1,8 @@
+CORE
+main.c
+--datarace --no-por --unwind 2 --rounds 2 --allow-pointer-unsoundness --summarise-guards --program-only
+^EXIT=0$
+^SIGNAL=0$
+^([0-9]*) .guard#[0-9]* == (!.guard#[0-9]* && 
+--
+^warning: ignoring

@@ -1,0 +1,22 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+`*r = 5`, with `r` pointing to `items[i]` (i is 1) or to `other`, arrives
+at field sensitivity as `c ? with(items, i, 5) : items#old` -- the `if` is
+the store through a pointer with two targets -- not as a bare `with`. The
+element conditioning of 6c5dd7e4 only recognised the bare `with`, so the
+write of every element was published, items[0]'s with the value main had
+read before the thread stored 1 to it: the store reset items[0] to 0.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+pthread-complex/workstealqueue_mutex-2, whose unreach-call and no-data-race
+false alarms the fix also corrects.
+
+See `store_through_pointer_if_element_real`: with i in {0, 1} main really
+may store to items[0], and that must stay FAILED.

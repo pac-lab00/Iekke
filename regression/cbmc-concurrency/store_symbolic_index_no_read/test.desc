@@ -1,0 +1,42 @@
+CORE
+main.c
+--unwind 4 --rounds 4 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+A store at a symbolic index was recorded as a read of every element.
+
+`slot[i] = 1` on a field-sensitive array becomes, for every element k,
+
+    slot[[k]] == (i == k ? 1 : slot[[k]])
+
+and materialising that right-hand side renames every element, emitting a
+shared read for each. Those reads are the lowering carrying the untouched
+elements forward; the program performs none of them. For reachability that
+costs nothing -- only the value is consumed -- but the event set *is* the
+property for data-race detection, so two threads storing to different
+elements were paired on all of them.
+
+Measured on this program before the fix: the single store produced 8
+SHARED_READ(slot[[0..3]]) with no index guard against 12 SHARED_WRITE
+carrying `curr % 4 == k`. The writes were already conditioned by
+field_assignments_rec; the reads were not, and the asymmetry was the bug.
+
+The base operand of a `with` at a non-constant index is now expanded with
+`record_events` suppressed, so the values are produced and no events are
+recorded.
+
+Five earlier attempts at this family all gated reads on branch conditions and
+all lost real races -- the goblint suite pairs `_nr` with `_rc` deliberately,
+and a tool that gets one right by being imprecise gets the other wrong. This
+one removes an event that corresponds to nothing instead of conditioning one
+that does, and the discriminating pair confirms it: a variant where the
+indices really collide (`% 1`) and one where both threads read the same index
+both stay FAILED, as does goblint-regression/06-symbeq_10-equ_rc, the real
+race that killed attempts 2 and 3.
+
+libvsync/bounded_mpmc_check_full is the benchmark this cost: a correct queue
+whose producers claim distinct slots with a CAS, reported as racing on them.

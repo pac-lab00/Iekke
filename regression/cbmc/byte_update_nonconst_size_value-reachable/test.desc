@@ -1,0 +1,34 @@
+CORE
+main.c
+--32 --little-endian --unwind 5 -DCHECK_REACHABLE
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.1\] line 33 assertion 0: FAILURE$
+^\[main.assertion.2\] line 39 assertion a\[0\] == 0xff0201ff: SUCCESS$
+^\[main.assertion.3\] line 41 assertion a\[1\] == -1: SUCCESS$
+^\[main.assertion.4\] line 46 assertion 0: FAILURE$
+^\[main.assertion.5\] line 52 assertion a\[0\] == 0x04030201 && a\[1\] == 0x08070605: SUCCESS$
+^\[main.assertion.6\] line 54 assertion a\[2\] == -1: SUCCESS$
+^\[main.assertion.7\] line 59 assertion 0: FAILURE$
+^\[main.assertion.8\] line 65 assertion a\[0\] == 0x0201ffff && a\[1\] == 0xffff0403: SUCCESS$
+^\[main.assertion.9\] line 67 assertion a\[2\] == -1: SUCCESS$
+^\[main.assertion.10\] line 72 assertion 0: FAILURE$
+^\[main.assertion.11\] line 78 assertion a\[1\] == 0x04030201 && a\[2\] == 0xffff0605: SUCCESS$
+^\[main.assertion.12\] line 80 assertion a\[0\] == -1 && a\[3\] == -1: SUCCESS$
+^\[main.assertion.13\] line 85 assertion 0: FAILURE$
+^\[main.assertion.14\] line 88 assertion a\[0\] == -1 && a\[1\] == -1: SUCCESS$
+^\[main.assertion.15\] line 93 assertion 0: FAILURE$
+^\[main.assertion.16\] line 98 assertion b\[0\] == 0xffff0201: SUCCESS$
+^\[main.assertion.17\] line 100 assertion b\[1\] == -1: SUCCESS$
+^\[main.assertion.18\] line 105 assertion 0: FAILURE$
+^\[main.assertion.19\] line 110 assertion b\[0\] == 0x04030201 && b\[1\] == 0xffff0605: SUCCESS$
+^\[main.assertion.20\] line 112 assertion b\[2\] == -1: SUCCESS$
+^\[main.assertion.21\] line 117 assertion 0: FAILURE$
+^\[main.assertion.22\] line 122 assertion b\[1\] == 0x08070605: SUCCESS$
+^\[main.assertion.23\] line 124 assertion b\[2\] == -1: SUCCESS$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+All eight checked branches of byte_update_nonconst_size_value are reached, so
+its SUCCESSFUL is not vacuous.

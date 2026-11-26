@@ -1,0 +1,18 @@
+CORE
+main.c
+--unwind 1 --rounds 2 --por --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `atomic_section_const_index_framing`: same constant-resolved
+index inside an atomic section (both threads call `bump(0)`), but `main`
+also writes `arr[0]` directly, unprotected, after creating both threads and
+before joining them -- a genuine race on the exact element the fix's
+guard-skip path treats as "never touched" by the symbolic-index load. Must
+stay FAILED before and after this fix: proves the fix (falling back to the
+plain unconditioned rename when the renamed index is a constant) does not
+suppress a real race in this same code path, only the vacuous-generation
+framing bug on the genuinely-untouched element.

@@ -1,0 +1,14 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 3 --index-chain --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^index chain: [1-9][0-9]* of
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+The read takes the index the chain holds at its position and then the value of
+the write with that index. Verified by mutation: decoding index k to the value
+of write k+1 makes the read see main's later write of 5, and this test then
+reports VERIFICATION FAILED.

@@ -1078,9 +1078,9 @@ void goto_convertt::do_function_call_symbol(
   {
     do_printf(lhs, function, arguments, dest);
   }
-  // __SZH_MODIFY_BEGIN__ : or silly CBMC does not identify scanf
+  // __SZH_MODIFY_BEGIN__ : also the library names, not only the CPROVER ones
   else if(identifier==CPROVER_PREFIX "scanf" || identifier==CPROVER_PREFIX "__isoc99_scanf" || identifier=="scanf" || identifier=="__isoc99_scanf")
-  // _SZH_MODIFY_END__
+  // __SZH_MODIFY_END__
   {
     do_scanf(lhs, function, arguments, dest);
   }
@@ -1582,7 +1582,7 @@ void goto_convertt::do_function_call_symbol(
       dead_object_sym};
     code_assignt assign{
       std::move(dead_object_sym), std::move(rhs), source_location};
-    targets.destructor_stack.add(assign);
+    targets.scope_stack.add(assign, {});
   }
   // __SZH_ADD_BEGIN__ : C11 and LKMM builtin functions
   else if(identifier == CPROVER_PREFIX "atomic_store")
@@ -1612,18 +1612,6 @@ void goto_convertt::do_function_call_symbol(
   // __SZH_ADD_END__
   else
   {
-    // __SZH_ADD_BEGIN__
-    if(identifier == "pthread_key_create")
-    {
-      auto dtor = simplify_expr(arguments[1], ns);
-      if(dtor.id() != ID_constant)
-      {
-        std::cout << "Destroyer functions are yet unsupported in pthread_key_create\n";
-        std::exit(0);
-      }
-    }
-    // __SZH_ADD_END__
-
     do_function_call_symbol(*symbol);
 
     // insert function call

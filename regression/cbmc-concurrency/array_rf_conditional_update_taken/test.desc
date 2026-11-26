@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+As array_rf_conditional_update, asserting only what holds: when p points into
+a, the thread joined has written 5 at a[1]. A read-from that dropped the
+conditional update, or never let its condition hold, reads the 0 written
+before and reports a violation the program does not have. Checked by never
+letting the condition hold in the selection.

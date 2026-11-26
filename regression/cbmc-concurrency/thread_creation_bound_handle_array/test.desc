@@ -1,0 +1,39 @@
+CORE
+main.c
+--unwind 8 --rounds 5 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The thread-creation bound (`--thread-creation-bound`, default 2) stops a
+recognised "spawn N threads in a loop" after k threads. That is sound for
+counterexamples -- the k-thread program is a real execution of the N-thread
+one -- but it must not cut a family the program could exhaust anyway.
+
+Here four handles are declared, four threads created, and only three joined,
+so the race is between the fourth thread -- never joined, still running -- and
+main's unguarded read of `data`. At the default bound only two threads exist,
+every one of them is joined, the unjoined-thread race cannot occur, and the
+answer was SUCCESSFUL on a program that plainly races. The same shape is
+`pthread-race-challenges/thread-join-array-const-race`, which this cost -32 on
+(SV-COMP scores a missed bug at -32 against +1 for finding it).
+
+Climbing `--unwind` never helped and that was the confusing part: the binding
+bound was a different one, independent of the loop bound, and the thread count
+stayed at two from `--unwind 4` to `--unwind 64`.
+
+The bound is now taken from the declared length of the thread-handle array
+when that is small enough to unwind in full. The analysis has already proved
+every mention of the array lives inside the recognised loops, so its declared
+length is exactly how many threads the family can create. The 10000-element
+goblint families this analysis was written for are far above the ceiling and
+stay bounded, which is what keeps them finishing at all.
+
+The companion fix is in the reporting: `thread_creation_bound_hit` was set and
+read by nobody, so where the bound does still truncate the run said nothing at
+normal verbosity and a vacuous safe answer looked exactly like a proof. It now
+prints "Thread creation incomplete: ...", in the same style as "Unwinding
+incomplete" and with the same care not to contain the literal verdict strings
+callers grep for.

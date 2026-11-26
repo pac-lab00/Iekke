@@ -2,3 +2,5 @@
 *.o
 *.new
 iekke_exe
+# local BenchExec configurations and calibration data; not part of the tool
+/benchexec/

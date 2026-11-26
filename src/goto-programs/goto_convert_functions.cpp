@@ -10,6 +10,8 @@ Date: June 2003
 
 #include "goto_convert_functions.h"
 
+#include <util/cprover_prefix.h>
+#include <util/expr_iterator.h>
 #include <util/prefix.h>
 #include <util/std_code.h>
 #include <util/symbol_table.h>
@@ -283,7 +285,104 @@ void goto_convert(
 // __SZH_ADD_BEGIN__
 // For simple situations where pthread_create is immediately followed with pthread_join,
 // we treat them as a single function call.
-#include <iostream>
+#include <set>
+
+// Can calling `id` reach pthread_exit, directly or through a callee?
+//
+// The create/join collapse below turns a thread body into an ordinary call,
+// which is sound for the schedule but not for pthread_exit: its model ends in
+// __CPROVER_assume(0), which means "this thread stops here" only while the
+// state holds more than one thread. As a plain call it means "this execution
+// is infeasible", and everything after it -- up to and including the
+// memory-leak assertion at the end of __CPROVER__start -- is dropped before
+// it reaches the equation. The program is then reported safe with no
+// assertions checked at all.
+static bool reaches_pthread_exit(
+  const irep_idt &id,
+  const symbol_table_baset &symbol_table,
+  std::set<irep_idt> &seen)
+{
+  if(id == "pthread_exit")
+    return true;
+
+  // Already on the stack or already cleared: recursion terminates here.
+  if(!seen.insert(id).second)
+    return false;
+
+  const symbolt *symbol = symbol_table.lookup(id);
+  if(symbol == nullptr || symbol->value.is_nil())
+    return false; // no body, so no call to pthread_exit to find
+
+  std::vector<const exprt *> work{&symbol->value};
+  while(!work.empty())
+  {
+    const exprt &e = *work.back();
+    work.pop_back();
+
+    irep_idt callee;
+    if(
+      e.id() == ID_side_effect && e.get(ID_statement) == ID_function_call &&
+      e.operands().size() >= 1 && e.op0().id() == ID_symbol)
+    {
+      callee = to_symbol_expr(e.op0()).get_identifier();
+    }
+    else if(
+      e.id() == ID_code && e.get(ID_statement) == ID_function_call &&
+      e.operands().size() >= 2 && e.op1().id() == ID_symbol)
+    {
+      callee = to_symbol_expr(e.op1()).get_identifier();
+    }
+
+    if(!callee.empty() && reaches_pthread_exit(callee, symbol_table, seen))
+      return true;
+
+    for(const exprt &op : e.operands())
+      work.push_back(&op);
+  }
+
+  return false;
+}
+
+// Does the program have state of its own per thread?
+//
+// The collapse runs the thread body in the creating thread, so it reads and
+// writes the creator's copies: a worker's write to a __thread variable
+// reached main's copy, and a thread-specific value set in the worker was
+// main's, so its destructor never ran when the worker ended.
+//
+// The functions count only where the program refers to them: every program
+// that includes pthread.h declares them, and a test for the declaration
+// turned the collapse off nearly everywhere (pthread-theta/unwind3-100 then
+// ran its hundred threads for real and lost its bug to the time limit).
+static bool uses_thread_local_storage(const symbol_table_baset &symbol_table)
+{
+  for(const auto &entry : symbol_table.symbols)
+  {
+    // a variable: the flag is also set on some type symbols (pthread_attr_t)
+    if(
+      entry.second.is_thread_local && !entry.second.is_type &&
+      entry.second.is_static_lifetime &&
+      !has_prefix(id2string(entry.first), CPROVER_PREFIX))
+    {
+      return true;
+    }
+  }
+  for(const auto &entry : symbol_table.symbols)
+  {
+    for(auto it = entry.second.value.depth_cbegin();
+        it != entry.second.value.depth_cend();
+        ++it)
+    {
+      if(it->id() != ID_symbol)
+        continue;
+      const irep_idt &id = to_symbol_expr(*it).get_identifier();
+      if(id == "pthread_key_create" || id == "pthread_self")
+        return true;
+    }
+  }
+  return false;
+}
+
 void goto_convert_functionst::simplify_pthread_create_join(codet& code)
 {
   if(code.get_statement() != ID_block)
@@ -337,16 +436,63 @@ void goto_convert_functionst::simplify_pthread_create_join(codet& code)
       continue;
     }
     exprt final_function = args[2].op0();
+
+    // Only a join that discards the thread's result (a null value_ptr): the
+    // plain call drops the result and leaves *value_ptr as it was (the
+    // pthread-join-result tasks).
+    {
+      exprt value_ptr = next_args[1];
+      while(value_ptr.id() == ID_typecast)
+        value_ptr = to_typecast_expr(value_ptr).op();
+      if(
+        !value_ptr.is_constant() ||
+        (!value_ptr.is_zero() &&
+         to_constant_expr(value_ptr).get_value() != ID_NULL))
+      {
+        it++;
+        continue;
+      }
+    }
+
+    if(uses_thread_local_storage(symbol_table))
+    {
+      it++;
+      continue;
+    }
+
+    // Only collapse a thread whose body cannot reach pthread_exit. An
+    // unresolvable target (a function pointer, say) is left alone too: the
+    // optimisation is a speed-up, and skipping it only costs time.
+    if(final_function.id() != ID_symbol)
+    {
+      it++;
+      continue;
+    }
+    {
+      std::set<irep_idt> seen;
+      if(reaches_pthread_exit(
+           to_symbol_expr(final_function).get_identifier(), symbol_table, seen))
+      {
+        it++;
+        continue;
+      }
+    }
+
     exprt::operandst final_args{args[3]};
     typet final_side_effect_type = to_side_effect_expr_function_call(expression).type();
     source_locationt final_loc = expression.source_location();
+    // The call is a thread of the program all the same: a witness has to
+    // name it as one, created here (goto-programs/yaml_witness.cpp).
+    final_loc.set("#collapsed_pthread_create", true);
+    // the call instruction takes its location from the function expression
+    final_function.add_source_location() = final_loc;
     side_effect_expr_function_callt final_side_effect(
       final_function, final_args, final_side_effect_type, final_loc);
     code_expressiont final_expression(final_side_effect);
+    final_expression.add_source_location() = final_loc;
     it = statements.erase(it);
     it = statements.erase(it);
     it = statements.insert(it, final_expression);
-    std::cout << "pthread_create/join is replaced with a single call of " << final_function.get(ID_identifier) << "\n";
   }
 }
 // __SZH_ADD_END__

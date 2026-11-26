@@ -1,0 +1,9 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --no-por
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+no body for function __CPROVER_run_thread_key_dtors$
+--
+^warning: ignoring

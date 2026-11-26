@@ -97,7 +97,14 @@ _Bool __builtin_mul_overflow();
 void *calloc(__CPROVER_size_t nmemb, __CPROVER_size_t size)
 {
 __CPROVER_HIDE:;
-  __CPROVER_size_t alloc_size;
+  // Computed here, not by __builtin_mul_overflow: leaving it to the
+  // commented-out line below left alloc_size unassigned, so every calloc'd
+  // object got a nondeterministic size and a bounds check on it could fail
+  // for an index inside the array. The division is the overflow test the
+  // builtin was performing.
+  __CPROVER_size_t alloc_size = nmemb * size;
+  if(nmemb != 0 && alloc_size / nmemb != size)
+    return (void *)0;
   // if(__builtin_mul_overflow(nmemb, size, &alloc_size))
   //   return (void *)0;
 

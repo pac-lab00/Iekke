@@ -1,0 +1,10 @@
+CORE
+main.c
+--unwind 3 --rounds 3 --por --allow-pointer-unsoundness --mutex-shadow
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+A destroyed mutex initialised again can be locked.

@@ -14,6 +14,8 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <functional>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <analyses/guard.h>
 
@@ -25,6 +27,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include "call_stack.h"
 #include "field_sensitivity.h"
 #include "goto_state.h"
+#include "own_view_writers.h"
 #include "renaming_level.h"
 #include "symex_target_equation.h"
 
@@ -188,6 +191,10 @@ public:
     call_stackt call_stack;
     std::map<irep_idt, unsigned> function_frame;
     unsigned atomic_section_id = 0;
+    /// the thread that created it, and the guard of each creation
+    /// (--merge-exclusive-threads)
+    unsigned parent_thread_nr = 0;
+    std::vector<exprt> creation_guards;
     explicit threadt(guard_managert &guard_manager)
       : guard(true_exprt(), guard_manager)
     {
@@ -210,7 +217,234 @@ public:
 
   std::stack<bool> record_events;
 
+  /// Right-hand sides of small assignments to symbols of this thread, by L2
+  /// name: what goto_symext::decide_by_path_bounds sees a guard through.
+  /// SSA equalities hold on every path, so one map serves them all.
+  std::unordered_map<irep_idt, exprt> small_definitions;
+
+  /// The assumptions `guard => cond` written to the equation as they are
+  /// (with one thread: then the guard is not strengthened by an assumption,
+  /// and the facts are lost to the path guard when the call returns).
+  std::vector<std::pair<exprt, exprt>> guarded_assumptions;
+
+  /// Keep `lhs == rhs` in small_definitions if rhs is small, or, for a guard
+  /// symbol (\p any_size), whatever its size: a guard is shared, not copied.
+  void
+  note_definition(const irep_idt &lhs, const exprt &rhs, bool any_size = false)
+  {
+    if(any_size)
+    {
+      small_definitions[lhs] = rhs;
+      return;
+    }
+    std::size_t budget = 32;
+    std::vector<const exprt *> todo{&rhs};
+    while(!todo.empty())
+    {
+      const exprt *e = todo.back();
+      todo.pop_back();
+      if(budget-- == 0)
+        return;
+      for(const auto &op : e->operands())
+        todo.push_back(&op);
+    }
+    small_definitions[lhs] = rhs;
+  }
+
+  /// Extra condition conjoined onto the guard of the shared_write events
+  /// emitted by \ref l2_thread_write_encoding (and only onto those: the SSA
+  /// equality defining the new L2 symbol is left alone, as are the read
+  /// events).
+  ///
+  /// Symbolic execution lowers a *partial* update of a composite object -- an
+  /// array store at a non-constant index, or a guarded assignment -- into a
+  /// read of the whole object followed by a write of the whole object, with
+  /// the untouched parts framed over from the read.  Field sensitivity then
+  /// splits that into one assignment per element, of the shape
+  ///     a[[k]] == (i == k ? new_value : a[[k]]#read)
+  /// Each of those is an unconditional *shared write* of element k, so in a
+  /// concurrent program a thread storing to a[i] publishes a write to *every*
+  /// element, carrying the value it read at the start of the statement.  Any
+  /// element another thread updated in between is silently reset to that stale
+  /// value -- a lost update that exists purely as an artefact of the whole-
+  /// object read-modify-write lowering, and which shows up as spurious
+  /// assertion failures (including broken mutual exclusion, since a store to
+  /// a[i].datum frames a[k].mutex back to its pre-lock value).
+  ///
+  /// Setting this to the element-selection condition makes the write event
+  /// itself conditional, so a framed (no-op) element write is not visible to
+  /// the other threads at all and the round-robin write chain keeps whatever
+  /// value was there.  See field_sensitivityt::field_assignments_rec.
+  exprt shared_write_cond = true_exprt{};
+
+  /// RAII helper: conjoins \p cond onto \ref shared_write_cond for its
+  /// lifetime.
+  class shared_write_condition_scopet
+  {
+  public:
+    shared_write_condition_scopet(goto_symex_statet &state, const exprt &cond)
+      : state(state), saved(state.shared_write_cond)
+    {
+      if(!cond.is_true())
+      {
+        state.shared_write_cond = saved.is_true()
+                                    ? cond
+                                    : static_cast<exprt>(and_exprt{saved, cond});
+      }
+    }
+
+    ~shared_write_condition_scopet()
+    {
+      state.shared_write_cond = saved;
+    }
+
+    shared_write_condition_scopet(const shared_write_condition_scopet &) =
+      delete;
+    shared_write_condition_scopet &
+    operator=(const shared_write_condition_scopet &) = delete;
+
+  private:
+    goto_symex_statet &state;
+    exprt saved;
+  };
+
+  /// Extra condition conjoined onto the guard of the shared_read events
+  /// emitted by \ref l2_thread_read_encoding outside atomic sections -- the
+  /// read-side counterpart of \ref shared_write_cond. Set to the condition
+  /// under which the program performs the read: the branch condition of an
+  /// `if`, or `i == k` for element k of a load at a symbolic index. It is
+  /// conjoined as one binary `and`, not added to \ref guard: guardt::add
+  /// flattens, so every conditioned read rebuilt the whole path condition as
+  /// a new term, and the solver encoded it afresh each time.
+  exprt shared_read_cond = true_exprt{};
+
+  /// The negations of the links of the dereference chain being renamed,
+  /// outermost first: its last branch is read where none of them holds.
+  std::vector<exprt> chain_link_negations;
+
+  /// The property is about accesses (--datarace). Only then does a read
+  /// event recorded for an object the program does not read change the
+  /// answer -- for any other property only the value read is consumed -- so
+  /// conditions that only remove such events are added under it alone.
+  bool datarace = false;
+
+  /// RAII helper: conjoins \p cond onto \ref shared_read_cond for its
+  /// lifetime.
+  class shared_read_condition_scopet
+  {
+  public:
+    shared_read_condition_scopet(goto_symex_statet &state, const exprt &cond)
+      : state(state), saved(state.shared_read_cond)
+    {
+      if(!cond.is_true())
+      {
+        state.shared_read_cond = saved.is_true()
+                                   ? cond
+                                   : static_cast<exprt>(and_exprt{saved, cond});
+      }
+    }
+
+    ~shared_read_condition_scopet()
+    {
+      state.shared_read_cond = saved;
+    }
+
+    shared_read_condition_scopet(const shared_read_condition_scopet &) = delete;
+    shared_read_condition_scopet &
+    operator=(const shared_read_condition_scopet &) = delete;
+
+  private:
+    goto_symex_statet &state;
+    exprt saved;
+  };
+
   const incremental_dirtyt *dirty = nullptr;
+
+  /// Points-to targets collected for shared pointers by an earlier symex
+  /// pass, or null when there was none.
+  ///
+  /// Value sets are built in symex order, so a pointer published by a thread
+  /// symexed later than this read is not in this read's set and the
+  /// dereference resolves against a stale one -- CBMC issue #305. Only a
+  /// previous pass can know what is published, so where one has run, a shared
+  /// read of a pointer tops up *that object's* entry from here. Set by
+  /// goto_symext while \ref goto_symext::seed_value_set_from_overall is on.
+  const value_sett *published_value_set = nullptr;
+
+  /// Where set, the objects whose entry \ref seed_published_targets consulted:
+  /// the only entries of \ref published_value_set a seeded pass depends on.
+  std::unordered_set<irep_idt> *consulted_published = nullptr;
+
+  /// Top up \p expr's points-to set from \ref published_value_set, for a
+  /// shared read of a pointer. Does nothing otherwise.
+  void seed_published_targets(
+    const ssa_exprt &expr,
+    const irep_idt &l1_identifier,
+    const namespacet &ns);
+
+  /// As \ref seed_published_targets, for every shared pointer that \p expr,
+  /// an L1 pointer about to be dereferenced, contains. Its shared read -- and
+  /// the top-up that comes with it -- happens only when the dereferenced
+  /// expression is renamed to L2, after the dereference has already used the
+  /// stale set.
+  void seed_published_targets_in(const exprt &expr, const namespacet &ns);
+
+  /// Shared variables that a static, whole-program analysis has proven to be
+  /// accessed by at most one thread over any execution (see
+  /// thread_exclusivity.h). Such a variable cannot be interfered with by any
+  /// other thread, so it is treated exactly like a thread-local: its value is
+  /// constant-propagated and no shared read/write event is recorded for it.
+  /// This lets goto-symex fold a loop induction variable that happens to be
+  /// declared at file scope, and hence stop unwinding when its guard becomes
+  /// false, just as it already does for a genuine local.
+  ///
+  /// Null unless the lazy_po/--rounds encoding is active; the default
+  /// (non---rounds) CBMC behaviour is therefore completely unaffected.
+  const std::unordered_set<irep_idt> *thread_exclusive = nullptr;
+
+  /// \return true if \p identifier is provably accessed by at most one thread
+  bool is_thread_exclusive(const irep_idt &identifier) const
+  {
+    return thread_exclusive != nullptr &&
+           thread_exclusive->find(identifier) != thread_exclusive->end();
+  }
+
+  /// --own-view-reads: what the earlier passes found written after the first
+  /// spawn and by which thread, what this pass records and assumes (see
+  /// own_view_writers.h). Null otherwise.
+  own_view_statet *own_view = nullptr;
+
+  /// Set around a phi function's assignment, which only names a merged
+  /// value and is not recorded as a change of the object.
+  bool own_view_in_phi = false;
+
+  /// When not negative, the thread a change of an L2 name is recorded for:
+  /// the copies of the locals that symex_start_thread makes for a new thread
+  /// are assigned by its creator but belong to the new thread.
+  int own_view_thread = -1;
+
+  /// Record that \p l1_identifier gets a new L2 name, or loses it (see
+  /// own_view_writers.h). Nothing before the first spawn.
+  void own_view_record(const irep_idt &l1_identifier)
+  {
+    if(own_view == nullptr || own_view_in_phi || threads.size() <= 1)
+      return;
+    own_view->recorded.record(
+      l1_identifier,
+      own_view_thread >= 0 ? static_cast<unsigned>(own_view_thread)
+                           : source.thread_nr);
+  }
+
+  /// \return true if \p expr, an L1 object of the program (not CBMC's own
+  ///   bookkeeping, not a thread-local static), is written after the first
+  ///   spawn by no thread but the current one, so this thread may read it
+  ///   from its own view; recorded as an assumption of this pass
+  bool own_view_readable(const ssa_exprt &expr, const namespacet &ns);
+
+  /// \return true if \p expr, as above, is written after the first spawn by
+  ///   at most one thread, so its L2 name has to stand for the value of the
+  ///   writer's view (see own_view_writers.h); recorded as an assumption
+  bool own_view_candidate(const ssa_exprt &expr, const namespacet &ns);
 
   goto_programt::const_targett saved_target;
 

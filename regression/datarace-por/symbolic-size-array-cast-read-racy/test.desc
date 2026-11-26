@@ -1,0 +1,14 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 2 --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+A heap array of symbolic size is one object; a race on it pairs accesses by
+element. main reads datas[0] converted to int (return datas[0]); the cast
+hid the element from the offset finder, the read kept offset -1 and never
+paired with the thread's write of element 0 (per-thread-array-join-counter-
+race-4, no-data-race, expected false).

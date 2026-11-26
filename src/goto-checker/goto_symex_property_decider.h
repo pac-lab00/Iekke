@@ -66,6 +66,19 @@ public:
     decision_proceduret::resultt dec_result,
     bool set_pass = true) const;
 
+  /// Drop the current solver, and with it every clause, and start from a new
+  /// one: for a checker that converts a different formula into the same
+  /// decider (round_incremental_symex_checkert, one per block of rounds).
+  void reset_solver(const namespacet &ns);
+
+  /// The disjunction of the selected goals ("some selected property fails"),
+  /// for a checker that asserts it by an assumption rather than as a
+  /// constraint (round_incremental_symex_checkert): handled once and frozen,
+  /// it is never re-converted, so a preprocessing solver cannot have
+  /// eliminated its variable in between.
+  exprt goals_disjunction(
+    std::function<bool(const irep_idt &)> select_property) const;
+
     // __SZH_ADD_BEGIN__ : for ease of Deagle solver
     solver_factoryt::solvert* get_solver() { return solver.get(); }
     // __SZH_ADD_END__

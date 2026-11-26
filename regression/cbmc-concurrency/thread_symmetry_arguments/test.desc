@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness --no-por --thread-symmetry exact
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^thread symmetry: 1 pair of 2 threads$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The same code on different arguments: the ordering is conditional on the two
+arguments being equal, so the schedule that finds the bug stays.

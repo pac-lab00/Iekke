@@ -1,0 +1,12 @@
+CORE
+main.c
+--no-por --unwind 5 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^split small choices: 1$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+In the leftover case j >= 4, and j == 5 makes j < 4 || j == 4 false: the path
+bounds must not decide j == 4 true there.

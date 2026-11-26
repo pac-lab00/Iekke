@@ -1,0 +1,15 @@
+CORE
+main.c
+--no-simplify
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.17\] line 32 reach: FAILURE$
+^VERIFICATION FAILED$
+--
+^\[main.assertion.[0-9]*\] line [12][0-9] .*: FAILURE$
+^\[main.assertion.[0-9]*\] line 30 .*: FAILURE$
+--
+Comparisons whose operands are partly constant (shared constant prefix, constant
+sign bits, 1-bit signed bit-fields) must keep their meaning when the
+propositional encoding constant-propagates them (port of upstream e265a42b9e,
+e73c451011, 648e9aed19).

@@ -1,0 +1,20 @@
+CORE
+thread-join-counter-outer-race-4.i
+--allow-pointer-unsoundness --32 --malloc-may-fail --malloc-fail-null --no-assertions --datarace --unwind 4 --rounds 3 --no-por --glucose --array-rf-bytes --summarise-guards --infer-alloc-types --merge-exclusive-threads --own-view-reads --dynamic-array-bound 4 --yaml-witness -
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^- segment: \[{waypoint: {type: .target., action: .follow., location: {file_name: .thread-join-counter-outer-race-4.i., line: 715}, thread_id: 0}}, {waypoint: {type: .target., action: .follow., location: {file_name: .thread-join-counter-outer-race-4.i., line: 692}, thread_id: 1}}\]$
+--
+^VERIFICATION SUCCESSFUL$
+line: 695}
+--
+sv-benchmarks pthread-race-challenges/thread-join-counter-outer-race-4 (MIT),
+with the options of the SV-COMP wrapper. The race is on `data`: the read in
+main (line 715, `return data`) and the write in a created thread (line 692).
+The model leaves the phase symbols of other accesses free, and those of
+`threads_alive` held as well; the witness then paired the read of `data` with
+the write of `threads_alive` on line 695, which is no race. The two accesses
+kept in the trace must be those of the pairing that failed the assertion, on
+one object. The file keeps its benchmark name: the model the solver finds,
+and with it the free symbols, changes with it.

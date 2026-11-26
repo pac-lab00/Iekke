@@ -11,6 +11,8 @@ Author: Michael Tautschnig, mt@eecs.qmul.ac.uk
 
 #include "graphml.h"
 
+#include <util/config.h>
+
 #include <util/message.h>
 
 // include last to make sure #define stack(x) of parser.h does not
@@ -489,6 +491,20 @@ bool write_graphml(const graphmlt &src, std::ostream &os, std::string filename, 
     key.set_attribute("id", "witness-type");
   }
 
+  // <key attr.name="unroll-bound" attr.type="string" for="graph"
+  //      id="unroll-bound"/>
+  // Dartagnan, as a validator, unrolls loops as far as this says (its own
+  // witnesses carry it). Without it, it starts at one unrolling, and a witness
+  // whose path needs more contradicts that unrolling: Dartagnan then answered
+  // PASS instead of unrolling further (per-thread-index-bitmask-race-2).
+  {
+    xmlt &key = graphml.new_element("key");
+    key.set_attribute("attr.name", "unroll-bound");
+    key.set_attribute("attr.type", "string");
+    key.set_attribute("for", "graph");
+    key.set_attribute("id", "unroll-bound");
+  }
+
   xmlt &graph=graphml.new_element("graph");
   graph.set_attribute("edgedefault", "directed");
 
@@ -520,14 +536,19 @@ bool write_graphml(const graphmlt &src, std::ostream &os, std::string filename, 
     xmlt &data=graph.new_element("data");
     data.set_attribute("key", "specification");
 
-    bool enable_unreach_call = !options.get_bool_option("no-assertions");
+    // Test the specific properties first. unreach-call is on by default --
+    // assertions are enabled unless --no-assertions -- so checking it first
+    // labelled every data-race, overflow and memory-safety witness as
+    // unreach-call whenever the caller did not pass --no-assertions. The
+    // benchexec wrapper always does, so the campaign was unaffected; a direct
+    // invocation got a witness naming the wrong property, and a validator
+    // asked to confirm it looks for the wrong kind of violation.
     bool enable_datarace = options.get_bool_option("datarace");
-    bool enable_overflow = options.get_bool_option("signed-overflow-check") || options.get_bool_option("signed-overflow-check");
+    bool enable_overflow = options.get_bool_option("signed-overflow-check") || options.get_bool_option("unsigned-overflow-check");
     bool enable_memsafety = options.get_bool_option("pointer-check") || options.get_bool_option("alloc-check") || options.get_bool_option("memory-leak-check");
+    bool enable_unreach_call = !options.get_bool_option("no-assertions");
 
-    if(enable_unreach_call)
-      data.data="CHECK( init(main()), LTL(G ! call(reach_error())) )";
-    else if(enable_datarace)
+    if(enable_datarace)
       data.data="CHECK( init(main()), LTL(G ! data-race) )";
     else if(enable_overflow)
       data.data="CHECK( init(main()), LTL(G ! overflow) )";
@@ -537,6 +558,8 @@ bool write_graphml(const graphmlt &src, std::ostream &os, std::string filename, 
       data.data+="CHECK( init(main()), LTL(G valid-deref) )\n";
       data.data+="CHECK( init(main()), LTL(G valid-memtrack) )\n";
     }
+    else if(enable_unreach_call)
+      data.data="CHECK( init(main()), LTL(G ! call(reach_error())) )";
   }
 
   // <data key="programfile">../../sv-benchmarks/c/bitvector/s3_clnt_3_true-unreach-call.BV.c.cil.c</data>
@@ -559,11 +582,12 @@ bool write_graphml(const graphmlt &src, std::ostream &os, std::string filename, 
     data.data=sha256.getHexMessageDigest(file_content);
   }
 
-  // <data key="architecture">32bit</data>
+  // <data key="architecture">32bit</data>, the data model the task was
+  // checked under (it said 32bit for every task, LP64 ones included)
   {
     xmlt &data=graph.new_element("data");
     data.set_attribute("key", "architecture");
-    data.data="32bit";
+    data.data = config.ansi_c.pointer_width == 64 ? "64bit" : "32bit";
   }
 
   // <data key="creationtime">2016-12-24T13:15:32+02:00</data>

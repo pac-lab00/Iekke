@@ -62,6 +62,49 @@ optionalt<mp_integer> member_offset(
   return result;
 }
 
+std::vector<optionalt<mp_integer>>
+member_offsets(const struct_typet &type, const namespacet &ns)
+{
+  // The loop of member_offset, recording the offset at every component.
+  std::vector<optionalt<mp_integer>> offsets;
+  offsets.reserve(type.components().size());
+  optionalt<mp_integer> result = mp_integer{0};
+  std::size_t bit_field_bits = 0;
+
+  for(const auto &comp : type.components())
+  {
+    offsets.push_back(result);
+    if(!result.has_value())
+      continue;
+
+    if(comp.type().id() == ID_c_bit_field)
+    {
+      const std::size_t w = to_c_bit_field_type(comp.type()).get_width();
+      bit_field_bits += w;
+      *result += bit_field_bits / 8;
+      bit_field_bits %= 8;
+    }
+    else if(comp.type().id() == ID_bool)
+    {
+      ++bit_field_bits;
+      *result += bit_field_bits / 8;
+      bit_field_bits %= 8;
+    }
+    else
+    {
+      DATA_INVARIANT(
+        bit_field_bits == 0, "padding ensures offset at byte boundaries");
+      const auto sub_size = pointer_offset_size(comp.type(), ns);
+      if(!sub_size.has_value())
+        result.reset();
+      else
+        *result += *sub_size;
+    }
+  }
+
+  return offsets;
+}
+
 optionalt<mp_integer> member_offset_bits(
   const struct_typet &type,
   const irep_idt &member,
@@ -625,10 +668,16 @@ optionalt<exprt> get_subexpression_at_offset(
     const auto elem_size_bits =
       pointer_offset_bits(array_type.element_type(), ns);
 
-    // no arrays of non-byte-aligned, zero-, or unknown-sized objects
+    // no arrays of non-byte-aligned, zero-, or unknown-sized objects; and an
+    // array is not narrowed to one cell: the program may index it past its
+    // declared end, as in the struct hack (`char data[1]` at the end of a
+    // struct in a larger block), and an index past the cell then landed
+    // inside it -- `data[1]` was byte 1 of the cell of `data[0]`, so the
+    // store was lost and the load read nothing
     if(
       elem_size_bits.has_value() && *elem_size_bits > 0 &&
-      *elem_size_bits % 8 == 0 && *target_size_bits <= *elem_size_bits)
+      *elem_size_bits % 8 == 0 && *target_size_bits <= *elem_size_bits &&
+      ns.follow(target_type_raw).id() != ID_array)
     {
       const mp_integer elem_size_bytes = *elem_size_bits / 8;
       const auto offset_inside_elem = offset_bytes % elem_size_bytes;

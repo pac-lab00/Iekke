@@ -1,0 +1,27 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+A shared object is carried through the lazy chain once per round at its full
+width. A pthread_mutex_t is the real 24-byte glibc union, 192 bits, but CBMC's
+model reads and writes exactly one byte of it (__CPROVER_mutex_t is a signed
+char) through a type-punned pointer, so field_sensitivityt -- which splits
+ID_member and ID_index only -- never separates that byte out. Narrowing the
+chain to the bytes some read observes is on by default; --no-narrow-shared
+restores the full-width chain.
+
+Runs with no flag on purpose: this is the default path.
+
+Discriminating in the direction that matters. Mutual exclusion is carried
+entirely by that one byte, so a slice taken at the wrong offset, or a chain
+that lost the byte, would let both threads hold the lock, in_cs would reach 2,
+and this safe program would report a violation it does not have. Verified by
+mutation: with the two pthread_mutex_lock/unlock calls removed the same program
+reports VERIFICATION FAILED.
+
+Narrowing takes this formula from 63131 clauses to 26427, same verdict.

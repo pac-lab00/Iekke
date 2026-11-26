@@ -1,0 +1,23 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+In an atomic section, A[k]++ with k read from shared memory reads and writes
+back every element of A, the reads and writes of A[i] each under k == i. The
+write was recorded as made under the path guard alone, so the later read of
+A[0] in the same section reused the written-back value, which for k != 0 is
+the value of a read that did not happen: unconstrained. A[0] could be read
+as anything. The write is now recorded under its event condition, and a later
+read not covered by an earlier access takes a fresh generation with its event
+on that generation.
+
+Reported FAILED before the fix, SUCCESSFUL after, with --por and --no-por.
+Reduced from pthread-complex/elimination_backoff_stack (no-overflow).
+
+See atomic_symbolic_index_reread_other_write and
+atomic_symbolic_index_reread_own_write, real failures that must stay FAILED.

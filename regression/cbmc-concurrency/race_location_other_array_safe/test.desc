@@ -1,0 +1,10 @@
+CORE
+main.c
+--32 --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+As race_location_other_array, but M >= 1: the two stores never meet.

@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+As atomic_symbolic_index_reread, but the other thread increments A[0], so
+A[0] == 1 is reachable. The re-read of A[0] must still see that write.

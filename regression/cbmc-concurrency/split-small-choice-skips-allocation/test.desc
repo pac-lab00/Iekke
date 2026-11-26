@@ -1,0 +1,13 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^split small choices
+^warning: ignoring
+--
+The rest of t after the choice of i allocates: a split would give each copy
+its own allocation site and multiply the heap objects, so t is not split.
+i == 1 stores the new pointer in slot[1], failing the assertion.

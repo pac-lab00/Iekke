@@ -1,0 +1,25 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness --array-rf
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+The over-constraining direction, and the one that caught a real bug.
+
+a[idx] genuinely reaches 2, so the assertion is false and the answer must be
+FAILED. An encoding that elects the wrong write proves it away instead and
+reports SUCCESSFUL -- a missed bug, not a false alarm.
+
+That is exactly what the first version of --array-rf did. The nested selection
+was folded with the writes walked backwards and the rounds forwards, which put
+the FIRST write at the LAST round outermost -- the zero initialiser -- so every
+read was forced to 0. The candidates are now sorted by schedule position and
+folded in increasing order, since the outermost ite is the one that wins.
+
+An A/B over all 76 hard no-data-race tasks did NOT catch this: under --datarace
+the verdict depends on the access events, not on what the accesses read, so the
+whole family was blind to it by construction. This test is three lines and
+caught it immediately.

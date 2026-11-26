@@ -1,0 +1,11 @@
+CORE
+main.c
+
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+Pointer differences, including ones of integer-address pointers such as
+(char *)20 - (char *)10 (upstream regression/cbmc/Pointer_difference1).

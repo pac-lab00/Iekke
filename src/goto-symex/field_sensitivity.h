@@ -11,7 +11,9 @@ Author: Michael Tautschnig
 
 #include <cstddef>
 
+#include <util/mp_arith.h>
 #include <util/nodiscard.h>
+#include <util/std_expr.h>
 
 class exprt;
 class ssa_exprt;
@@ -79,6 +81,20 @@ class symex_targett;
 /// `array[[0]] = other_array[[0]]`;
 /// `array[[1]] = other_array[[1]]`; etc.
 /// See \ref field_sensitivityt::field_assignments.
+/// The value stored by a store to one member path of an array element,
+/// `a[i].m1.m2...mn = v`, reaches symbolic execution as
+/// `with(B1, m1, with(B2, m2, ... with(Bn, mn, v)))`, B1 being the element
+/// `a[i]` and each B(k+1) the member `member(Bk, mk)`. Returns n, the number
+/// of member levels in which every base is exactly the previous base's
+/// member, or 0 when \p value does not start with a member update. It stops
+/// at v even when v is itself a member update: v is a value the program
+/// computed, not a base. That B1 is the element stored to is the caller's to
+/// check.
+/// With \p renamed, the bases have been renamed to L2 separately -- each is
+/// a read of its own, with its own generations -- so they are not compared
+/// whole: B(k+1) must be a member named mk of some compound.
+std::size_t member_store_depth(const exprt &value, bool renamed = false);
+
 class field_sensitivityt
 {
 public:
@@ -157,6 +173,25 @@ public:
   bool is_divisible(const ssa_exprt &expr) const;
 
 private:
+  /// As \ref get_fields, for a load that touches only the bytes
+  /// [\p offset, \p offset + \p size) of \p ssa_expr: each array element
+  /// whose own bytes, starting at \p lo, may meet that range is read under
+  /// the condition that they do, so its read events carry it. Struct members
+  /// are not conditioned. Each leaf is renamed on its own, under the
+  /// conditions of the elements that hold it, when \p ssa_expr is L2 or
+  /// \p l2 is set. With \p members, struct members are conditioned too: for
+  /// the base of a byte_update, whose untouched leaves are not published
+  /// (field_assignments_rec), so their values need not be current.
+  exprt get_fields_in_range(
+    const namespacet &ns,
+    goto_symex_statet &state,
+    const ssa_exprt &ssa_expr,
+    const exprt &offset,
+    const mp_integer &size,
+    const mp_integer &lo,
+    bool l2 = false,
+    bool members = false) const;
+
   /// whether or not to invoke \ref field_sensitivityt::apply
   bool run_apply = true;
 
@@ -164,13 +199,29 @@ private:
 
   const bool should_simplify;
 
+  /// \p lo is the byte at which \p lhs_fs starts within the object being
+  /// assigned, or negative when it is not known; see \ref store_offset.
   void field_assignments_rec(
     const namespacet &ns,
     goto_symex_statet &state,
     const exprt &lhs_fs,
     const exprt &ssa_rhs,
     symex_targett &target,
-    bool allow_pointer_unsoundness);
+    bool allow_pointer_unsoundness,
+    const mp_integer &lo = 0);
+
+  /// While \ref field_assignments splits a `byte_update(o, offset, v)` at an
+  /// undecided offset: that offset (else nil) and the size of v in bytes.
+  exprt store_offset = nil_exprt{};
+  mp_integer store_size = 0;
+  /// With \ref store_offset: the condition under which the store happens at
+  /// all, for a `c ? byte_update(...) : o#old` (else true).
+  exprt store_cond = true_exprt{};
+
+  /// While \ref field_assignments runs: the object assigned to (its L1
+  /// object identifier), so that its own old value can be told apart from a
+  /// value stored into it.
+  irep_idt store_object;
 
   exprt simplify_opt(exprt e, const namespacet &ns) const;
 };

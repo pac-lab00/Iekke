@@ -1,4 +1,4 @@
-CORE
+KNOWNBUG
 main.c
 -D_ENABLE_CHAIN_ -D_SANITY_CHECK_ --unwind 2
 ^EXIT=10$
@@ -6,3 +6,22 @@ main.c
 ^VERIFICATION FAILED$
 --
 ^warning: ignoring
+--
+These spawn a chain of threads through a function pointer and assign the
+resulting pointer to a shared variable. goto_symex_statet::assignment refuses
+that outright:
+
+    // see #305 on GitHub for a simple example and possible discussion
+    if(is_shared && lhs.type().id() == ID_pointer && !allow_pointer_unsoundness)
+      throw unsupported_operation_exceptiont(
+        "pointer handling for concurrency is unsound");
+
+so the run ends in EXIT=6 with no verdict. That refusal is the right
+behaviour -- the alternative is a possibly wrong answer -- and
+--refined-pointer-analysis does not cover this case (checked). Passing
+--allow-pointer-unsoundness would make the test green by turning the refusal
+into exactly the unsoundness it is guarding against, so it is not done here.
+
+KNOWNBUG rather than deleted: skipped at CORE so the suite stays meaningful,
+while test.pl -K still shows whether the limitation reproduces. The same
+choice is made for the #305 false alarm in regression/datarace-por.

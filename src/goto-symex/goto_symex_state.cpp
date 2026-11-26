@@ -10,8 +10,11 @@ Author: Daniel Kroening, kroening@kroening.com
 /// Symbolic Execution
 
 #include "goto_symex_state.h"
+#include <util/arith_tools.h>
 #include "goto_symex_is_constant.h"
 
+#include <functional>
+#include <optional>
 #include <iostream>
 
 #include <util/as_const.h>
@@ -19,8 +22,12 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/byte_operators.h>
 #include <util/c_types.h>
 #include <util/exception_utils.h>
+#include <util/cprover_prefix.h>
 #include <util/expr_util.h>
 #include <util/invariant.h>
+#include <util/pointer_offset_size.h>
+#include <util/prefix.h>
+#include <util/simplify_expr.h>
 #include <util/std_expr.h>
 
 #include <analyses/dirty.h>
@@ -82,6 +89,8 @@ renamedt<ssa_exprt, L2> goto_symex_statet::assignment(
   lhs = rename_ssa<L1>(std::move(lhs), ns).get();
   irep_idt l1_identifier=lhs.get_identifier();
 
+  own_view_record(l1_identifier);
+
   // the type might need renaming
   rename<L2>(lhs.type(), l1_identifier, ns);
   lhs.update_type();
@@ -109,20 +118,14 @@ renamedt<ssa_exprt, L2> goto_symex_statet::assignment(
     throw unsupported_operation_exceptiont(
       "pointer handling for concurrency is unsound");
 
-  // __SZH_ADD_BEGIN__ : report when unsound, but still go on
-  if(is_shared && lhs.type().id() == ID_pointer)
-  {
-    static bool reported = false;
-    if(!reported)
-    {
-      std::cout << "pointer handling for concurrency is unsound\n";
-      reported = true;
-    }
-  }
-  // __SZH_ADD_END__
 
-  // Update constant propagation map -- the RHS is L2
-  if(!is_shared && record_value && goto_symex_is_constantt()(rhs))
+  // Update constant propagation map -- the RHS is L2. A shared object that
+  // only this thread writes after the first spawn keeps its value for this
+  // thread's own reads (--own-view-reads, own_view_writers.h); the other
+  // threads read it through events, which the map does not affect.
+  if(
+    (!is_shared || own_view_readable(lhs, ns)) && record_value &&
+    goto_symex_is_constantt()(rhs))
   {
     const auto propagation_entry = propagation.find(l1_identifier);
     if(!propagation_entry.has_value())
@@ -271,7 +274,41 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
     // do this recursively
     // szh: for assignments such as arr#2 = with(arr#1, ...) or arr#2 = update_byte_little_endian(arr#1, ...),
     // we make arr#1 closely prior to arr#2 to guarantee atomicity.
-    if(expr.id() == ID_with || expr.id() == ID_byte_update_little_endian)
+    if(
+      level == L2 && expr.id() == ID_with && expr.operands().size() == 3 &&
+      expr.op2().id() == ID_with && expr.op2().operands().size() == 3 &&
+      to_with_expr(expr.op2()).where().id() == ID_member_name &&
+      to_with_expr(expr.op2()).old().id() == ID_index)
+    {
+      // A store to one member path at an undecided element, `a[i].m = v`:
+      // with(a, i, with(a[i], m, v)), one `with` deeper per nested member
+      // (member_store_depth). The carried bases a[i], a[i].s, ... are not
+      // read by the program: only the path's leaf is written, and the other
+      // leaves are carried back. So they are renamed with their read events
+      // off. For a shared object a base's value is then unconstrained, but no
+      // one observes it: the leaves it fills are published under false
+      // (member_stored in field_sensitivity.cpp), and a later read of one of
+      // them is a fresh read with its own event. For an unshared object
+      // nothing is recorded and the bases are this thread's values.
+      with_exprt &with = to_with_expr(expr);
+      std::size_t levels = member_store_depth(with.new_value());
+      with.old() = rename<level>(std::move(with.old()), ns).get();
+      with.where() = rename<level>(std::move(with.where()), ns).get();
+      exprt *part = &with.new_value();
+      for(; levels > 0; --levels)
+      {
+        with_exprt &member_with = to_with_expr(*part);
+        {
+          const shared_read_condition_scopet read_cond{*this, false_exprt{}};
+          member_with.old() =
+            rename<level>(std::move(member_with.old()), ns).get();
+        }
+        rename<level>(member_with.type(), irep_idt(), ns);
+        part = &member_with.new_value();
+      }
+      *part = rename<level>(std::move(*part), ns).get();
+    }
+    else if(expr.id() == ID_with || expr.id() == ID_byte_update_little_endian)
     {
       Forall_operands_r(it, expr)
         *it = rename<level>(std::move(*it), ns).get();
@@ -281,8 +318,299 @@ goto_symex_statet::rename(exprt expr, const namespacet &ns)
     else if(expr.id() == ID_if)
     {
       expr.op0() = rename<level>(std::move(expr.op0()), ns).get();
-      expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
-      expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
+      // A dereference `*p` is lowered to `p == &a ? a : (p == &b ? b : ...)`,
+      // and the program reads only the object p points to. Renamed with the
+      // plain path guard, every link emitted a shared read event, so a load
+      // through a pointer to one of two locked objects was recorded as
+      // reading the other too, under the wrong lock, and paired with its
+      // writer as a race. Rename the object of each link under its own
+      // `p == &a`, on the read events only (see shared_read_cond), as a load
+      // at a symbolic index is renamed under `i == k` below.
+      //
+      // Only the links' own objects are conditioned. `p != &a` is not
+      // conjoined onto the rest of the chain: the objects further down are
+      // other objects, which their own conditions already separate, and
+      // conjoining it made the k-th target's condition k terms long. The
+      // chain's last branch is read where no link holds (below).
+      // Nor are other `if`s conditioned: on per-thread-array-join-counter-2
+      // at u2 r2, conditioning every `if` took 46 s against 10.5 s for the
+      // links only (8.7 s before any of this), with the same verdicts on
+      // every test here. Leaving a condition out only adds a read, so none
+      // of this can lose a race -- but an added read can report one that is
+      // not there.
+      //
+      // A condition that renaming has already decided (`&a == &a` once the
+      // pointer is constant-propagated) is left alone, for the reason given
+      // at the symbolic-index case below.
+      //
+      // A link is `p == &a` only where the value set knows p points at offset
+      // 0 of a; at any other or an unknown offset value_set_dereferencet
+      // writes it `POINTER_OBJECT(p) == POINTER_OBJECT(&a)` and reads a at
+      // that offset. That is the same link: missed, both objects of
+      // `c.slots[j]->next` were read, and a thread writing the other one was
+      // reported racing (goblint-regression/09-regions_19-nested_nr).
+      // Recognised under --datarace only (see datarace): on
+      // weaver/popl20-prod-cons-eq.wvr-oob, valid-memsafety at u2 r2, the
+      // 114 conditions it adds took the formula from 7.0M clauses to 12.9M
+      // and the run from 38 s to 188 s, with the same verdict.
+      const exprt &cond = expr.op0();
+      const bool link =
+        level == L2 && cond.id() == ID_equal &&
+        (to_equal_expr(cond).lhs().type().id() == ID_pointer ||
+         (datarace && to_equal_expr(cond).lhs().id() == ID_pointer_object &&
+          to_equal_expr(cond).rhs().id() == ID_pointer_object)) &&
+        !simplify_expr(cond, ns).is_constant();
+      // The chain's last branch is the unknown object only when the value
+      // set is not exact. Once the pointer's targets are all known (own-view
+      // reads constant-propagate it) the last branch is a real object:
+      // renamed with the plain guard, `p == &b ? b : a` read a on every path,
+      // and a thread writing a under another lock was reported racing
+      // (goblint-regression/09-regions_11-arraylist_nr). Read it where no
+      // link of the chain holds -- all of them: under the last link's
+      // negation alone, `p == &c ? c : (p == &b ? b : a)` read a when p is &c
+      // and raced again. An extra read is not harmless under --datarace.
+      if(link)
+      {
+        chain_link_negations.push_back(not_exprt{cond});
+        if(expr.op2().id() == ID_if)
+          expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
+        else
+        {
+          const shared_read_condition_scopet read_cond{
+            *this, conjunction(chain_link_negations)};
+          expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
+        }
+        chain_link_negations.pop_back();
+      }
+      else
+        expr.op2() = rename<level>(std::move(expr.op2()), ns).get();
+      if(link)
+      {
+        const shared_read_condition_scopet read_cond{*this, exprt{cond}};
+        expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
+      }
+      else
+        expr.op1() = rename<level>(std::move(expr.op1()), ns).get();
+    }
+    // A load of |T| bytes at an undecided offset of an object field
+    // sensitivity has already expanded: `byte_extract({...}, off, T)`, among
+    // others the lowering of `p->n` with `p = &a[i].cell`. Renamed with the
+    // plain walk, every leaf of the object emitted a shared read event, the
+    // other members of every element too, so a thread reading a[0].cell.n
+    // was paired with one writing a[0].op (pthread-complex/
+    // elimination_backoff_stack, no-data-race). Rename each leaf under the
+    // condition that [off, off + |T|) meets its bytes, on the read events
+    // only (see shared_read_cond), as a load at a symbolic index is renamed
+    // under `i == k` below. A leaf whose position or size is not known keeps
+    // the plain path guard: leaving a condition out only adds a read.
+    else if(
+      level == L2 &&
+      (expr.id() == ID_byte_extract_little_endian ||
+       expr.id() == ID_byte_extract_big_endian) &&
+      (to_byte_extract_expr(expr).op().id() == ID_array ||
+       to_byte_extract_expr(expr).op().id() == ID_struct) &&
+      !to_byte_extract_expr(expr).offset().is_constant())
+    {
+      byte_extract_exprt &byte_extract_expr = to_byte_extract_expr(expr);
+      byte_extract_expr.offset() =
+        rename<level>(std::move(byte_extract_expr.offset()), ns).get();
+      const exprt &offset = byte_extract_expr.offset();
+      const auto size = pointer_offset_size(byte_extract_expr.type(), ns);
+      // Decided by renaming: no condition, as at the symbolic index below.
+      const bool condition =
+        !offset.is_constant() && size.has_value() &&
+        (offset.type().id() == ID_signedbv ||
+         offset.type().id() == ID_unsignedbv);
+
+      std::function<void(exprt &, const mp_integer &)> rename_leaves =
+        [&](exprt &e, const mp_integer &lo) {
+          if(condition && e.id() == ID_array && e.type().id() == ID_array)
+          {
+            const auto element_size = pointer_offset_size(
+              to_array_type(e.type()).element_type(), ns);
+            if(element_size.has_value())
+            {
+              rename<level>(e.type(), irep_idt(), ns);
+              mp_integer at = lo;
+              for(auto &op : e.operands())
+              {
+                rename_leaves(op, at);
+                at += *element_size;
+              }
+              return;
+            }
+          }
+          else if(condition && e.id() == ID_struct)
+          {
+            const struct_typet &type = to_struct_type(ns.follow(e.type()));
+            if(e.operands().size() == type.components().size())
+            {
+              rename<level>(e.type(), irep_idt(), ns);
+              const auto offsets = member_offsets(type, ns);
+              auto c_it = type.components().begin();
+              for(auto &op : e.operands())
+              {
+                const auto &at =
+                  offsets[std::size_t(c_it - type.components().begin())];
+                if(at.has_value())
+                  rename_leaves(op, lo + *at);
+                else
+                  op = rename<level>(std::move(op), ns).get();
+                ++c_it;
+              }
+              return;
+            }
+          }
+
+          const auto leaf_size = pointer_offset_size(e.type(), ns);
+          if(!condition || !leaf_size.has_value())
+          {
+            e = rename<level>(std::move(e), ns).get();
+            return;
+          }
+          exprt meets = binary_relation_exprt{
+            offset, ID_lt, from_integer(lo + *leaf_size, offset.type())};
+          if(lo - *size >= 0 || offset.type().id() == ID_signedbv)
+            meets = and_exprt{
+              meets,
+              binary_relation_exprt{
+                offset, ID_gt, from_integer(lo - *size, offset.type())}};
+          const shared_read_condition_scopet read_cond{*this, meets};
+          e = rename<level>(std::move(e), ns).get();
+        };
+      rename_leaves(byte_extract_expr.op(), 0);
+    }
+    // A load of one member at a symbolic element, after field sensitivity
+    // has expanded the array: `{s0, s1, ...}[i].m` with each s_k a struct
+    // literal of element k's leaves. Renamed as it stands, every member of
+    // the element would emit a read event, though the program reads only m.
+    // Select the member first: `{s0.m, s1.m, ...}[i]` is the same value,
+    // each s_k's operands following the components in order, and only the
+    // m leaves are read. Other shapes take the generic walk.
+    else if(
+      level == L2 && expr.id() == ID_member &&
+      to_member_expr(expr).compound().id() == ID_index &&
+      to_index_expr(to_member_expr(expr).compound()).array().id() ==
+        ID_array &&
+      !to_index_expr(to_member_expr(expr).compound()).index().is_constant())
+    {
+      const member_exprt &member = to_member_expr(expr);
+      const index_exprt &index = to_index_expr(member.compound());
+      const array_exprt &elements = to_array_expr(index.array());
+      const typet &element_type = ns.follow(elements.type().element_type());
+      bool all_structs = element_type.id() == ID_struct;
+      std::size_t component = 0;
+      if(all_structs)
+      {
+        const struct_typet &st = to_struct_type(element_type);
+        component = st.component_number(member.get_component_name());
+        for(const auto &op : elements.operands())
+        {
+          if(
+            op.id() != ID_struct ||
+            op.operands().size() != st.components().size())
+          {
+            all_structs = false;
+          }
+        }
+      }
+      if(all_structs)
+      {
+        exprt::operandst members;
+        members.reserve(elements.operands().size());
+        for(const auto &op : elements.operands())
+          members.push_back(op.operands()[component]);
+        array_exprt member_array{
+          std::move(members),
+          array_typet{member.type(), elements.type().size()}};
+        expr = index_exprt{std::move(member_array), index.index(), member.type()};
+        return rename<level>(std::move(expr), ns);
+      }
+      Forall_operands(it, expr)
+        *it = rename<level>(std::move(*it), ns).get();
+    }
+    // A load at a symbolic index, after field sensitivity has already
+    // expanded the array into its elements: `{a[[0]], a[[1]], ...}[i]`.
+    //
+    // Renaming the elements with the plain walk emits a shared read event for
+    // every one of them, carrying only the path guard. The program reads one
+    // element. For reachability the extra events cost nothing -- only the
+    // value is consumed -- but where the property is about accesses they are
+    // false alarms: a thread holding mutex[1] and touching data[1] is
+    // reported racing on data[0] against a thread holding mutex[0] (the
+    // 09-regions and 06-symbeq families).
+    //
+    // Rename each element under `i == k` instead, so the event lazy_po
+    // collects carries that condition and `exec = Enabled & guard` switches
+    // off the elements this load does not touch. The index is renamed first
+    // because the condition has to be in terms of the renamed index.
+    //
+    // This belongs here and not in field_sensitivityt::apply, which runs
+    // *after* this walk (see the call at the end of this function): by then
+    // the events have already been emitted. Conditioning them inside apply
+    // was tried and measured inert.
+    else if(
+      level == L2 && expr.id() == ID_index &&
+      to_index_expr(expr).array().id() == ID_array &&
+      !to_index_expr(expr).index().is_constant())
+    {
+      index_exprt &index_expr = to_index_expr(expr);
+      index_expr.index() =
+        rename<level>(std::move(index_expr.index()), ns).get();
+      const exprt renamed_index = index_expr.index();
+
+      // Renaming can resolve what was a syntactically non-constant index (a
+      // thread's own parameter, say, always called with the same literal
+      // argument) to an actual constant once constant propagation has run.
+      // When that happens there is no ambiguity left to guard against -- the
+      // element read is already pinned down -- so fall back to the plain,
+      // unconditioned rename every element got before this guard existed.
+      // Adding an `index == k` conjunct for an index that is already a
+      // decided constant leaves an un-simplified equality in the guard that
+      // goto_symex_statet::l2_thread_read_encoding's atomic-section
+      // bookkeeping does not always fold away structurally: the generation
+      // it mints for a never-touched element then ends up tied to its old
+      // value only through an implication the solver can vacuously
+      // discharge by setting that guard false -- which is exactly what
+      // happens on the real (only) path, leaving the element's value free.
+      // See ~/framing_check/framing_two_threads.c, 18 lines, reproduces with
+      // `--unwind 1 --rounds 2 --por` (needs an atomic section and >=2
+      // threads; the per-element guard conditioning below is unaffected
+      // when the index is genuinely symbolic, so the 09-regions/06-symbeq
+      // false-alarm fix this guard exists for is untouched).
+      if(renamed_index.is_constant())
+      {
+        // Only the element the index decides is read. Renamed whole, every
+        // element emitted a read event with the plain path guard: under
+        // --own-view-reads a thread's own `tid` is constant-propagated, and
+        // `in[tid]` in one thread was reported racing with another thread's
+        // write of in[0] when tid was 1 (pthread-divine/barrier_2t, the race
+        // its witness named; a safe two-line reproducer was answered FALSE).
+        const auto k = numeric_cast<mp_integer>(renamed_index);
+        const auto &elements = to_array_expr(index_expr.array()).operands();
+        if(k.has_value() && *k >= 0 && *k < elements.size())
+        {
+          exprt element = elements[numeric_cast_v<std::size_t>(*k)];
+          return rename<level>(std::move(element), ns);
+        }
+        for(auto &op : to_array_expr(index_expr.array()).operands())
+          op = rename<level>(std::move(op), ns).get();
+      }
+      else
+      {
+        std::size_t element = 0;
+        for(auto &op : to_array_expr(index_expr.array()).operands())
+        {
+          // Restored rather than popped: nothing else expects the guard to
+          // have changed across this call.
+          guardt saved = guard;
+          guard.add(equal_exprt{
+            renamed_index, from_integer(element, renamed_index.type())});
+          op = rename<level>(std::move(op), ns).get();
+          guard = std::move(saved);
+          ++element;
+        }
+      }
     }
     else
     {
@@ -417,13 +745,52 @@ bool goto_symex_statet::l2_thread_read_encoding(
     return false;
   }
 
+  // A variable that a static whole-program analysis has proven to be touched
+  // by at most one thread cannot be interfered with, so read it exactly like a
+  // thread-local: no shared_read event, and constant propagation applies (see
+  // rename<L2>, which falls through to the propagation map when this returns
+  // false). Only ever populated under --rounds.
+  if(is_thread_exclusive(obj_identifier))
+    return false;
+
   // only continue if an indivisible object is being accessed
   if(field_sensitivity.is_divisible(expr))
     return false;
 
   const ssa_exprt ssa_l1 = remove_level_2(expr);
   const irep_idt &l1_identifier=ssa_l1.get_identifier();
+
+  // Only the reads the program makes count as readers (not, for instance,
+  // the old value a guarded store frames back, which no event records).
+  if(own_view != nullptr && record_events.top())
+    own_view->recorded_readers[l1_identifier].insert(source.thread_nr);
+
+  // --own-view-reads: no other thread writes this object after the first
+  // spawn, so this read sees this thread's own last write, or the value at
+  // the first spawn, which is its current L2 name or propagated constant in
+  // this state (own_view_writers.h). Read it like a thread-local: no event,
+  // and constant propagation applies -- inside an atomic section too.
+  if(own_view_readable(ssa_l1, ns))
+  {
+    ++own_view->reads;
+    return false;
+  }
+
   const exprt guard_as_expr = guard.as_expr();
+
+  // No event and no fresh index, but avoid constant propagation -- inside an
+  // atomic section too. Tested only after the atomic section's bookkeeping
+  // before, so a read made with events off there (the framed old value of a
+  // store through a pointer, see symex_assign) still emitted a shared read
+  // event for every target: `p->id = v` with `p = &a[i]`, in an atomic
+  // section, was recorded as reading every element of `a`, and paired with
+  // another thread's write of a[j].op (pthread-complex/
+  // elimination_backoff_stack, no-data-race).
+  if(!record_events.top())
+  {
+    expr = set_indices<L2>(std::move(ssa_l1), ns).get();
+    return true;
+  }
 
   // see whether we are within an atomic section
 if(atomic_section_id!=0)
@@ -497,10 +864,29 @@ if(atomic_section_id!=0)
 
     INVARIANT_STRUCTURED(
       symex_target != nullptr, nullptr_exceptiont, "symex_target is null");
+    // Where no earlier read or write of this section stands for this one,
+    // the read takes the fresh generation, so its event goes on that: on the
+    // first read's generation, as before, the value read here was
+    // unconstrained, and the event, placed after a write of this section,
+    // contradicted it.  `A[k]++; assert(A[0] == 0);` in an atomic section,
+    // with k read from shared memory, failed for k != 0
+    // (pthread-complex/elimination_backoff_stack, no-overflow).
     ssa_exprt r = ssa_l1;
     r.set_level_2(a_s_read.first);
+    if(!cond.is_true())
+      r = l2_false_case.get();
+    // See shared_read_cond, as on the plain path below. Dropped here before,
+    // so inside an atomic section a load at a symbolic index -- `p->id = v`
+    // with `p = &a[i]` reads a[i] -- was recorded as reading every element of
+    // `a`, and paired with another thread's write of a[j].op
+    // (pthread-complex/elimination_backoff_stack, no-data-race).
     symex_target->shared_read(
-      guard_as_expr, r, atomic_section_id, source);
+      shared_read_cond.is_true()
+        ? guard_as_expr
+        : static_cast<exprt>(and_exprt{guard_as_expr, shared_read_cond}),
+      r,
+      atomic_section_id,
+      source);
 
     record_events.push(false);
     ssa_exprt ssa_l2 = assignment(std::move(ssa_l1), tmp, ns, true, true).get();
@@ -518,29 +904,183 @@ if(atomic_section_id!=0)
     INVARIANT(!check_renaming(ssa_l2), "expr should be renamed to L2");
     expr = std::move(ssa_l2);
 
-    a_s_read.second.push_back(guard);
-    if(!no_write.op().is_false())
-      a_s_read.second.back().add(no_write);
+    // Same reason as on the plain path below: a pointer published by a
+    // thread symexed later is not in this read's set. Atomic sections need
+    // it at least as much, since every atomic operation is one -- an MCS
+    // lock hands its successor a node through vatomicptr_xchg.
+    seed_published_targets(expr, l1_identifier, ns);
+
+    // A read under a narrower condition does not stand for later reads of
+    // the same object in this section: where its condition is false its
+    // event is off and its value unconstrained, and a later read reusing it
+    // would read that value with no event of its own.
+    if(shared_read_cond.is_true())
+    {
+      a_s_read.second.push_back(guard);
+      if(!no_write.op().is_false())
+        a_s_read.second.back().add(no_write);
+    }
 
     return true;
   }
 
-  // No event and no fresh index, but avoid constant propagation
-  if(!record_events.top())
+  // produce a fresh L2 name -- but under --own-view-reads keep the current
+  // one for an object with at most one writer after the first spawn: it
+  // stands for the writer's own view, which this read does not change
+  // (own_view_writers.h)
+  const bool keep_name = own_view_candidate(ssa_l1, ns);
+  std::optional<std::pair<ssa_exprt, std::size_t>> kept_name;
+  if(keep_name)
   {
-    expr = set_indices<L2>(std::move(ssa_l1), ns).get();
-    return true;
+    const auto current = level2.current_names.find(l1_identifier);
+    if(current.has_value())
+      kept_name = current->get();
   }
-
-  // produce a fresh L2 name
   level2.increase_generation(l1_identifier, ssa_l1, fresh_l2_name_provider);
   expr = set_indices<L2>(std::move(ssa_l1), ns).get();
+  if(keep_name)
+  {
+    if(kept_name.has_value())
+      level2.current_names.replace(l1_identifier, std::move(*kept_name));
+    else
+      level2.current_names.erase(l1_identifier);
+  }
+
+  seed_published_targets(expr, l1_identifier, ns);
 
   // and record that
   INVARIANT_STRUCTURED(
     symex_target!=nullptr, nullptr_exceptiont, "symex_target is null");
-  symex_target->shared_read(guard_as_expr, expr, atomic_section_id, source);
+  // See shared_read_cond: the condition under which the program performs
+  // this read, when it is narrower than the path.
+  symex_target->shared_read(
+    shared_read_cond.is_true()
+      ? guard_as_expr
+      : static_cast<exprt>(and_exprt{guard_as_expr, shared_read_cond}),
+    expr,
+    atomic_section_id,
+    source);
 
+  return true;
+}
+
+void goto_symex_statet::seed_published_targets_in(
+  const exprt &expr,
+  const namespacet &ns)
+{
+  if(published_value_set == nullptr)
+    return;
+
+  for(auto it = expr.depth_cbegin(); it != expr.depth_cend(); ++it)
+  {
+    if(!is_ssa_expr(*it) || it->type().id() != ID_pointer)
+      continue;
+    const ssa_exprt &ssa = to_ssa_expr(*it);
+    if(write_is_shared(ssa, ns) != write_is_shared_resultt::NOT_SHARED)
+      seed_published_targets(ssa, ssa.get_identifier(), ns);
+  }
+}
+
+/// A pointer, or an array of them: the value set keeps one entry for all the
+/// elements of an array, under the array's own name.
+static bool pointer_or_pointer_array(const typet &type)
+{
+  if(type.id() == ID_array)
+    return pointer_or_pointer_array(to_array_type(type).element_type());
+  return type.id() == ID_pointer;
+}
+
+void goto_symex_statet::seed_published_targets(
+  const ssa_exprt &expr,
+  const irep_idt &l1_identifier,
+  const namespacet &ns)
+{
+  // Only a pointer can be published, and only a previous pass can know what
+  // was published: value sets are built in symex order, so a read carries
+  // only the targets that existed when it was symexed (CBMC issue #305).
+  // Arrays too: an array split by field sensitivity is read element by
+  // element, but one of unbounded size is read whole -- the results that
+  // pthread_join takes from __CPROVER_thread_return_values, written by a
+  // thread symexed after the join (pthread-join-result/shared-buffer).
+  (void)ns;
+  if(published_value_set == nullptr || !pointer_or_pointer_array(expr.type()))
+    return;
+
+  if(consulted_published != nullptr)
+    consulted_published->insert(l1_identifier);
+
+  const auto *entry = published_value_set->find_entry(l1_identifier);
+  if(entry == nullptr)
+    return;
+
+  // Merge, never replace: what this read already knows is right, the
+  // published targets are additional. And only this object is touched --
+  // widening every pointer at every step is what makes
+  // --refined-pointer-analysis suppress real races as well as spurious ones.
+  value_sett::entryt target{l1_identifier, entry->suffix};
+  value_set.update_entry(target, expr.type(), entry->object_map, true);
+}
+
+/// Shared objects --own-view-reads may treat: the program's own, and the
+/// same object in every thread.
+static bool own_view_eligible(const ssa_exprt &expr, const namespacet &ns)
+{
+  const irep_idt &object_name = expr.get_object_name();
+  if(has_prefix(id2string(object_name), CPROVER_PREFIX))
+    return false;
+  // A whole array, one field sensitivity does not split (of symbolic size, or
+  // above its bound): its phi functions and value chains, encoded as
+  // arrays, cost more than the read events they save (measured on
+  // pthread/reorder_2, two variable-length arrays of thread handles: 32637
+  // clauses without --own-view-reads, 40012 with arrays, 25203 without).
+  if(expr.type().id() == ID_array)
+    return false;
+  const symbolt *symbol;
+  if(ns.lookup(object_name, symbol))
+    return false;
+  // A failed symbol (p$object) is not an object of its own: it stands for
+  // whatever an unresolved pointer points to, which other threads may write
+  // under other names. Its reads stay events, which read it as anything.
+  // Read from the own view, two reads of adutux dev->udev around another
+  // thread write agreed, and the reachable ldv_assert was reported safe
+  // (ldv-linux-3.14-races/...adutux, unreach-call, expected false).
+  if(symbol->type.get_bool(ID_C_is_failed_symbol))
+    return false;
+  return !(symbol->is_static_lifetime && symbol->is_thread_local);
+}
+
+bool goto_symex_statet::own_view_readable(
+  const ssa_exprt &expr,
+  const namespacet &ns)
+{
+  if(own_view == nullptr || !own_view->active || threads.size() <= 1)
+    return false;
+  const irep_idt l1_object = expr.get_l1_object_identifier();
+  if(
+    !own_view->known.only_by(l1_object, source.thread_nr) ||
+    !own_view->useful(l1_object))
+  {
+    return false;
+  }
+  if(!own_view_eligible(expr, ns))
+    return false;
+  // Never assigned on this path: there is no value to stand for the read.
+  if(level2.latest_index(l1_object) == 0)
+    return false;
+  own_view->read_by[l1_object].insert(source.thread_nr);
+  return true;
+}
+
+bool goto_symex_statet::own_view_candidate(
+  const ssa_exprt &expr,
+  const namespacet &ns)
+{
+  if(own_view == nullptr || !own_view->active)
+    return false;
+  const irep_idt l1_object = expr.get_l1_object_identifier();
+  if(!own_view->useful(l1_object) || !own_view_eligible(expr, ns))
+    return false;
+  own_view->candidates.insert(l1_object);
   return true;
 }
 
@@ -576,6 +1116,12 @@ goto_symex_statet::write_is_shared_resultt goto_symex_statet::write_is_shared(
     return write_is_shared_resultt::NOT_SHARED;
   }
 
+  // See l2_thread_read_encoding: a statically proven thread-exclusive variable
+  // is written exactly like a thread-local (no shared_write event, constant
+  // propagation applies). Only ever populated under --rounds.
+  if(is_thread_exclusive(obj_identifier))
+    return write_is_shared_resultt::NOT_SHARED;
+
   // only continue if an indivisible object is being accessed
   if(field_sensitivity.is_divisible(expr))
     return write_is_shared_resultt::NOT_SHARED;
@@ -592,15 +1138,34 @@ bool goto_symex_statet::l2_thread_write_encoding(
   const ssa_exprt &expr,
   const namespacet &ns)
 {
+  // The event guard is the path condition, strengthened by any framing
+  // condition the caller has installed (see shared_write_cond): an element
+  // write that the lowering only emits to carry the *old* value across a
+  // partial update must not be published to the other threads, or it resets
+  // whatever they wrote in the meantime.  Note this affects the event only --
+  // the SSA equality defining the new L2 symbol is emitted unchanged by the
+  // caller, so this thread's own view of the object stays correct.
+  const exprt event_guard = shared_write_cond.is_true()
+                              ? guard.as_expr()
+                              : static_cast<exprt>(
+                                  and_exprt{guard.as_expr(), shared_write_cond});
+
   switch(write_is_shared(expr, ns))
   {
   case write_is_shared_resultt::NOT_SHARED:
     return false;
   case write_is_shared_resultt::IN_ATOMIC_SECTION:
   {
-      written_in_atomic_section[remove_level_2(expr)].first.push_back(guard);
+      // Recorded under the event's condition (see shared_write_cond), as a
+      // read is: where it is false the write only carries the old value, so
+      // it does not stand for a later read in this section.
+      guardt write_guard = guard;
+      if(!shared_write_cond.is_true())
+        write_guard.add(shared_write_cond);
+      written_in_atomic_section[remove_level_2(expr)].first.push_back(
+        write_guard);
       symex_target->shared_write(
-        guard.as_expr(),
+        event_guard,
         expr,
         atomic_section_id,
         source);
@@ -612,7 +1177,7 @@ bool goto_symex_statet::l2_thread_write_encoding(
 
   // record a shared write
   symex_target->shared_write(
-    guard.as_expr(),
+    event_guard,
     expr,
     atomic_section_id,
     source);
@@ -889,6 +1454,8 @@ ssa_exprt goto_symex_statet::add_object(
 ssa_exprt goto_symex_statet::declare(ssa_exprt ssa, const namespacet &ns)
 {
   const irep_idt &l1_identifier = ssa.get_identifier();
+
+  own_view_record(l1_identifier);
 
   // rename type to L2
   rename(ssa.type(), l1_identifier, ns);

@@ -1,0 +1,11 @@
+CORE
+main.c
+--32 --unwind 2 --rounds 3 --allow-pointer-unsoundness --array-rf-bytes
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The write that main makes after the thread has written the same byte is the
+later one in every schedule, so it is the one a later read sees.

@@ -441,6 +441,26 @@ public:
       clear(SKIP);
     }
 
+    /// Transforms an existing instruction (expected to be an ASSERT whose
+    /// property check is being disabled, e.g. by --no-assertions) into a
+    /// plain assignment `lhs = rhs`, retaining the source_location, labels
+    /// and incoming_edges -- unlike turn_into_skip(), which discards the
+    /// original condition expression outright. Used under --datarace to
+    /// keep evaluating a disabled assertion's condition (and so any memory
+    /// reads embedded only in it, e.g. the SV-COMP "floating_read"
+    /// benchmark family) without checking or reporting it as a violation.
+    /// Assigning to a dummy variable (rather than turning it into an
+    /// ASSUME with the same condition) adds no hard constraint on the
+    /// model, so it cannot rule out a race-dependent value the way an
+    /// ASSUME could.
+    void turn_into_assignment(exprt lhs, exprt rhs)
+    {
+      _type = ASSIGN;
+      targets.clear();
+      guard = true_exprt();
+      _code = code_assignt(std::move(lhs), std::move(rhs));
+    }
+
     /// Transforms either an assertion or a GOTO instruction
     /// into an assumption, with the same condition.
     void turn_into_assume()

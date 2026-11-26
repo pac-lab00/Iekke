@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 5 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Companion of `symbolic_malloc_per_thread_index`: same symbolic-size `malloc`
+region, but both threads write the same constant index, a genuine race. It
+must stay FAILED before and after the fix, confirming that suppressing the
+framed sentinel offset for this family does not suppress a real collision.

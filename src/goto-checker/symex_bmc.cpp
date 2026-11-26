@@ -153,6 +153,21 @@ bool symex_bmct::should_stop_unwind(
     abort_unwind_decision.is_known(), "unwind decision should be taken by now");
   bool abort = abort_unwind_decision.is_true();
 
+  // A recognised thread-management loop (see thread_spawn_loops.h) is bounded
+  // by the thread-creation bound *independently of* --unwind/--unwindset: the
+  // program own bound is typically 10000 and can never be reached, whereas
+  // the number of threads that have to be created to exhibit a concurrency bug
+  // is small.  goto_symext::loop_bound_exceeded then leaves the loop without
+  // pruning the resulting state.  The bound can only make a loop stop sooner
+  // than the configured unwind limit would.
+  if(
+    thread_creation_bound > 0 && unwind >= thread_creation_bound &&
+    thread_management_loops.count(id) > 0)
+  {
+    abort = true;
+  }
+
+
   log.statistics() << (abort ? "Not unwinding" : "Unwinding") << " loop " << id
                    << " iteration " << unwind;
 

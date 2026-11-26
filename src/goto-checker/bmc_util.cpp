@@ -9,12 +9,24 @@ Author: Daniel Kroening, Peter Schrammel
 /// \file
 /// Bounded Model Checking Utilities
 
+#include <algorithm>
+#include <string>
 #include "bmc_util.h"
+#include <util/pointer_expr.h>
+#include <functional>
+#include <unordered_set>
+#include <fstream>
+#include <sstream>
+#include <util/config.h>
 
 #include <util/json_stream.h>
+#include <util/cprover_prefix.h>
+#include <util/prefix.h>
+#include <util/std_expr.h>
 #include <util/ui_message.h>
 
 #include <goto-programs/graphml_witness.h>
+#include <goto-programs/yaml_witness.h>
 #include <goto-programs/json_goto_trace.h>
 #include <goto-programs/xml_goto_trace.h>
 
@@ -23,11 +35,15 @@ Author: Daniel Kroening, Peter Schrammel
 #include <goto-symex/memory_model_pso.h>
 #include <goto-symex/memory_model_general.h>
 #include <goto-symex/slice.h>
+#include <goto-symex/thread_aware_slice.h>
 #include <goto-symex/symex_target_equation.h>
 
 #include <linking/static_lifetime_init.h>
 
 #include <solvers/decision_procedure.h>
+#include <solvers/flattening/boolbv.h>
+
+#include <cstdlib>
 
 #include <util/json_stream.h>
 #include <util/make_unique.h>
@@ -113,6 +129,28 @@ void output_error_trace(
   }
 }
 
+/// The `content` of a YAML violation witness (goto-programs/yaml_witness.h);
+/// the caller writes the entry and its metadata around it. Nothing is written
+/// when the trace gives no violation a witness can point to.
+void output_yaml_witness(
+  const goto_tracet &goto_trace,
+  const namespacet &ns,
+  const optionst &options)
+{
+  const std::string yaml = options.get_option("yaml-witness");
+  if(yaml.empty())
+    return;
+
+  std::ostringstream content;
+  if(!yaml_violation_content(
+       goto_trace, ns, content, options.get_bool_option("yaml-witness-values")))
+    return;
+  if(yaml == "-")
+    std::cout << content.str();
+  else
+    std::ofstream(yaml) << content.str();
+}
+
 /// outputs an error witness in graphml format
 void output_graphml(
   const goto_tracet &goto_trace,
@@ -173,6 +211,73 @@ void output_graphml(
     std::ofstream out(graphml);
     write_graphml(graphml_witness.graph(), out, filename, options);
   }
+}
+
+/// Hand the POR provenance to the SAT backend: for every auxiliary symbol the
+/// reduction created, mark the SAT variables it was flattened into. The mapping
+/// symbol -> literals is read from the flattening layer (boolean symbols from
+/// prop_conv_solvert, bitvector symbols from the boolbv map), never guessed from
+/// names at SAT level: after bit-blasting one symbol is several variables and
+/// ordinary constraints introduce helpers of their own. Backends that ignore the
+/// classification are unaffected.
+void mark_por_variables(
+  decision_proceduret &decision_procedure,
+  propt &prop,
+  message_handlert &message_handler)
+{
+  const auto &por_symbols = por_auxiliary_symbols();
+  if(por_symbols.empty())
+    return;
+
+  messaget log(message_handler);
+
+  auto *boolbv = dynamic_cast<boolbvt *>(&decision_procedure);
+  if(boolbv == nullptr)
+  {
+    log.warning() << "POR provenance: flattening layer does not expose a "
+                     "literal map, variables left unclassified"
+                  << messaget::eom;
+    return;
+  }
+
+  std::size_t marked_symbols = 0, marked_variables = 0;
+
+  for(const auto &sym : por_symbols)
+  {
+    const irep_idt &identifier = sym.get_identifier();
+
+    if(sym.type().id() == ID_bool)
+    {
+      const auto &symbols = boolbv->get_symbols();
+      const auto it = symbols.find(identifier);
+      if(it == symbols.end())
+        continue;
+      if(it->second.is_constant())
+        continue;
+      prop.set_por_variable(it->second);
+      ++marked_symbols;
+      ++marked_variables;
+    }
+    else
+    {
+      const auto entry = boolbv->get_map().get_map_entry(identifier);
+      if(!entry.has_value())
+        continue;
+      ++marked_symbols;
+      for(const auto &literal : entry->get().literal_map)
+      {
+        if(literal.is_constant())
+          continue;
+        prop.set_por_variable(literal);
+        ++marked_variables;
+      }
+    }
+  }
+
+  log.statistics() << "POR provenance: " << marked_variables
+                   << " SAT variables classified from " << marked_symbols
+                   << " of " << por_symbols.size() << " auxiliary symbols"
+                   << messaget::eom;
 }
 
 void convert_symex_target_equation(
@@ -251,8 +356,28 @@ void slice(
   // any properties to check at all?
   if(symex_target_equation.has_threads())
   {
-    // we should build a thread-aware SSA slicer
-    msg.statistics() << "no slicing due to threads" << messaget::eom;
+    // The sequential slicers are not safe here. ::slice follows intra-thread
+    // data dependence only, and --full-slice runs on the goto program before
+    // symex with no thread awareness at all -- on
+    // 28-race_reach_81-list_racing it turns a two-second FAILED into
+    // SUCCESSFUL, because a write whose only reader is another thread has no
+    // local use and looks dead. So this used to decline to slice, which left
+    // --slice-formula a silent no-op on every concurrent benchmark.
+    //
+    // thread_aware_slice keeps the property, every shared access, and
+    // everything feeding one; see its header for why that is exactly what the
+    // round-robin encoding requires, lazy_po having already emitted
+    // constraints that name those symbols.
+    if(options.get_bool_option("slice-formula"))
+    {
+      const std::size_t removed = thread_aware_slice(symex_target_equation);
+      msg.statistics() << "thread-aware slicing removed " << removed
+                       << " assignments" << messaget::eom;
+    }
+    else
+    {
+      msg.statistics() << "no slicing due to threads" << messaget::eom;
+    }
   }
   else
   {
@@ -363,6 +488,160 @@ void output_coverage_report(
   }
 }
 
+
+/// Number of distinct objects the pointer encoding will have to register.
+///
+/// \ref pointer_logict::add_object strips index and member expressions and
+/// numbers what is left, so the objects are the distinct bases of the
+/// address-of expressions occurring in the equation. Counting them here, before
+/// flattening, is what lets object_bits be sized to the program rather than
+/// left at the language default.
+///
+/// Iterative rather than recursive, and keyed on the irep hash rather than a
+/// rendered string: this runs over the whole equation, which on the benchmarks
+/// that actually need it is upwards of 180000 steps.
+static std::size_t count_addressed_objects(const symex_target_equationt &equation)
+{
+  std::unordered_set<exprt, irep_hash> objects;
+  std::vector<const exprt *> work;
+
+  const auto walk = [&](const exprt &root) {
+    work.push_back(&root);
+    while(!work.empty())
+    {
+      const exprt &expr = *work.back();
+      work.pop_back();
+
+      if(expr.id() == ID_address_of && expr.operands().size() == 1)
+      {
+        // strip index/member exactly as pointer_logict::add_object does
+        const exprt *base = &expr.operands().front();
+        while(
+          (base->id() == ID_index || base->id() == ID_member) &&
+          !base->operands().empty())
+        {
+          base = &base->operands().front();
+        }
+        objects.insert(*base);
+      }
+
+      for(const auto &op : expr.operands())
+        work.push_back(&op);
+    }
+  };
+
+  for(const auto &step : equation.SSA_steps)
+  {
+    if(step.ignore)
+      continue;
+    if(step.cond_expr.is_not_nil())
+      walk(step.cond_expr);
+    if(step.ssa_rhs.is_not_nil())
+      walk(step.ssa_rhs);
+    if(step.ssa_lhs.is_not_nil())
+      walk(step.ssa_lhs);
+    walk(step.guard);
+    // Converted as they are by convert_function_calls and convert_io. Without
+    // slicing an address passed to a function is also in the assignment to the
+    // parameter; with the formula sliced that assignment can be gone.
+    for(const auto &arg : step.ssa_function_arguments)
+      walk(arg);
+    for(const auto &arg : step.io_args)
+      walk(arg);
+  }
+
+  return objects.size();
+}
+
+/// Raise object_bits to the smallest value that fits this program's objects.
+static void size_object_bits(
+  const symex_target_equationt &equation,
+  messaget &log)
+{
+  // An explicit --object-bits is the user's decision; leave it alone.
+  if(!config.bv_encoding.is_object_bits_default)
+    return;
+
+  const std::size_t needed = count_addressed_objects(equation);
+
+  // NULL and the invalid object are registered too, plus a little slack for
+  // objects the flattener introduces that are not visible as address-of here.
+  const std::size_t with_slack = needed + 8;
+
+  std::size_t bits = 1;
+  while((std::size_t(1) << bits) < with_slack &&
+        bits + 1 < config.ansi_c.pointer_width)
+  {
+    ++bits;
+  }
+
+  if(bits <= config.bv_encoding.object_bits)
+    return; // the default already fits
+
+  if(bits >= config.ansi_c.pointer_width)
+  {
+    log.warning() << "program addresses " << needed
+                  << " objects, which does not fit in a "
+                  << config.ansi_c.pointer_width << "-bit pointer"
+                  << messaget::eom;
+    return;
+  }
+
+  log.statistics() << "object bits: " << needed
+                   << " addressed objects need " << bits << " bits, raising from "
+                   << config.bv_encoding.object_bits << " (offset bits "
+                   << config.ansi_c.pointer_width - config.bv_encoding.object_bits
+                   << " -> " << config.ansi_c.pointer_width - bits << ")"
+                   << messaget::eom;
+
+  config.bv_encoding.object_bits = bits;
+}
+
+
+static lazy_pot make_lazy_po(
+  const optionst &options,
+  const namespacet &ns,
+  std::size_t rounds)
+{
+  return lazy_pot(ns, rounds, options.get_bool_option("datarace"), options.get_bool_option("por"), options.get_bool_option("read-implication"), options.get_bool_option("narrow-shared"), options.get_bool_option("thread-private"), options.get_bool_option("array-rf"), options.get_unsigned_int_option("thread-symmetry"), options.get_bool_option("array-rf-bytes"), options.get_bool_option("index-chain"));
+}
+
+void apply_lazy_po(
+  symex_target_equationt &equation,
+  const optionst &options,
+  const namespacet &ns,
+  ui_message_handlert &ui_message_handler,
+  std::size_t rounds,
+  bool empty_round_literals)
+{
+  lazy_pot lazy_po = make_lazy_po(options, ns, rounds);
+  lazy_po.empty_round_literals = empty_round_literals;
+  lazy_po(equation, ui_message_handler);
+}
+
+void infer_rounds_prepare(
+  const symex_target_equationt &equation,
+  const optionst &options,
+  const namespacet &ns,
+  ui_message_handlert &ui_message_handler)
+{
+  // B is the static bound (round_bound.h) capped at --max-rounds. It comes
+  // from the event collection lazy_po itself runs, done on a copy because that
+  // collection rewrites and annotates the steps.
+  symex_target_equationt probe_equation{equation};
+  bool at_cap = false;
+  const std::size_t bound = std::max<std::size_t>(
+    1,
+    make_lazy_po(options, ns, 1)
+      .static_round_bound(
+        probe_equation, options.get_unsigned_int_option("max-rounds"), at_cap));
+  infer_rounds_bound() = bound;
+  infer_rounds_bound_is_static() = !at_cap;
+  messaget(ui_message_handler).status()
+    << "Infer rounds: static round bound " << bound
+    << (at_cap ? " (the --max-rounds cap)" : "") << messaget::eom;
+}
+
 void postprocess_equation(
   symex_bmct &symex,
   symex_target_equationt &equation,
@@ -377,11 +656,39 @@ void postprocess_equation(
   {
     if(options.get_unsigned_int_option("rounds") > 0)
     {
-      lazy_pot(ns, options.get_unsigned_int_option("rounds"), options.get_bool_option("datarace"), options.get_bool_option("por"))(
-        equation, ui_message_handler);
+      if(options.get_bool_option("infer-rounds"))
+      {
+        // --infer-rounds: only compute B here. The round_incremental checker
+        // applies lazy_po itself, once per block of rounds, on copies of this
+        // equation as symex left it -- so neither lazy_po nor the slicing
+        // after it may run on it now.
+        infer_rounds_prepare(equation, options, ns, ui_message_handler);
+        return;
+      }
+      apply_lazy_po(
+        equation,
+        options,
+        ns,
+        ui_message_handler,
+        options.get_unsigned_int_option("rounds"),
+        false);
     }
     else
     {
+      // This build's concurrency support is the round-robin encoding, chosen
+      // with --rounds N. Without it we fall back to the stock memory-model
+      // path below, which on this fork reports violations on safe concurrent
+      // programs -- 12 of the 46 regression/cbmc-concurrency tests fail that
+      // way and all of them pass with --rounds 3. Don't let that happen
+      // silently.
+      messaget rounds_log(ui_message_handler);
+      rounds_log.warning()
+        << "no --rounds given for a concurrent program: falling back to the "
+           "memory-model encoding, which is known to report violations on "
+           "race-free programs in this build. Pass --rounds N (e.g. 3) for "
+           "the round-robin encoding this tool is validated with."
+        << messaget::eom;
+
       std::unique_ptr<memory_model_baset> memory_model =
       get_memory_model(options, ns);
 
@@ -435,6 +742,7 @@ void postprocess_equation(
 
 #include <solvers/sat/satcheck_minisat2.h>
 #include <solvers/prop/prop_conv_solver.h>
+#include <solvers/flattening/boolbv.h>
 
 std::chrono::duration<double> prepare_property_decider(
   propertiest &properties,
@@ -450,9 +758,12 @@ std::chrono::duration<double> prepare_property_decider(
     << property_decider.get_decision_procedure().decision_procedure_text()
     << messaget::eom;
 
+  // bv_pointerst reads config.bv_encoding.object_bits while flattening, so
+  // sizing it here -- after symex, before conversion -- is what takes effect.
+  size_object_bits(equation, log);
+
   convert_symex_target_equation(
     equation, property_decider.get_decision_procedure(), ui_message_handler);
-
 
   equation.convert_canonical_constraints(
     property_decider.get_decision_procedure());
@@ -461,7 +772,17 @@ std::chrono::duration<double> prepare_property_decider(
     properties);
   property_decider.convert_goals();
 
+  mark_por_variables(
+    property_decider.get_decision_procedure(),
+    property_decider.get_solver()->prop(),
+    ui_message_handler);
+
   // __SZH_ADD_BEGIN__
+  // This whole block references Deagle-family solver types that only exist
+  // when built with sat_impl=minisat2 (see solvers/CMakeLists.txt). Guarded
+  // locally to unblock sat_impl=glucose; equation.use_cat/use_deagle_* are
+  // never true in that configuration anyway.
+#ifdef HAVE_MINISAT2
   auto &prop_solver = property_decider.get_solver()->prop();
 
   // memory-model solver (se presente)
@@ -587,6 +908,7 @@ std::chrono::duration<double> prepare_property_decider(
 
     deagle_segment_solver.save_raw_graph(oc_edge_table, oc_guard_map, oc_location_map, equation.oc_result_order);
   }
+#endif
     // __SZH_ADD_END__
 
     auto solver_stop = std::chrono::steady_clock::now();

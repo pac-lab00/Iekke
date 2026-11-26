@@ -267,6 +267,37 @@ bool value_sett::make_union(const value_sett::valuest &new_values)
   return result;
 }
 
+bool value_sett::make_union_delta(const valuest &now, const valuest &before)
+{
+  bool result = false;
+
+  valuest::delta_viewt delta_view;
+  now.get_delta_view(before, delta_view, false);
+
+  for(const auto &delta_entry : delta_view)
+  {
+    const auto existing = values.find(delta_entry.k);
+    if(existing.has_value())
+    {
+      if(make_union_would_change(
+           existing->get().object_map, delta_entry.m.object_map))
+      {
+        values.update(delta_entry.k, [&](entryt &existing_entry) {
+          make_union(existing_entry.object_map, delta_entry.m.object_map);
+        });
+        result = true;
+      }
+    }
+    else
+    {
+      values.insert(delta_entry.k, delta_entry.m);
+      result = true;
+    }
+  }
+
+  return result;
+}
+
 bool value_sett::make_union_would_change(
   const object_mapt &dest,
   const object_mapt &src) const
@@ -992,13 +1023,19 @@ void value_sett::get_value_set_rec(
 
       const struct_typet &struct_type = to_struct_type(op_type);
 
+      const auto comp_offsets = offset_int.has_value()
+                                  ? member_offsets(struct_type, ns)
+                                  : std::vector<optionalt<mp_integer>>{};
+      std::size_t comp_index = 0;
+
       for(const auto &c : struct_type.components())
       {
         const irep_idt &name = c.get_name();
+        const std::size_t this_index = comp_index++;
 
         if(offset_int.has_value())
         {
-          auto comp_offset = member_offset(struct_type, name, ns);
+          const auto &comp_offset = comp_offsets[this_index];
           if(comp_offset.has_value())
           {
             if(

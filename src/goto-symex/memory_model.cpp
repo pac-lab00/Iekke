@@ -256,8 +256,49 @@ void memory_model_baset::add_oc_label(symex_target_equationt &equation, std::str
   // std::cout << "add " << label << " label: " << get_name(e) << "\n";
 }
 
+void memory_model_baset::add_adjacency(
+  symex_target_equationt &equation,
+  const symbol_exprt &adj,
+  event_it x,
+  event_it y,
+  const event_listt &shared_events)
+{
+  const symbol_exprt cx = clock(x, AX_PROPAGATION);
+  const symbol_exprt cy = clock(y, AX_PROPAGATION);
+  add_constraint(
+    equation,
+    implies_exprt(adj, binary_relation_exprt(cx, ID_lt, cy)),
+    "race-adjacent", x->source);
+  for(const auto &e : shared_events)
+  {
+    if(e == x || e == y || e->guard.is_false())
+      continue;
+    const symbol_exprt ce = clock(e, AX_PROPAGATION);
+    exprt between = and_exprt(
+      e->guard,
+      binary_relation_exprt(cx, ID_lt, ce),
+      binary_relation_exprt(ce, ID_lt, cy));
+    add_constraint(
+      equation, implies_exprt(adj, not_exprt(between)),
+      "race-adjacent", x->source);
+  }
+}
+
 void memory_model_baset::data_race(symex_target_equationt &equation)
 {
+  // every shared read and write that carries a clock
+  event_listt shared_events;
+  if(!use_deagle)
+  {
+    for(const auto &a : address_map)
+    {
+      shared_events.insert(
+        shared_events.end(), a.second.reads.begin(), a.second.reads.end());
+      shared_events.insert(
+        shared_events.end(), a.second.writes.begin(), a.second.writes.end());
+    }
+  }
+
   for(int id = 0; id < int(equation.numbered_dataraces.size()); id++)
   {
     auto& race = equation.numbered_dataraces[id];
@@ -272,8 +313,20 @@ void memory_model_baset::data_race(symex_target_equationt &equation)
       add_oc_edge(equation, first_event, second_event, "race", race_var);
     else
     {
-      implies_exprt race_order(race_var, before(first_event, second_event));
-      add_constraint(equation, race_order, "race", first_event->source);
+      // SC data-race semantics: the two accesses are consecutive in the
+      // interleaving, in either order.  adjacent(x, y) means x's clock is
+      // below y's and no other shared access that happens has a clock
+      // strictly between them.  Events of one atomic section share a clock,
+      // so they never lie strictly between.  Ties between unrelated events
+      // can always be broken towards adjacency, so this only admits real
+      // interleavings.
+      const symbol_exprt adj_fs = nondet_bool_symbol("adjacent");
+      const symbol_exprt adj_sf = nondet_bool_symbol("adjacent");
+      add_constraint(
+        equation, implies_exprt(race_var, or_exprt(adj_fs, adj_sf)),
+        "race", first_event->source);
+      add_adjacency(equation, adj_fs, first_event, second_event, shared_events);
+      add_adjacency(equation, adj_sf, second_event, first_event, shared_events);
     }
   }
 

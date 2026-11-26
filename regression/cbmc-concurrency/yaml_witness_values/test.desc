@@ -1,0 +1,9 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --no-por --allow-pointer-unsoundness --no-assertions --signed-overflow-check --yaml-witness - --yaml-witness-values
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^- segment: \[{waypoint: {type: .function_return., action: .follow., location: {file_name: .main.c., line: 17}, constraint: {value: ..result == 2147483647., format: .ext_c_expression.}, thread_id: 0}}\]$
+--
+^warning: ignoring

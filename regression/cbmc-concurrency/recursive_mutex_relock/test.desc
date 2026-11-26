@@ -1,0 +1,49 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+A legal re-acquisition of a recursive mutex pruned the path.
+
+`pthread_mutex_lock` has two branches. The one that understands recursion,
+
+    __CPROVER_assert(__CPROVER_get_must(mutex, "mutex-recursive") ||
+                     !__CPROVER_get_may(mutex, "mutex-locked"), ...)
+
+sits behind __CPROVER_CUSTOM_BITVECTOR_ANALYSIS and is not compiled for
+verification. The branch that is compiled did
+
+    __CPROVER_assume(!*((__CPROVER_mutex_t *)mutex));
+
+which is simply false when the calling thread already holds the mutex. On a
+PTHREAD_MUTEX_RECURSIVE mutex that acquisition is legal, so an assumption
+that should block a thread instead made every statement after it
+unreachable. `pthread_mutexattr_settype` and `pthread_mutex_init` did record
+the recursive attribute, but only for the branch that is not compiled.
+
+The effect is vacuity, not a wrong rule: the race below cannot be seen
+because main never reaches it, and the SUCCESSFUL that comes back is not a
+proof of anything. The same shape as the pthread_exit collapse -- an
+unsatisfiable assumption that empties the formula and looks like a result.
+
+Telling a legal re-acquisition from one that would deadlock needs to know who
+holds the lock, so the model now carries an owner and a count at the front of
+the object. `count` keeps offset 0 and its old encoding -- 0 free, -1
+destroyed -- so every existing test on it reads the same value, and a
+non-recursive mutex still only ever holds 0 or 1. `pthread_mutexattr_init`
+had no model at all, which left the attribute uninitialised; without it the
+recursive flag read back would be nondeterministic, and a mutex wrongly
+believed recursive stops excluding and invents races.
+
+Measured on `pthread-locked-creation`, the family the 2026 benchmark set
+adds: 34 task-property pairs went from -87 points with 4 wrong answers to
+the full +45 with none. The four it fixed are exactly the four whose names
+carry `recursive`. Controls: a counter guarded by an ordinary mutex, and one
+guarded by a recursive mutex locked twice, both stay SUCCESSFUL -- mutual
+exclusion is intact.
+
+This is stock CBMC behaviour, not specific to this fork.

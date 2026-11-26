@@ -1,0 +1,15 @@
+CORE
+main.c
+
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+With the Ackermann pairs of `a with [i := v]` left out, an index that is a
+different expression but the same value as i must still read v: the with
+constraints now say so (j == i => x[j] == v) for every other index of the
+set. Here the store goes through an SSA symbol, whose own pairs still cover
+it, so this passes either way today; it pins the behaviour for when symbols
+lose their pairs too.

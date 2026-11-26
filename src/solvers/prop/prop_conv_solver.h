@@ -87,6 +87,12 @@ public:
   {
     return cache;
   }
+  /// Number of variables of the underlying propositional backend.
+  std::size_t prop_no_variables() const
+  {
+    return prop.no_variables();
+  }
+
   const symbolst &get_symbols() const
   {
     return symbols;

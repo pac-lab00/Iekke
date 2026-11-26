@@ -1,0 +1,23 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --datarace
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+Each thread writes its own copy of `static __thread unsigned slot` through
+`&slot`. The copies were initialised in the spawning thread, after its
+spawn event, so each initialisation was a write concurrent with the new
+thread's own accesses, and once `&slot` was taken (making the copy shared)
+it was paired with them as a race. The initialisation is now recorded in
+the new thread, as the copies of the locals already were. Written directly,
+without taking the address, the program was already SUCCESSFUL.
+
+Reported FAILED before the fix, SUCCESSFUL after. Reduced from
+libvsync/arraylock (no-data-race), which the fix also corrects.
+
+See `thread_local_through_pointer_race` (slot not thread-local) and
+`thread_local_escaped_race` (a copy reached from another thread): both must
+stay FAILED.

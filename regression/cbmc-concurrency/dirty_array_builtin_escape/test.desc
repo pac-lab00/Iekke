@@ -1,0 +1,12 @@
+CORE
+main.c
+--allow-pointer-unsoundness --no-assertions --datarace --unwind 2 --rounds 2 --no-por
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+An address passed to __CPROVER_array_set does not make a local dirty (the
+builtin keeps no pointer), but the same address passed to a thread does: the
+thread writes a[0] through it while main sets the array, a race.

@@ -1,0 +1,12 @@
+CORE
+main.c
+--datarace --no-assertions --no-por --unwind 2 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^BDD prune: removed 0 shared accesses with a contradictory guard
+^VERIFICATION FAILED$
+--
+^warning: ignoring
+--
+The same program with the write under c && c: the guard is satisfiable, the
+write stays, and it races with the write in main.

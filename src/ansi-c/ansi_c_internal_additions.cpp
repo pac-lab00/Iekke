@@ -162,14 +162,31 @@ void ansi_c_internal_additions(std::string &code)
     CPROVER_PREFIX "bool " CPROVER_PREFIX "threads_exited["
       CPROVER_PREFIX "constant_infinity_uint];\n"
     "unsigned long " CPROVER_PREFIX "next_thread_id=0;\n"
+    "void *" CPROVER_PREFIX "thread_return_values["
+      CPROVER_PREFIX "constant_infinity_uint];\n"
     CPROVER_PREFIX "thread_local const void* " CPROVER_PREFIX "thread_keys["
       CPROVER_PREFIX "constant_infinity_uint];\n"
-    CPROVER_PREFIX "thread_local void (*" CPROVER_PREFIX "thread_key_dtors["
+    "void (*" CPROVER_PREFIX "thread_key_dtors["
       CPROVER_PREFIX "constant_infinity_uint])(void *);\n"
     CPROVER_PREFIX "thread_local unsigned long "
       CPROVER_PREFIX "next_thread_key = 0;\n"
     "extern unsigned char " CPROVER_PREFIX "memory["
       CPROVER_PREFIX "constant_infinity_uint];\n"
+    + (config.ansi_c.mutex_shadow
+         // --mutex-shadow: the state of every mutex, indexed by its address
+         // converted to __CPROVER_size_t. That is one-to-one: size_t is as
+         // wide as a pointer, and the conversion of a pointer to an integer
+         // is its raw bits, the pair (object, offset) -- see bv_pointers.
+         // The arrays are zero-initialised like any other static object:
+         // count 0 is a free mutex, which PTHREAD_MUTEX_INITIALIZER relies on
+         ? std::string(
+             "signed char " CPROVER_PREFIX "mutex_count["
+               CPROVER_PREFIX "constant_infinity_uint];\n"
+             "signed char " CPROVER_PREFIX "mutex_recursive["
+               CPROVER_PREFIX "constant_infinity_uint];\n"
+             "unsigned short " CPROVER_PREFIX "mutex_owner["
+               CPROVER_PREFIX "constant_infinity_uint];\n")
+         : std::string{}) +
 
     // malloc
     "const void *" CPROVER_PREFIX "deallocated=0;\n"

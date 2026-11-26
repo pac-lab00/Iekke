@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 3 --infer-rounds
+^EXIT=10$
+^SIGNAL=0$
+^Infer rounds: violation found with 3 round
+^VERIFICATION FAILED$
+--
+^Infer rounds: violation found with [12] round
+^VERIFICATION SUCCESSFUL$
+--
+The lost update of lazypo_lost_update_rounds_unsafe needs 3 rounds (it is
+checked there with --rounds 3). --infer-rounds must find it at exactly 3:
+fewer would mean the empty-round assumptions do not switch rounds off, and a
+SUCCESSFUL would mean the completeness question stopped the search early --
+which is what happened while the property was still asserted at the root of
+the formula (symex_target_equationt::assertion_handles_only).

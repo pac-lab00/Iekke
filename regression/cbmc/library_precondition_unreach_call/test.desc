@@ -1,0 +1,11 @@
+CORE
+main.c
+--function main
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+double free: FAILURE
+--
+The same program checked for its own assertions only: reach_error is never
+called (y is at most 256), and the double free belongs to memory safety.

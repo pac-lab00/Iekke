@@ -1,0 +1,12 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --allow-pointer-unsoundness --no-por --thread-symmetry exact
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+^thread symmetry: declined, the program reads __CPROVER_thread_id$
+--
+^VERIFICATION SUCCESSFUL$
+--
+A program that reads its own identity can tell the two threads apart, so
+nothing is ordered.

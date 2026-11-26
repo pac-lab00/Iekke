@@ -1,0 +1,11 @@
+CORE
+main.c
+--32 --unwind 3 --dynamic-array-bound 4 --unwinding-assertions
+^EXIT=1$
+^SIGNAL=0$
+^--dynamic-array-bound cannot be combined with --unwinding-assertions
+--
+^warning: ignoring
+--
+The bound is an assumption; an allocation step carries no property, and the
+combination used to abort in get_property_id.

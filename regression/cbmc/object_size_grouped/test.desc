@@ -1,0 +1,14 @@
+CORE
+main.c
+--no-simplify
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.7\] line 29 reach size 12 via b: FAILURE$
+^\[main.assertion.8\] line 30 reach heap 42: FAILURE$
+^VERIFICATION FAILED$
+--
+^\[main.assertion.[1-6]\] .*: FAILURE$
+--
+OBJECT_SIZE and DYNAMIC_OBJECT over a pointer that may point to several objects,
+some of equal size, must give each object its own size and kind when objects
+are grouped by size in the propositional encoding (port of upstream c53b111a20).

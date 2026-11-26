@@ -1,0 +1,21 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --por --allow-pointer-unsoundness --verbosity 9
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+object bits: [0-9]* addressed objects need
+--
+too many addressed objects
+--
+The disallowed pattern is the point. This program addresses 300 distinct
+globals, more than the 256 that ansi_c.default_object_bits allows, so before
+object_bits was sized to the program it died in bv_pointerst::add_addr with
+"too many addressed objects" and produced no verdict -- after paying for symex
+and the concurrency encoding.
+
+The required "object bits:" line checks the sizing actually fired rather than
+the test passing because the program happened to stay under the default.
+
+test.pl matches with grep, so these are basic regular expressions: no '+'
+or '{n,m}'.

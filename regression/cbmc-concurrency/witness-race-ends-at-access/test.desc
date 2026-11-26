@@ -1,0 +1,10 @@
+CORE
+main.c
+--32 --datarace --no-assertions --unwind 2 --rounds 3 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+<data key="threadId">1</data>
+<data key="violation">true</data>
+--
+^warning: ignoring
+<data key="startline">39</data>

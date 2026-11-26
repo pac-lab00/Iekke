@@ -1,0 +1,13 @@
+CORE
+main.c
+--no-simplify
+^EXIT=10$
+^SIGNAL=0$
+^\[main.assertion.6\] line 13 div by zero may be 5: FAILURE$
+^VERIFICATION FAILED$
+--
+^\[main.assertion.[1-5]\] .*: FAILURE$
+--
+Division and remainder of constant operands are computed in the propositional
+encoding (port of upstream c1ee481574); division by a constant zero must stay
+unconstrained.

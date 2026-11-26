@@ -1,0 +1,11 @@
+CORE
+main.c
+--unwind 4 --rounds 3 --por --allow-pointer-unsoundness --no-assertions --pointer-check --alloc-check --memory-leak-check
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `nested_deref_published_node_leak`: the thread allocates its
+node and drops it, a real leak. Must stay FAILED before and after the fix.

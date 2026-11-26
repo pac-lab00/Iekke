@@ -1,0 +1,14 @@
+CORE
+main.c
+--unwind 2 --rounds 2 --no-por --allow-pointer-unsoundness --graphml-witness /dev/stdout
+^EXIT=10$
+^SIGNAL=0$
+<data key="violation">true</data>
+--
+^warning: ignoring
+<data key="startline">25</data>
+--
+Thread t takes the lock and sets x, then main takes it and fails the
+assertion. The pthread_mutex_lock of main (line 25) has no edge of its own:
+only its argument binding was on that line, and it may sit before the other
+thread's critical section in the trace.

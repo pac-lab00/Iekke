@@ -1,0 +1,21 @@
+CORE
+main.c
+--32
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+^warning: ignoring
+--
+p points into s at an undecided offset, so p->lock = &x is a byte update of
+the whole of s at a non-constant offset. The lowering binds the update value
+once by a let and places the let at the innermost expressions using it (see
+byte_update_struct_symbolic_offset). For a pointer member of s that
+expression is pointer-typed, and bv_pointerst had no case for a let: it
+reported "warning: ignoring let" and gave the member free bits. Every pointer
+member of s then took an arbitrary value after the store, here the parent
+links, and both assertions FAILED. The size matters: with 6 nodes (120 bytes)
+no let reached a pointer member and the bug did not show; with 7 or more it
+did. Found as a false alarm on libvsync/hmcslock.i (unreach-call, expected
+TRUE).

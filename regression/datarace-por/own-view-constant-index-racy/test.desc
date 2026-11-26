@@ -1,0 +1,8 @@
+CORE
+main.c
+--datarace --no-assertions --own-view-reads --unwind 3 --rounds 3 --no-por --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^warning: ignoring

@@ -50,8 +50,12 @@ const bvt &boolbv_mapt::get_literals(
   map_entryt &map_entry=result.first->second;
 
   if(result.second)
-  { // actually inserted
     map_entry.type=type;
+
+  // Allocate on first genuine demand. The entry may already exist with no
+  // literals because record_type put it there to remember the type alone.
+  if(map_entry.literal_map.empty() && width != 0)
+  {
     map_entry.literal_map.reserve(width);
 
     for(std::size_t bit = 0; bit < width; ++bit)
@@ -70,6 +74,17 @@ const bvt &boolbv_mapt::get_literals(
     "number of literals in the literal map shall equal the bitvector width");
 
   return map_entry.literal_map;
+}
+
+void boolbv_mapt::record_type(
+  const irep_idt &identifier,
+  const typet &type)
+{
+  const auto result =
+    mapping.insert(std::pair<irep_idt, map_entryt>(identifier, map_entryt()));
+
+  if(result.second)
+    result.first->second.type = type;
 }
 
 void boolbv_mapt::set_literals(

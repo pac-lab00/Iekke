@@ -1,0 +1,9 @@
+CORE
+main.c
+--pointer-check --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+dereference failure: dead object.*: FAILURE
+^VERIFICATION FAILED$
+--
+^warning: ignoring

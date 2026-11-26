@@ -1,0 +1,12 @@
+CORE
+main.c
+--32 --little-endian
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^warning: ignoring
+--
+A byte update of non-constant length at a non-zero offset into a scalar
+(here, struct member s.a at offset 1) used to refill the bytes past the length
+with the original bytes taken from offset 0 instead of from the update offset.

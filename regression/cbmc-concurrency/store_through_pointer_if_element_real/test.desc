@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Control for `store_through_pointer_if_element`: with i in {0, 1}, main's
+`*r = 5` may really store to items[0] after the thread's store of 1. The
+element actually stored must still be published, so this must stay FAILED
+before and after.

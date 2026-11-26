@@ -94,6 +94,150 @@ static void finish_catch_push_targets(goto_programt &dest)
   }
 }
 
+struct build_declaration_hops_inputst
+{
+  irep_idt mode;
+  irep_idt label;
+  goto_programt::targett goto_instruction;
+  goto_programt::targett label_instruction;
+  node_indext label_scope_index = 0;
+  node_indext end_scope_index = 0;
+};
+
+goto_convertt::declaration_hop_instrumentationt
+goto_convertt::build_declaration_hops(
+  goto_programt &program,
+  std::unordered_map<irep_idt, symbolt, irep_id_hash> &label_flags,
+  const build_declaration_hops_inputst &inputs)
+{
+  // In the case of a goto jumping into a scope, the declarations (but not the
+  // initialisations) need to be executed. This function prepares a
+  // transformation from code that looks like -
+  //   {
+  //     statement_block_a();
+  //     if(...)
+  //       goto user_label;
+  //     statement_block_b();
+  //     int x;
+  //     x = 0;
+  //     statement_block_c();
+  //     int y;
+  //     y = 0;
+  //     statement_block_d();
+  //   user_label:
+  //     statement_block_e();
+  //   }
+  // to code which looks like -
+  //   {
+  //     __CPROVER_bool __CPROVER_going_to::user_label;
+  //     __CPROVER_going_to::user_label = false;
+  //     statement_block_a();
+  //     if(...)
+  //     {
+  //       __CPROVER_going_to::user_label = true;
+  //       goto scope_x_label;
+  //     }
+  //     statement_block_b();
+  //   scope_x_label:
+  //     int x;
+  //     if __CPROVER_going_to::user_label goto scope_y_label:
+  //     x = 0;
+  //     statement_block_c();
+  //   scope_y_label:
+  //     int y;
+  //     if __CPROVER_going_to::user_label goto user_label:
+  //     y = 0;
+  //     statement_block_d();
+  //   user_label:
+  //     __CPROVER_going_to::user_label = false;
+  //     statement_block_e();
+  //   }
+  //
+  // The actual insertion of instructions needs to be performed by the caller,
+  // which needs to use the result of this method.
+
+  PRECONDITION(inputs.label_scope_index != inputs.end_scope_index);
+
+  declaration_hop_instrumentationt instructions_to_add;
+
+  const auto flag = [&]() -> symbolt {
+    const auto existing_flag = label_flags.find(inputs.label);
+    if(existing_flag != label_flags.end())
+      return existing_flag->second;
+    source_locationt label_location =
+      inputs.label_instruction->source_location();
+    label_location.set_hide();
+    const symbolt &new_flag = get_fresh_aux_symbol(
+      bool_typet{},
+      CPROVER_PREFIX "going_to",
+      id2string(inputs.label),
+      label_location,
+      inputs.mode,
+      symbol_table);
+    label_flags.emplace(inputs.label, new_flag);
+
+    // Create and initialise flag.
+    instructions_to_add.emplace_back(
+      program.instructions.begin(),
+      goto_programt::make_decl(new_flag.symbol_expr(), label_location));
+    const auto make_clear_flag = [&]() -> goto_programt::instructiont {
+      return goto_programt::make_assignment(
+        new_flag.symbol_expr(), false_exprt{}, label_location);
+    };
+    instructions_to_add.emplace_back(
+      program.instructions.begin(), make_clear_flag());
+
+    // Clear flag on arrival at label.
+    auto clear_on_arrival = make_clear_flag();
+    instructions_to_add.emplace_back(
+      inputs.label_instruction, clear_on_arrival);
+    return new_flag;
+  }();
+
+  auto goto_instruction = inputs.goto_instruction;
+  {
+    // Set flag before the goto.
+    auto goto_location = goto_instruction->source_location();
+    goto_location.set_hide();
+    auto set_flag = goto_programt::make_assignment(
+      flag.symbol_expr(), true_exprt{}, goto_location);
+    instructions_to_add.emplace_back(goto_instruction, set_flag);
+  }
+
+  auto target = inputs.label_instruction;
+  targets.scope_stack.set_current_node(inputs.label_scope_index);
+  while(targets.scope_stack.get_current_node() > inputs.end_scope_index)
+  {
+    node_indext current_node = targets.scope_stack.get_current_node();
+    auto &declaration = targets.scope_stack.get_declaration(current_node);
+    targets.scope_stack.descend_tree();
+    if(!declaration)
+      continue;
+
+    bool add_if = declaration->accounted_flags.find(flag.name) ==
+                  declaration->accounted_flags.end();
+    if(add_if)
+    {
+      auto declaration_location = declaration->instruction->source_location();
+      declaration_location.set_hide();
+      auto if_goto = goto_programt::make_goto(
+        target, flag.symbol_expr(), declaration_location);
+      // this isn't changing any previously existing instruction so we insert
+      // directly rather than going through instructions_to_add
+      program.instructions.insert(
+        std::next(declaration->instruction), std::move(if_goto));
+      declaration->accounted_flags.insert(flag.name);
+    }
+    target = declaration->instruction;
+  }
+
+  // Update the goto so that it goes to the first declaration rather than its
+  // original/final destination.
+  goto_instruction->set_target(target);
+
+  return instructions_to_add;
+}
+
 /*******************************************************************	\
 
 Function: goto_convertt::finish_gotos
@@ -108,6 +252,9 @@ Function: goto_convertt::finish_gotos
 
 void goto_convertt::finish_gotos(goto_programt &dest, const irep_idt &mode)
 {
+  std::unordered_map<irep_idt, symbolt, irep_id_hash> label_flags;
+  declaration_hop_instrumentationt instructions_to_insert;
+
   for(const auto &g_it : targets.gotos)
   {
     goto_programt::instructiont &i=*(g_it.first);
@@ -115,9 +262,7 @@ void goto_convertt::finish_gotos(goto_programt &dest, const irep_idt &mode)
     if(i.is_start_thread())
     {
       const irep_idt &goto_label = i.code().get(ID_destination);
-
-      labelst::const_iterator l_it=
-        targets.labels.find(goto_label);
+      const auto l_it = targets.labels.find(goto_label);
 
       if(l_it == targets.labels.end())
       {
@@ -131,8 +276,7 @@ void goto_convertt::finish_gotos(goto_programt &dest, const irep_idt &mode)
     else if(i.is_incomplete_goto())
     {
       const irep_idt &goto_label = i.code().get(ID_destination);
-
-      labelst::const_iterator l_it=targets.labels.find(goto_label);
+      const auto l_it = targets.labels.find(goto_label);
 
       if(l_it == targets.labels.end())
       {
@@ -149,7 +293,7 @@ void goto_convertt::finish_gotos(goto_programt &dest, const irep_idt &mode)
       // Compare the currently-live variables on the path of the GOTO and label.
       // We want to work out what variables should die during the jump.
       ancestry_resultt intersection_result =
-        targets.destructor_stack.get_nearest_common_ancestor_info(
+        targets.scope_stack.get_nearest_common_ancestor_info(
           goto_target, label_target);
 
       bool not_prefix =
@@ -160,40 +304,62 @@ void goto_convertt::finish_gotos(goto_programt &dest, const irep_idt &mode)
       {
         // If the goto recorded a destructor stack, execute as much as is
         // appropriate for however many automatic variables leave scope.
-        // We don't currently handle variables *entering* scope, which
-        // is illegal for C++ non-pod types and impossible in Java in any case.
-        if(not_prefix)
-        {
-          debug().source_location = i.source_location();
-          debug() << "encountered goto '" << goto_label
-                  << "' that enters one or more lexical blocks; "
-                  << "omitting constructors and destructors" << eom;
-        }
-        else
-        {
-          debug().source_location = i.source_location();
-          debug() << "adding goto-destructor code on jump to '" << goto_label
-                  << "'" << eom;
+        debug().source_location = i.source_location();
+        debug() << "adding goto-destructor code on jump to '" << goto_label
+                << "'" << eom;
 
-          node_indext end_destruct = intersection_result.common_ancestor;
-          goto_programt destructor_code;
-          unwind_destructor_stack(
-            i.source_location(),
-            destructor_code,
-            mode,
-            end_destruct,
-            goto_target);
-          dest.destructive_insert(g_it.first, destructor_code);
+        node_indext end_destruct = intersection_result.common_ancestor;
+        goto_programt destructor_code;
+        unwind_destructor_stack(
+          i.source_location(),
+          destructor_code,
+          mode,
+          end_destruct,
+          goto_target);
+        dest.destructive_insert(g_it.first, destructor_code);
 
-          // This should leave iterators intact, as long as
-          // goto_programt::instructionst is std::list.
-        }
+        // This should leave iterators intact, as long as
+        // goto_programt::instructionst is std::list.
+      }
+
+      // Variables *entering* scope on goto, is illegal for C++ non-pod types
+      // and impossible in Java. However, with the exception of Variable Length
+      // Arrays (VLAs), this is valid C and should be taken into account.
+      const bool variables_added_to_scope =
+        intersection_result.right_depth_below_common_ancestor > 0;
+      if(variables_added_to_scope)
+      {
+        // If the goto recorded a destructor stack, execute as much as is
+        // appropriate for however many automatic variables leave scope.
+        debug().source_location = i.source_location();
+        debug() << "encountered goto '" << goto_label
+                << "' that enters one or more lexical blocks; "
+                << "adding declaration code on jump to '" << goto_label << "'"
+                << eom;
+
+        build_declaration_hops_inputst inputs;
+        inputs.mode = mode;
+        inputs.label = l_it->first;
+        inputs.goto_instruction = g_it.first;
+        inputs.label_instruction = l_it->second.first;
+        inputs.label_scope_index = label_target;
+        inputs.end_scope_index = intersection_result.common_ancestor;
+        instructions_to_insert.splice(
+          instructions_to_insert.end(),
+          build_declaration_hops(dest, label_flags, inputs));
       }
     }
     else
     {
       UNREACHABLE;
     }
+  }
+
+  for(auto r_it = instructions_to_insert.rbegin();
+      r_it != instructions_to_insert.rend();
+      ++r_it)
+  {
+    dest.insert_before_swap(r_it->first, r_it->second);
   }
 
   targets.gotos.clear();
@@ -342,7 +508,7 @@ void goto_convertt::convert_label(
     dest.destructive_append(tmp);
 
     targets.labels.insert(
-      {label, {target, targets.destructor_stack.get_current_node()}});
+      {label, {target, targets.scope_stack.get_current_node()}});
     target->labels.push_front(label);
   }
 }
@@ -548,8 +714,7 @@ void goto_convertt::convert_block(
   const source_locationt &end_location=code.end_location();
 
   // this saves the index of the destructor stack
-  node_indext old_stack_top =
-    targets.destructor_stack.get_current_node();
+  node_indext old_stack_top = targets.scope_stack.get_current_node();
 
   // now convert block
   for(const auto &b_code : code.statements())
@@ -567,7 +732,7 @@ void goto_convertt::convert_block(
     unwind_destructor_stack(end_location, dest, mode, old_stack_top);
 
   // Set the current node of our destructor stack back to before the block.
-  targets.destructor_stack.set_current_node(old_stack_top);
+  targets.scope_stack.set_current_node(old_stack_top);
 }
 
 void goto_convertt::convert_expression(
@@ -620,12 +785,13 @@ void goto_convertt::convert_frontend_decl(
      symbol.type.id()==ID_code)
     return; // this is a SKIP!
 
-  if(code.operands().size()==1)
-  {
-    copy(code, DECL, dest);
-  }
-  else
-  {
+  const goto_programt::targett declaration_iterator = [&]() {
+    if(code.operands().size() == 1)
+    {
+      copy(code, DECL, dest);
+      return std::prev(dest.instructions.end());
+    }
+
     exprt initializer = code.op1();
 
     codet tmp=code;
@@ -636,6 +802,7 @@ void goto_convertt::convert_frontend_decl(
     // Break up into decl and assignment.
     // Decl must be visible before initializer.
     copy(tmp, DECL, dest);
+    const auto declaration_iterator = std::prev(dest.instructions.end());
 
     auto initializer_location = initializer.find_source_location();
     clean_expr(initializer, dest, mode);
@@ -647,7 +814,9 @@ void goto_convertt::convert_frontend_decl(
 
       convert_assign(assign, dest, mode);
     }
-  }
+
+    return declaration_iterator;
+  }();
 
   // now create a 'dead' instruction -- will be added after the
   // destructor created below as unwind_destructor_stack pops off the
@@ -656,7 +825,8 @@ void goto_convertt::convert_frontend_decl(
 
   {
     code_deadt code_dead(symbol_expr);
-    targets.destructor_stack.add(code_dead);
+
+    targets.scope_stack.add(code_dead, {declaration_iterator});
   }
 
   // do destructor
@@ -668,7 +838,7 @@ void goto_convertt::convert_frontend_decl(
     address_of_exprt this_expr(symbol_expr, pointer_type(symbol.type));
     destructor.arguments().push_back(this_expr);
 
-    targets.destructor_stack.add(destructor);
+    targets.scope_stack.add(destructor, {});
   }
 }
 
@@ -1370,7 +1540,7 @@ void goto_convertt::convert_goto(const code_gotot &code, goto_programt &dest)
     dest.add(goto_programt::make_incomplete_goto(code, code.source_location()));
 
   // remember it to do the target later
-  targets.gotos.emplace_back(t, targets.destructor_stack.get_current_node());
+  targets.gotos.emplace_back(t, targets.scope_stack.get_current_node());
 }
 
 void goto_convertt::convert_gcc_computed_goto(
@@ -1394,7 +1564,7 @@ void goto_convertt::convert_start_thread(
 
   // remember it to do target later
   targets.gotos.emplace_back(
-    start_thread, targets.destructor_stack.get_current_node());
+    start_thread, targets.scope_stack.get_current_node());
 }
 
 void goto_convertt::convert_end_thread(
@@ -1463,6 +1633,9 @@ void goto_convertt::convert_ifthenelse(
     return convert_ifthenelse(new_if0, dest, mode);
   }
 
+  exprt tmp_guard=code.cond();
+  clean_expr(tmp_guard, dest, mode);
+
   // convert 'then'-branch
   goto_programt tmp_then;
   convert(code.then_case(), tmp_then, mode);
@@ -1471,9 +1644,6 @@ void goto_convertt::convert_ifthenelse(
 
   if(has_else)
     convert(code.else_case(), tmp_else, mode);
-
-  exprt tmp_guard=code.cond();
-  clean_expr(tmp_guard, dest, mode);
 
   generate_ifthenelse(
     tmp_guard, tmp_then, tmp_else, source_location, dest, mode);

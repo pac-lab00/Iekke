@@ -1,0 +1,17 @@
+CORE
+main.c
+--unwind 2 --rounds 4 --por --allow-pointer-unsoundness 
+^EXIT=0$
+^SIGNAL=0$
+^VERIFICATION SUCCESSFUL$
+--
+^VERIFICATION FAILED$
+--
+The same program as thread_private_object on the default path, i.e. with the
+per-round chain, since --thread-private is off by default.
+The two encodings have to agree; this is the arm that says so.
+
+ also reproduces the pre-change formula to the digit on the
+benchmark the change was measured on (28-race_reach_81-list_racing u2 r8:
+123237 variables, 424544 clauses either way), so it doubles as the control
+showing the change is confined to the private path.

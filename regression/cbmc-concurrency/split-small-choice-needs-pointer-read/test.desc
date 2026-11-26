@@ -1,0 +1,14 @@
+CORE
+main.c
+--no-por --unwind 2 --rounds 2
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^split small choices
+^warning: ignoring
+--
+The choice i only picks an element of one array (&a[i], an int member): no
+pointer is read from the element, so nothing fans out and t is not split
+(copying it only costs: 28-race_reach_75 at u16 r4, 290 s split, 33 s not).
+i == 0 makes a[0].datum 1, failing the assertion.

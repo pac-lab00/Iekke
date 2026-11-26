@@ -1,0 +1,13 @@
+CORE
+main.c
+--unwind 2 --rounds 3 --por --allow-pointer-unsoundness --array-rf
+^EXIT=10$
+^SIGNAL=0$
+^VERIFICATION FAILED$
+--
+^VERIFICATION SUCCESSFUL$
+--
+Nothing writes a[0], and malloc does not zero what it returns, so a[0] can be
+anything and the assertion fails. A read-from that gave an unwritten element a
+constant -- the element of a zero initialiser, say -- would prove it instead.
+Checked by replacing the allocation value with 0 in the selection.
